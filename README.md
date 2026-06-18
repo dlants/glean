@@ -99,3 +99,11 @@ require("glean.init").setup({
 
 `setup` registers the `:Glean` command and defines the
 highlight groups (re-derived from `DiffAdd`/`DiffDelete` on every `ColorScheme`).
+
+## Related plugins
+
+Other neovim plugins by [dlants](https://github.com/dlants):
+
+- [magenta.nvim](https://github.com/dlants/magenta.nvim) — transparent tools for agentic AI workflows.
+- [needle](https://github.com/dlants/needle) — a fast, signal-aware fuzzy picker.
+- [shuck](https://github.com/dlants/shuck) — a streamed shell-command picker (live-grep replacement).
