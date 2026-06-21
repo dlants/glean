@@ -2113,6 +2113,23 @@ local function setup_keymaps(buf, session)
     buffer = buf,
     callback = function() session:close_sticky() end,
   })
+  -- A different buffer being displayed in the glean window (or the glean buffer
+  -- being shown again) doesn't fire Win/BufLeave, so the float anchored to the
+  -- window would otherwise linger over the swapped-in buffer. Tear it down when
+  -- the glean buffer leaves a window and reinstate it when it returns.
+  api.nvim_create_autocmd("BufWinLeave", {
+    group = group,
+    buffer = buf,
+    callback = function() session:_close_sticky_win() end,
+  })
+  api.nvim_create_autocmd("BufWinEnter", {
+    group = group,
+    buffer = buf,
+    callback = function()
+      session._sticky_state = nil
+      session:update_sticky()
+    end,
+  })
   api.nvim_create_autocmd("WinClosed", {
     group = group,
     callback = function(ev)
