@@ -746,6 +746,80 @@ do
   h.assert_true("combined reopen: g.txt still shown", joined2:find("▼ g.txt", 1, true) ~= nil)
 end
 
+-- Stage 2 — ownership cache + render-from-cache. The combined renderer reads
+-- ownership only from the explicit per-path cache: a file with no cache entry
+-- renders its hunks in the pending (unseen) presentation and issues zero blame;
+-- once the cache is loaded the same file's previously-seen hunk migrates into
+-- the seen section.
+do
+  -- Pre-seed f.txt fully seen (authored in a normal, fully-loaded session).
+  local dir = vim.fn.tempname()
+  local s0 = open({ state_dir = dir })
+  local frow0 = find_row(s0, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("f.txt", 1, true)
+  end)
+  s0:toggle_seen(frow0)
+
+  -- Behaviors A/B: a blame-counting runner over a fresh session.
+  local blames = 0
+  local function spy(args)
+    for _, a in ipairs(args) do
+      if a == "blame" then blames = blames + 1 break end
+    end
+    return inject_run(args)
+  end
+  local s = glean.open({
+    base = base, target = target, repo_root = repo.root, run = spy,
+    open_window = false, state_dir = dir, -- combined scope (default)
+  })
+  -- Drop the cache to model the pre-load (pending) state, then re-render.
+  s._owner = nil
+  blames = 0
+  s:render()
+  h.assert_eq("stage2: pending render issues zero blame", blames, 0)
+  h.assert_eq("stage2: owner_status nil before load", s:owner_status("f.txt"), nil)
+  local jp = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("stage2: pending f.txt has no seen section", jp:find(" seen (", 1, true) == nil)
+  h.assert_true("stage2: pending f.txt body shown", jp:find("\n+TWO", 1, true) ~= nil)
+
+  -- Behavior B: load ownership, re-render — the pre-seen hunk migrates up.
+  s:load_combined_owners()
+  h.assert_eq("stage2: owner_status loaded after load", s:owner_status("f.txt"), "loaded")
+  s:render()
+  local jl = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("stage2: loaded f.txt enters seen section", jl:find(" seen (1 hunks)", 1, true) ~= nil)
+end
+
+-- Stage 2 — Behavior C: a loaded file with an empty provenance map (an
+-- untracked work-tree add) is "loaded-empty", distinct from "not loaded": it
+-- routes to WORKTREE and is markable.
+do
+  local um = testutil.make_repo({
+    { msg = "base", files = { ["k.txt"] = "a\n" } },
+  })
+  local nf = assert(io.open(um.root .. "/new.txt", "w"))
+  nf:write("hi\n"); nf:close()
+  local function runum(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = um.root, env = um.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local s = glean.open({
+    base = um.shas[1], target = glean.WORKTREE, repo_root = um.root, run = runum,
+    open_window = false, state_dir = vim.fn.tempname(), -- combined scope
+  })
+  h.assert_eq("stage2-C: untracked new.txt loaded", s:owner_status("new.txt"), "loaded")
+  h.assert_true("stage2-C: untracked provenance map empty", next(s:provenance("new.txt")) == nil)
+  local nrow = find_row(s, function(_, line, t)
+    return t and t.cfile and t.line and line == "+hi"
+  end)
+  h.assert_true("stage2-C: found +hi row", nrow ~= nil)
+  s:toggle_seen(nrow)
+  h.assert_true("stage2-C: untracked add hash-seen on WORKTREE",
+    next(s.store:seen_hashes(glean.WORKTREE, "new.txt")) ~= nil)
+end
+
 -- Stage 4 — combined-scope markers: a partial seen run inside an unseen hunk
 -- whose lines are owned by two different commits. Marking the sub-range routes
 -- each line to its owner store; the run renders as one marker; `=` toggles it;

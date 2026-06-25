@@ -239,10 +239,17 @@ end
 -- commit that removed it (resolved via `del_attribution`, in that commit's
 -- immutable pre-image coords), or WORKTREE when the removal is uncommitted.
 function Session:combined_owner(path)
-  local prov = self:provenance(path)
+  local e = self._owner and self._owner[path]
+  if not (e and e.status == "loaded") then
+    -- Pending (ownership not yet loaded): every line is unowned, so the file's
+    -- hunks render as unseen with identity nil. The diff text is already correct;
+    -- only seen placement is deferred until the loader populates the cache.
+    return function() return nil end
+  end
+  local prov, del_attr = e.prov, e.del_attr
   return function(dl)
     if dl.kind == "del" then
-      local a = self:del_attribution(path)[dl.old_lnum]
+      local a = del_attr[dl.old_lnum]
       if a then return a.sha, a.lnum end
       return M.WORKTREE
     end
@@ -253,6 +260,53 @@ function Session:combined_owner(path)
     -- review: route it to the content-addressed WORKTREE owner so it is markable.
     if not p then return self.worktree and M.WORKTREE or nil end
     return p.sha, p.orig_lnum
+  end
+end
+
+-- The explicit per-path ownership cache status, the single source of truth for
+-- whether a combined file's blame-derived ownership is available:
+--   nil       — never requested
+--   "loading" — a blame job is in flight (Stage 4); maps not yet stored
+--   "loaded"  — forward provenance and del attribution are resolved & stored
+function Session:owner_status(path)
+  local e = self._owner and self._owner[path]
+  return e and e.status or nil
+end
+
+-- Whether a render/action target's file has loaded ownership. A hunk's load
+-- state is its file's load state (one blame resolves all of a file's hunks).
+function Session:hunk_loaded(target)
+  local path
+  if self.scope == "commits" then return true end
+  local cf = self.combined_files and self.combined_files[target.cfile]
+  path = cf and cf.path
+  return path ~= nil and self:owner_status(path) == "loaded"
+end
+
+-- Synchronously resolve and cache a combined file's ownership: forward blame
+-- provenance plus (per the commit-set rule) del attribution. Idempotent — a
+-- "loaded" entry is returned untouched. This is the on-demand sync loader used
+-- by the open/scope-switch lifecycle and the action layer; Stage 4 adds the
+-- background async loader that drives the same cache.
+function Session:load_owner(path)
+  self._owner = self._owner or {}
+  local e = self._owner[path]
+  if e and e.status == "loaded" then return e end
+  self._owner[path] = { status = "loading" }
+  local prov = self:compute_provenance(path)
+  local del_attr = self:del_attribution(path)
+  self._owner[path] = { status = "loaded", prov = prov, del_attr = del_attr }
+  return self._owner[path]
+end
+
+-- Load ownership for every displayed combined file (no-op outside combined
+-- scope). Synchronous for now; Stage 4 replaces the call sites with the async
+-- background loader feeding the same cache.
+function Session:load_combined_owners()
+  if self.scope ~= "combined" then return end
+  self.combined_files = self.combined_files or self:compute_combined()
+  for _, cf in ipairs(self.combined_files) do
+    self:load_owner(cf.path)
   end
 end
 
@@ -357,23 +411,49 @@ end
 -- Combined overlay (Stage 4): per-line ownership via blame + tighter re-diff.
 -- ---------------------------------------------------------------------------
 
--- Cached `git blame -p` provenance for a path at target: new_lnum -> {sha,orig}.
--- Depends only on target, so it survives seen-mark changes between renders.
-function Session:provenance(path)
-  self._prov = self._prov or {}
-  if self._prov[path] == nil then
-    -- A WORKTREE target blames the live work tree (nil ref); blame attributes
-    -- uncommitted lines to the all-zero sha, which we remap to the floating id
-    -- so they route to the content-hash adapter.
-    local ref = self.target ~= M.WORKTREE and self.target or nil
-    local out = self.git:blame(ref, path)
-    local map = (out and provenance.parse_blame(out)) or {}
-    if self.target == M.WORKTREE then
-      provenance.map_zero_sha(map, M.WORKTREE)
+-- The post-image line ranges actually present in `path`'s combined diff hunks,
+-- so blame is restricted (multiple `-L`) to just the changed/context spans we
+-- query instead of the whole (possibly huge) file. Returns nil when no hunks are
+-- found, blaming the entire file as before.
+function Session:blame_ranges(path)
+  self._blame_ranges = self._blame_ranges or {}
+  if self._blame_ranges[path] == nil then
+    local ranges = {}
+    for _, raw in ipairs(self.files) do
+      if raw.path == path then
+        for _, h in ipairs(raw.hunks) do
+          local lo = h.new_start
+          local hi = h.new_start + math.max(h.new_count, 1) - 1
+          if lo and lo >= 1 and hi >= lo then ranges[#ranges + 1] = { lo, hi } end
+        end
+        break
+      end
     end
-    self._prov[path] = map
+    self._blame_ranges[path] = ranges
   end
-  return self._prov[path]
+  local ranges = self._blame_ranges[path]
+  return #ranges > 0 and ranges or nil
+end
+
+-- Compute (no caching) the `git blame -p` provenance for a path at target:
+-- new_lnum -> {sha,orig}. The ownership cache (`load_owner`) memoizes the result.
+function Session:compute_provenance(path)
+  -- A WORKTREE target blames the live work tree (nil ref); blame attributes
+  -- uncommitted lines to the all-zero sha, which we remap to the floating id
+  -- so they route to the content-hash adapter.
+  local ref = self.target ~= M.WORKTREE and self.target or nil
+  local out = self.git:blame(ref, path, self:blame_ranges(path))
+  local map = (out and provenance.parse_blame(out)) or {}
+  if self.target == M.WORKTREE then
+    provenance.map_zero_sha(map, M.WORKTREE)
+  end
+  return map
+end
+
+-- The forward provenance map for a path, loading ownership on demand. Depends
+-- only on target, so it survives seen-mark changes between renders.
+function Session:provenance(path)
+  return self:load_owner(path).prov
 end
 
 -- Project the raw combined diff into display files. Seen hunks are now rendered
@@ -2002,6 +2082,7 @@ function Session:set_scope(scope)
   if scope == self.scope then return end
   self.scope = scope
   if scope == "commits" then self:apply_collapse() end
+  self:load_combined_owners()
   self:render()
 end
 
@@ -2028,7 +2109,8 @@ function Session:reload()
   self.commits = commits
   self.store = store
   self._wt_lines = nil
-  self._prov = nil
+  self._owner = nil
+  self._blame_ranges = nil
   -- Del attribution (reverse blame base..HEAD) and its parent->child stack
   -- depend only on the commit set, not on worktree content, so a content-only
   -- reload (the common live-update case) keeps them; they are dropped only when
@@ -2041,6 +2123,7 @@ function Session:reload()
   end
   self.combined_files = nil
   self:apply_collapse()
+  self:load_combined_owners()
   self:render()
 end
 
@@ -2298,6 +2381,7 @@ function M.open(opts)
     session:start_live()
   end
 
+  session:load_combined_owners()
   session:render()
   return session
 end

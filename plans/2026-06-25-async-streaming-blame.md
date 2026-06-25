@@ -185,7 +185,7 @@ fallback — the cache is the only loader.
   - Expected: stdout matches sync `blame`; error → `nil`.
 - Before moving on: full suite, type/lint checks pass.
 
-## Stage 2 — Ownership cache + render-from-cache
+## Stage 2 — Ownership cache + render-from-cache  ✅ DONE
 
 - Goal: per-file ownership state lives in the explicit cache with
   `loading`/`loaded` status (keyed per file path; a hunk's load-state is its
@@ -201,6 +201,37 @@ fallback — the cache is the only loader.
   - Setup: combined-scope session; store pre-seeded with one seen hunk.
   - Expected: call counts and seen placement as described.
 - Before moving on: full suite, type/lint checks pass.
+
+Implementation notes (Stage 2):
+- Added an explicit per-path ownership cache `self._owner[path]` carrying a
+  status: `"loading"` (transient, set inside `load_owner`) → `"loaded"` with
+  `{prov, del_attr}` maps. New accessors: `owner_status(path)`,
+  `hunk_loaded(target)` (per-file load-state predicate exposed for Stage 3),
+  `load_owner(path)` (idempotent sync loader), `load_combined_owners()`
+  (loads every displayed combined file).
+- `combined_owner(path)` now reads ONLY the cache: a non-`loaded` file returns a
+  pending closure `function() return nil end`, so its hunks resolve identity-nil
+  → unseen and `build()` issues zero blame. `provenance(path)` is now a thin
+  accessor over `load_owner`; the raw blame moved to `compute_provenance(path)`
+  (no caching). Del attribution stays in `self._del_attr` (retained across
+  content-only reloads per the commit-set rule) and is folded into the loaded
+  entry by `load_owner`.
+- Deviation from the "build never blames in normal use" end-state: since the
+  async background loader doesn't exist until Stage 4, `M.open`, `reload`, and
+  `set_scope` call `load_combined_owners()` synchronously right before `render`
+  so the first painted buffer matches the fully-loaded result and all existing
+  combined tests stay green. `build()` itself is pure/blame-free (verified by
+  the new zero-blame test); Stage 4 replaces these sync calls with the async
+  queue feeding the same cache.
+- `reload` resets `self._owner = nil` (was `self._prov`); `_del_attr`/`_del_child`
+  retention logic unchanged.
+- Tests (init_test.lua): Behavior A (pending render issues zero blame; no seen
+  section; body shown; `owner_status` nil), Behavior B (after
+  `load_combined_owners` the pre-seen hunk migrates into the seen section;
+  `owner_status` "loaded"), Behavior C (untracked worktree add is loaded-empty:
+  status "loaded", empty provenance map, routes to WORKTREE and is markable).
+- Full suite green (init_test 313 passed; all suites passed). No enforced
+  stylua/luacheck config; code follows existing 2-space style.
 
 ## Stage 3 — Pending hunks inert + load assertion backstop
 
