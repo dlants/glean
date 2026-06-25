@@ -820,6 +820,49 @@ do
     next(s.store:seen_hashes(glean.WORKTREE, "new.txt")) ~= nil)
 end
 
+-- Stage 3 — pending hunks inert + load assertion backstop. A non-loaded file's
+-- rows expose no markable identity: `m` on them is a UI-level no-op, but they
+-- mark correctly once loaded; directly invoking the action layer on a non-loaded
+-- target trips the loud backstop assertion.
+do
+  local dir = vim.fn.tempname()
+  local s = open({ state_dir = dir })
+  -- Drop the cache: every combined file is now pending (not loaded).
+  s._owner = nil
+  s:render()
+  local hrow = find_row(s, function(_, line, t)
+    return t and t.cfile and t.hunk and not t.line and t.pending
+  end)
+  h.assert_true("stage3: found a pending hunk row", hrow ~= nil)
+  local path = s.combined_files[s.row_map[hrow].cfile].path
+
+  -- Behavior A: `m` on a pending hunk is a no-op — no dispatch, no seen section.
+  s:toggle_seen(hrow)
+  local ja = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("stage3-A: pending toggle renders no seen section",
+    ja:find(" seen (", 1, true) == nil)
+  h.assert_eq("stage3-A: pending toggle leaves owner unloaded", s:owner_status(path), nil)
+
+  -- Behavior C: directly invoking the action layer on a pending target trips the
+  -- backstop assertion (a violated invariant, not a user-facing path).
+  local ptarget = s.row_map[hrow]
+  local ok = pcall(function() return s:target_identities(ptarget) end)
+  h.assert_true("stage3-C: target_identities asserts on non-loaded file", not ok)
+
+  -- Behavior B: load that file's ownership; the same hunk now marks correctly.
+  s:load_owner(path)
+  s:render()
+  local hrow2 = find_row(s, function(_, line, t)
+    return t and t.cfile and t.hunk and not t.line and not t.pending
+      and s.combined_files[t.cfile].path == path
+  end)
+  h.assert_true("stage3-B: loaded hunk row found", hrow2 ~= nil)
+  s:toggle_seen(hrow2)
+  local jb = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("stage3-B: loaded hunk marks into seen section",
+    jb:find(" seen (", 1, true) ~= nil)
+end
+
 -- Stage 4 — combined-scope markers: a partial seen run inside an unseen hunk
 -- whose lines are owned by two different commits. Marking the sub-range routes
 -- each line to its owner store; the run renders as one marker; `=` toggles it;

@@ -817,9 +817,14 @@ function Session:build()
     for fi, cf in ipairs(self.combined_files) do
       local chevron = cf.raw.collapsed and CHEVRON_CLOSED or CHEVRON_OPEN
       local kind = cf.kind and (" [" .. cf.kind .. "]") or ""
-      emit(chevron .. " " .. cf.path .. kind, { cfile = fi }, "GleanFileHeader")
+      -- Ownership not yet resolved: stamp every row of this file `pending` so the
+      -- action layer treats it as inert (no markable identity). The diff text is
+      -- already correct; only seen placement is deferred until the loader runs.
+      local pending = self:owner_status(cf.path) ~= "loaded" or nil
+      local tb = { cfile = fi, pending = pending }
+      emit(chevron .. " " .. cf.path .. kind, tb, "GleanFileHeader")
       if not cf.raw.collapsed then
-        emit_file_body(cf, { cfile = fi }, self:combined_owner(cf.path),
+        emit_file_body(cf, tb, self:combined_owner(cf.path),
           cseen_key(cf.path), self:resolve_comments(cf))
       end
     end
@@ -1461,6 +1466,11 @@ function Session:target_identities(target)
   else
     local cf = self.combined_files and self.combined_files[target.cfile]
     if not cf then return out end
+    -- Backstop: ownership must be resolved before a file's identities are read.
+    -- Pending hunks are inert at the UI layer, so reaching here for a non-loaded
+    -- file means an invariant was violated -- fail loudly rather than degrade.
+    assert(self:owner_status(cf.path) == "loaded",
+      "target_identities on non-loaded file: " .. cf.path)
     local owner = self:combined_owner(cf.path)
     gather(target.hunk and { cf.hunks[target.hunk] } or cf.hunks, cf.path, owner)
   end
@@ -1490,6 +1500,10 @@ function Session:row_identity(target)
   end
   if not (target.cfile and target.hunk and target.line) then return nil end
   local cf = self.combined_files[target.cfile]
+  -- Backstop: pending rows are filtered before reaching here (see toggle_seen /
+  -- mark_visual_range), so a non-loaded file is a violated invariant.
+  assert(self:owner_status(cf.path) == "loaded",
+    "row_identity on non-loaded file: " .. cf.path)
   return self:line_identity(cf.hunks[target.hunk].lines[target.line], cf.path,
     self:combined_owner(cf.path))
 end
@@ -1508,6 +1522,9 @@ function Session:toggle_seen(row)
   -- A marker row/line unmarks its run rather than toggling the whole hunk.
   if target.marker then return self:unmark_marker(target) end
   if target.seen then return end
+  -- Pending file (ownership not yet loaded): inert. Its rows expose no markable
+  -- identity, so `m` is a no-op until the loader settles seen placement.
+  if target.pending then return end
   if self.scope == "commits" then
     if not target.commit then return end
   else
@@ -1686,7 +1703,10 @@ function Session:mark_visual_range(srow, erow)
   if srow > erow then srow, erow = erow, srow end
   local ids = {}
   for row = srow, erow do
-    local id = self:row_identity(self.row_map[row])
+    local t = self.row_map[row]
+    -- Pending rows are inert (no markable identity); skip before row_identity,
+    -- whose non-loaded assertion is a backstop, not a selection filter.
+    local id = t and not t.pending and self:row_identity(t)
     if id and not self.store:is_seen(id) then ids[#ids + 1] = id end
   end
   if #ids == 0 then return end
@@ -1707,6 +1727,10 @@ function Session:unmark_marker(target)
     hunk, path, owner = file.hunks[target.hunk], file.path, self:commit_owner(commit)
   else
     local cf = self.combined_files[target.cfile]
+    -- Markers only exist on loaded files (seen runs); a non-loaded one here is a
+    -- violated invariant.
+    assert(self:owner_status(cf.path) == "loaded",
+      "unmark_marker on non-loaded file: " .. cf.path)
     hunk, path, owner = cf.hunks[target.hunk], cf.path, self:combined_owner(cf.path)
   end
   local ids = {}
@@ -1728,7 +1752,7 @@ end
 -- diff-line ordinal (the tiebreak / outdated fallback); `content` its text.
 function Session:comment_target(row)
   local target = self.row_map[row]
-  if not target or not target.line then return nil end
+  if not target or not target.line or target.pending then return nil end
   local file = self:row_file(target)
   if not file then return nil end
   local dl = file.hunks[target.hunk].lines[target.line]
@@ -1742,7 +1766,7 @@ function Session:visual_comment_target(srow, erow)
   local path, anchor, content, prev_ord
   for row = srow, erow do
     local t = self.row_map[row]
-    if t and t.line then
+    if t and t.line and not t.pending then
       local file = self:row_file(t)
       if file then
         local ord = target_ordinal(file, t)
@@ -1784,7 +1808,7 @@ function Session:delete_comment_at(row)
   if row == nil then row = self:cursor_row() end
   local target = self.row_map[row]
   local file = self:row_file(target)
-  if not file or not target.line then return end
+  if not file or not target.line or target.pending then return end
   local ord = target_ordinal(file, target)
   local list = self:resolve_comments(file)[ord] or {}
   if #list == 0 then

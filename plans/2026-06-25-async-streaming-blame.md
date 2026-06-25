@@ -233,7 +233,28 @@ Implementation notes (Stage 2):
 - Full suite green (init_test 313 passed; all suites passed). No enforced
   stylua/luacheck config; code follows existing 2-space style.
 
-## Stage 3 — Pending hunks inert + load assertion backstop
+## Stage 3 — Pending hunks inert + load assertion backstop  ✅ DONE
+
+Implementation notes (Stage 3):
+- `build()` stamps `pending = (owner_status ~= "loaded")` onto each combined
+  file's `target_base` (`{ cfile = fi, pending = ... }`); every derived target
+  (file header, hunk, line) inherits it via `vim.tbl_extend`. Pending files
+  resolve identity-nil → no seen section/markers, so only header+hunk+line rows
+  carry `pending = true`.
+- UI-level inertness (no dispatch on pending rows): `toggle_seen` returns early
+  on `target.pending`; `mark_visual_range` skips pending rows before calling
+  `row_identity`; `comment_target`, `visual_comment_target`, and
+  `delete_comment_at` skip pending line rows. Navigation/jump are unaffected
+  (read-only; need no ownership), so pending hunks remain navigable.
+- Backstop asserts (loud, not user-facing): `target_identities`, `row_identity`,
+  and `unmark_marker` assert `owner_status(path) == "loaded"` in the combined
+  branch. Reached only if a UI invariant is violated (the pending guards run
+  first on the normal paths).
+- Tests (init_test.lua, "Stage 3"): Behavior A (`m` on a pending hunk renders no
+  seen section, owner stays unloaded), Behavior C (`target_identities` on a
+  pending target trips the assert via `pcall`), Behavior B (after `load_owner`
+  the same hunk marks into the seen section). init_test 319 passed; full suite
+  green. No enforced stylua/luacheck config; 2-space style preserved.
 
 - Goal: pending (non-`loaded`) hunks render as non-actionable rows (no markable
   identity exposed through `row_map`), so no action targets them. The action
