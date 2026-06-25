@@ -960,6 +960,78 @@ do
   h.assert_eq("stage4-D: pre-reload generation render dropped", rendered, 0)
 end
 
+-- Stage 5 — tuning + polish.
+
+-- A render that reproduces the prior projection byte-for-byte is a no-op: it
+-- skips the whole-buffer repaint. We prove the skip by injecting a sentinel line
+-- the buffer would never contain and confirming an identical re-render leaves it
+-- in place; a real change (marking a hunk) then repaints and clears it.
+do
+  local s = open({ state_dir = vim.fn.tempname() })
+  local frow = find_row(s, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("f.txt", 1, true)
+  end)
+  api.nvim_set_option_value("modifiable", true, { buf = s.buf })
+  api.nvim_buf_set_lines(s.buf, 0, 0, false, { "SENTINEL" })
+  api.nvim_set_option_value("modifiable", false, { buf = s.buf })
+  s:render()
+  h.assert_eq("stage5: no-op render skips repaint",
+    api.nvim_buf_get_lines(s.buf, 0, 1, false)[1], "SENTINEL")
+  s:toggle_seen(frow)
+  h.assert_true("stage5: a real change repaints (sentinel gone)",
+    api.nvim_buf_get_lines(s.buf, 0, 1, false)[1] ~= "SENTINEL")
+end
+
+-- The streamed (background-loaded) buffer matches the all-sync render exactly.
+-- Author a non-trivial seen hunk, then compare a streamed open against a session
+-- whose ownership is loaded synchronously up front.
+do
+  local dir = vim.fn.tempname()
+  local s0 = open({ state_dir = dir })
+  local frow0 = find_row(s0, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("f.txt", 1, true)
+  end)
+  s0:toggle_seen(frow0)
+
+  local streamed = open({ state_dir = dir })
+  local slines = api.nvim_buf_get_lines(streamed.buf, 0, -1, false)
+
+  local sync = open({ state_dir = dir })
+  sync._owner = nil
+  sync:load_combined_owners()
+  sync._render_sig = nil
+  sync:render()
+  local clines = api.nvim_buf_get_lines(sync.buf, 0, -1, false)
+  h.assert_eq("stage5: streamed line count matches sync", #slines, #clines)
+  for i = 1, #clines do
+    h.assert_eq("stage5: streamed line " .. i .. " matches sync", slines[i], clines[i])
+  end
+end
+
+-- Regression: marking a file whose blame is still in flight trips the loud
+-- backstop (hard error); marking it after its load completes succeeds.
+do
+  local s = open({ state_dir = vim.fn.tempname() })
+  s._owner = nil
+  s:render()
+  local lrow = find_row(s, function(_, line, t)
+    return t and t.cfile and t.line and t.pending and line:sub(1, 1) == "+"
+  end)
+  h.assert_true("stage5: found a pending add row", lrow ~= nil)
+  local path = s.combined_files[s.row_map[lrow].cfile].path
+  h.assert_true("stage5: mark-during-load is a hard error",
+    not pcall(function() return s:row_identity(s.row_map[lrow]) end))
+
+  s:load_owner(path)
+  s:render()
+  local lrow2 = find_row(s, function(_, line, t)
+    return t and t.cfile and t.line and not t.pending
+      and s.combined_files[t.cfile].path == path and line:sub(1, 1) == "+"
+  end)
+  h.assert_true("stage5: mark-after-load resolves an identity",
+    pcall(function() return s:row_identity(s.row_map[lrow2]) end))
+end
+
 -- Stage 4 — combined-scope markers: a partial seen run inside an unseen hunk
 -- whose lines are owned by two different commits. Marking the sub-range routes
 -- each line to its owner store; the run renders as one marker; `=` toggles it;

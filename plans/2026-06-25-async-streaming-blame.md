@@ -336,7 +336,31 @@ Implementation notes (Stage 4):
 - Before moving on: full suite, type/lint checks pass; manual smoke on a large
   real diff (immediate paint + background settle).
 
-## Stage 5 — Tuning + polish
+## Stage 5 — Tuning + polish  ✅ DONE
+
+Implementation notes (Stage 5):
+- Skip no-op re-renders: `render()` now computes a `render_sig(lines, row_map)`
+  signature (the joined buffer text plus the sorted set of `pending` rows — the
+  one ownership-derived bit that can flip a row's actionability without changing
+  its text) and returns early when it matches `self._render_sig`. A streaming
+  re-render that finds the projection unchanged — the common case for a fresh,
+  unmarked review where every file loads into the same placement — skips the
+  whole-buffer `set_lines` + extmark teardown entirely. The signature folds in
+  `pending` so a loaded transition that does change actionability (without
+  changing text) still repaints.
+- `_blame_ranges` already resets alongside the ownership cache in `reload`
+  (`self._owner = nil; self._blame_ranges = nil`); confirmed and left in place.
+  Scope-switch deliberately does NOT reset either — the per-path hunk spans and
+  loaded ownership stay valid across a combined↔commits toggle (same model).
+- Throttle interval kept at `LOAD_RENDER_THROTTLE_MS = 60` (the ~50–80ms window
+  the design targets); with the no-op skip in place, redundant ticks are now
+  cheap, so finer tuning was unnecessary.
+- Tests (init_test.lua, "Stage 5 — tuning + polish"): no-op render skip (an
+  injected sentinel survives an identical re-render, then a real mark repaints it
+  away); streamed buffer matches the all-sync `load_combined_owners` render
+  line-for-line; mark-during-load is a hard error and mark-after-load resolves an
+  identity. Full suite green (init_test 347 passed; all suites passed). No
+  enforced stylua/luacheck config; 2-space style preserved.
 
 - Goal: tune throttle interval; skip no-op re-renders; ensure `_blame_ranges`
   resets alongside the cache.

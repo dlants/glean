@@ -994,8 +994,26 @@ function Session:build()
   return lines, row_map, highlights, intra_blocks
 end
 
+-- A render is a no-op when `build()` reproduces the previous projection
+-- byte-for-byte. The signature folds in each row's `pending` flag (ownership-
+-- derived state that can flip without changing line *text*), so a streaming
+-- re-render that finds nothing actually changed — the common case for a fresh,
+-- unmarked review where every file loads into the same placement — skips the
+-- whole-buffer set_lines + extmark teardown rather than repainting identically.
+function Session:render_sig(lines, row_map)
+  local pend = {}
+  for row, t in pairs(row_map) do
+    if t and t.pending then pend[#pend + 1] = row end
+  end
+  table.sort(pend)
+  return table.concat(lines, "\n") .. "\0" .. table.concat(pend, ",")
+end
+
 function Session:render()
   local lines, row_map, highlights, intra_work = self:build()
+  local sig = self:render_sig(lines, row_map)
+  if sig == self._render_sig then return end
+  self._render_sig = sig
   self.row_map = row_map
   self.ancestry = M.compute_ancestry(row_map, #lines)
   -- Each render rebuilds ancestry/row_hl in lockstep with row_map; bumping the
