@@ -310,6 +310,109 @@ function Session:load_combined_owners()
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- Background ownership loader (combined scope).
+--
+-- Opening a large combined review paints immediately with every file "pending"
+-- (unowned → unseen); a *serial* async queue then walks the displayed files in
+-- document order, resolving each file's blame (forward provenance + reverse-blame
+-- del attribution) off the UI thread and streaming the settled seen placement
+-- back via a throttled re-render. Serial (one job in flight) bounds the number
+-- of concurrent subprocesses and satisfies the "serial / async" request.
+--
+-- Generation guard: `self._load_gen` is bumped every time the loader (re)starts
+-- (open / reload / scope switch). Each job and each throttled render captures the
+-- generation it was scheduled under and drops itself if the session has since
+-- moved on (a superseded model from a reload / scope change), and every async
+-- callback re-checks buffer validity so a closed buffer aborts cleanly.
+-- ---------------------------------------------------------------------------
+
+-- ~60ms coalescing window for streaming re-renders: several files that finish in
+-- quick succession collapse into a single repaint, bounding total render cost.
+local LOAD_RENDER_THROTTLE_MS = 60
+
+-- Async counterpart to `load_owner`: resolve a combined file's forward
+-- provenance (async blame) and del attribution (async reverse blame), store the
+-- loaded entry, then invoke `cb`. Honors the captured generation at each step.
+function Session:load_owner_async(path, gen, cb)
+  self._owner = self._owner or {}
+  local e = self._owner[path]
+  if e and e.status == "loaded" then cb() return end
+  self._owner[path] = { status = "loading" }
+  local ref = self.target ~= M.WORKTREE and self.target or nil
+  self.git:blame_async(ref, path, self:blame_ranges(path), function(out)
+    if gen ~= self._load_gen then return end
+    local map = (out and provenance.parse_blame(out)) or {}
+    if self.target == M.WORKTREE then provenance.map_zero_sha(map, M.WORKTREE) end
+    self:del_attribution_async(path, function(del_attr)
+      if gen ~= self._load_gen then return end
+      self._owner[path] = { status = "loaded", prov = map, del_attr = del_attr }
+      cb()
+    end)
+  end)
+end
+
+-- Coalesced streaming re-render: mark the buffer dirty and arm a single throttle
+-- that repaints once the window elapses (idempotent — multiple `loaded`
+-- transitions within the window collapse into one render).
+function Session:schedule_streaming_render(gen)
+  self._render_dirty = true
+  if self._render_armed then return end
+  self._render_armed = true
+  vim.defer_fn(function()
+    self._render_armed = false
+    self:streaming_render(gen)
+  end, LOAD_RENDER_THROTTLE_MS)
+end
+
+-- A streaming/drain repaint, guarded by generation and buffer validity. Drops
+-- itself when superseded (stale generation) or the buffer is gone.
+function Session:streaming_render(gen)
+  if gen ~= self._load_gen then return end
+  if not api.nvim_buf_is_valid(self.buf) then return end
+  if not self._render_dirty then return end
+  self._render_dirty = false
+  self:render()
+end
+
+-- Advance the serial queue: load the next pending file, then schedule a
+-- streaming re-render and recurse. When the queue drains, force a final repaint
+-- so the last file's placement settles even if no throttle is pending.
+function Session:loader_pump(gen)
+  if gen ~= self._load_gen then return end
+  if not api.nvim_buf_is_valid(self.buf) then return end
+  self._load_idx = self._load_idx + 1
+  local path = self._load_queue[self._load_idx]
+  if not path then
+    self._render_dirty = true
+    self:streaming_render(gen)
+    return
+  end
+  self:load_owner_async(path, gen, function()
+    if gen ~= self._load_gen then return end
+    self:schedule_streaming_render(gen)
+    self:loader_pump(gen)
+  end)
+end
+
+-- Kick (or re-kick) the background loader over every not-yet-loaded combined
+-- file. Bumps the generation so any in-flight jobs/renders from a prior model
+-- are dropped. No-op outside combined scope. Under an injected (test) runner the
+-- async callbacks fire synchronously, so the queue drains before this returns.
+function Session:start_owner_loader()
+  self._load_gen = (self._load_gen or 0) + 1
+  if self.scope ~= "combined" then return end
+  self.combined_files = self.combined_files or self:compute_combined()
+  local queue = {}
+  for _, cf in ipairs(self.combined_files) do
+    if self:owner_status(cf.path) ~= "loaded" then queue[#queue + 1] = cf.path end
+  end
+  self._load_queue = queue
+  self._load_idx = 0
+  if #queue == 0 then return end
+  self:loader_pump(self._load_gen)
+end
+
 -- Resolve combined-scope deletions to the immutable identity of the commit that
 -- removed each line, numerically via `git blame --reverse` over base..target.
 -- Reverse blame reports, for every base line, the *last* revision in which the
@@ -337,20 +440,61 @@ function Session:del_child()
   return self._del_child
 end
 
+-- Build the `old_lnum -> {sha,lnum}` del-attribution map from reverse-blame
+-- porcelain output and the parent->child stack. Shared by the sync and async
+-- attribution loaders.
+local function build_del_map(out, child)
+  local map = {}
+  for final, p in pairs((out and provenance.parse_blame(out)) or {}) do
+    local deleter = child[p.sha]
+    if deleter then map[final] = { sha = deleter, lnum = p.orig_lnum } end
+  end
+  return map
+end
+
 function Session:del_attribution(path)
   self._del_attr = self._del_attr or {}
   if self._del_attr[path] == nil then
-    local map = {}
     local end_rev = self.target ~= M.WORKTREE and self.target or "HEAD"
-    local child = self:del_child()
     local out = self.git:reverse_blame(self.base, end_rev, path)
-    for final, p in pairs((out and provenance.parse_blame(out)) or {}) do
-      local deleter = child[p.sha]
-      if deleter then map[final] = { sha = deleter, lnum = p.orig_lnum } end
-    end
-    self._del_attr[path] = map
+    self._del_attr[path] = build_del_map(out, self:del_child())
   end
   return self._del_attr[path]
+end
+
+-- Whether `path`'s combined diff has any deletion lines, so the loader can skip
+-- the reverse-blame subprocess entirely for add-only files (their del map is {}).
+function Session:has_del_lines(path)
+  for _, raw in ipairs(self.files) do
+    if raw.path == path then
+      for _, h in ipairs(raw.hunks) do
+        for _, l in ipairs(h.lines) do
+          if l.kind == "del" then return true end
+        end
+      end
+      return false
+    end
+  end
+  return false
+end
+
+-- Async counterpart to `del_attribution`: resolve the path's del-attribution map
+-- via async reverse blame, caching it under the commit-set-keyed `_del_attr`.
+-- Add-only files short-circuit to an empty map with no subprocess.
+function Session:del_attribution_async(path, cb)
+  self._del_attr = self._del_attr or {}
+  if self._del_attr[path] ~= nil then cb(self._del_attr[path]) return end
+  if not self:has_del_lines(path) then
+    self._del_attr[path] = {}
+    cb(self._del_attr[path])
+    return
+  end
+  local end_rev = self.target ~= M.WORKTREE and self.target or "HEAD"
+  local child = self:del_child()
+  self.git:reverse_blame_async(self.base, end_rev, path, function(out)
+    self._del_attr[path] = build_del_map(out, child)
+    cb(self._del_attr[path])
+  end)
 end
 
 -- The stable seen-identity of one changed diff line, or nil for a context line
@@ -2106,8 +2250,8 @@ function Session:set_scope(scope)
   if scope == self.scope then return end
   self.scope = scope
   if scope == "commits" then self:apply_collapse() end
-  self:load_combined_owners()
   self:render()
+  self:start_owner_loader()
 end
 
 function Session:toggle_scope()
@@ -2147,8 +2291,8 @@ function Session:reload()
   end
   self.combined_files = nil
   self:apply_collapse()
-  self:load_combined_owners()
   self:render()
+  self:start_owner_loader()
 end
 
 -- Start polling the repo on a timer; only the live work-tree review opts in.
@@ -2405,8 +2549,8 @@ function M.open(opts)
     session:start_live()
   end
 
-  session:load_combined_owners()
   session:render()
+  session:start_owner_loader()
   return session
 end
 

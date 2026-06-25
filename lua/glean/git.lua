@@ -248,7 +248,7 @@ end
 -- list of `{ first, last }` ranges emitted as multiple `-L` options so only the
 -- diff's changed line spans are blamed instead of the whole (possibly huge)
 -- file.
-function Git:blame(ref, path, first, last)
+local function blame_args(ref, path, first, last)
   local args = { "blame", "-p" }
   if type(first) == "table" then
     for _, r in ipairs(first) do
@@ -260,7 +260,17 @@ function Git:blame(ref, path, first, last)
   if ref then args[#args + 1] = ref end
   args[#args + 1] = "--"
   args[#args + 1] = path
-  return self:run(args)
+  return args
+end
+
+function Git:blame(ref, path, first, last)
+  return self:run(blame_args(ref, path, first, last))
+end
+
+-- Async counterpart to `blame`: invoke `cb(stdout_or_nil, err)` when the blame
+-- completes. Used by the combined-scope background ownership loader.
+function Git:blame_async(ref, path, ranges, cb)
+  self:run_async(blame_args(ref, path, ranges), cb)
 end
 
 -- Reverse (forward-walking) porcelain blame over `start_rev..end_rev` for a
@@ -273,6 +283,12 @@ end
 -- scope. Returns the raw output; parsing reuses provenance.parse_blame.
 function Git:reverse_blame(start_rev, end_rev, path)
   return self:run({ "blame", "-p", "--reverse", start_rev .. ".." .. end_rev, "--", path })
+end
+
+-- Async counterpart to `reverse_blame`, feeding the background del-attribution
+-- loader. Signature mirrors `run_async`'s callback.
+function Git:reverse_blame_async(start_rev, end_rev, path, cb)
+  self:run_async({ "blame", "-p", "--reverse", start_rev .. ".." .. end_rev, "--", path }, cb)
 end
 
 -- A cheap signature of the working-tree state, used by the live-update timer to

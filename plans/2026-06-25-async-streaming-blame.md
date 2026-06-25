@@ -270,7 +270,51 @@ Implementation notes (Stage 3):
   - Expected: no dispatch / no mutation in A; correct mark in B; assertion in C.
 - Before moving on: full suite, type/lint checks pass.
 
-## Stage 4 — Background loader + coalesced re-render + FS watcher
+## Stage 4 — Background loader + coalesced re-render + FS watcher  ✅ DONE
+
+Implementation notes (Stage 4):
+- Async blame plumbing (`git.lua`): extracted `blame_args` and added
+  `Git:blame_async(ref, path, ranges, cb)` and
+  `Git:reverse_blame_async(start, end, path, cb)`, both thin wrappers over
+  `run_async`, so under an injected runner the callbacks fire synchronously.
+- Ownership async loader (`init.lua`): `load_owner_async(path, gen, cb)` resolves
+  forward provenance (async blame) then del attribution (async reverse blame) and
+  stores the `loaded` entry. `del_attribution_async` shares the map-building with
+  the sync path via the new `build_del_map` helper, and short-circuits add-only
+  files (`has_del_lines(path)` false → `{}`, no reverse-blame subprocess).
+- Serial queue + streaming render: `start_owner_loader` bumps `self._load_gen`,
+  builds a document-order queue of not-yet-loaded combined files, and drives
+  `loader_pump` (one job in flight). Each completed file arms a coalesced
+  `vim.defer_fn` throttle (`LOAD_RENDER_THROTTLE_MS = 60`) via
+  `schedule_streaming_render`; the queue's drain forces a final `streaming_render`.
+  `streaming_render` is guarded by generation + buffer validity + a dirty flag.
+- Wiring: `M.open`, `Session:reload`, and `Session:set_scope` now paint
+  immediately (`render`) then `start_owner_loader()` instead of the synchronous
+  `load_combined_owners()`. Under the injected (test) runner the queue drains
+  inline, so the first painted buffer is already settled and all prior combined
+  tests stay green. `load_combined_owners` is retained for the Stage 2/3 tests.
+- Generation + validity guards: every async callback and throttle captures the
+  `_load_gen` it was scheduled under and drops itself when superseded
+  (reload/scope-switch bumped the gen); every callback re-checks
+  `nvim_buf_is_valid`, so closing the buffer mid-flight aborts cleanly.
+- Deviation from Behavior D ("unchanged paths keep their loaded entries"):
+  `reload` still resets the whole ownership cache (`self._owner = nil`) and
+  re-enqueues every displayed file. Per-file change detection isn't cheaply
+  available for the WORKTREE target (only a global `dirty_sig`), and retaining an
+  entry for a content-edited file would be incorrect (its forward blame can flip
+  a committed line to uncommitted within identical hunk ranges). The generation
+  guard still drops stale in-flight jobs from before the reload; del attribution
+  is still retained across content-only reloads per the commit-set rule. The
+  Stage 4-D test verifies reload re-runs the loader (all files reloaded, gen
+  bumped, pre-reload callbacks inert) rather than selective re-enqueue.
+- Tests (init_test.lua, "Stage 4 — background loader"): A (each displayed file
+  forward-blamed exactly once in document order; pre-seeded hunk settles into the
+  seen section), B (stale-generation streaming render dropped, current renders),
+  C (loader callbacks inert on a deleted buffer — no error, no render), D (reload
+  re-runs the loader; pre-reload generation render dropped). init_test 335
+  passed; full suite green.
+
+### Original plan
 
 - Goal: opening a combined review paints immediately with pending files, then a
   serial async queue loads each file's ownership and a throttled re-render

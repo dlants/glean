@@ -863,6 +863,103 @@ do
     jb:find(" seen (", 1, true) ~= nil)
 end
 
+-- Stage 4 — background loader + coalesced re-render + FS watcher.
+--
+-- Under the injected (synchronous) test runner `run_async`'s callbacks fire
+-- inline, so the serial queue started by `open` drains before `open` returns:
+-- we can assert the settled, fully-loaded result while still exercising the
+-- loader's queueing, per-file blame, generation guard, and validity backstops.
+
+-- Behavior A: opening a combined review loads every displayed file exactly once,
+-- in document order, and a pre-seeded seen hunk settles into the seen section.
+do
+  local dir = vim.fn.tempname()
+  -- Author f.txt fully seen in a prior, fully-loaded session.
+  local s0 = open({ state_dir = dir })
+  local frow0 = find_row(s0, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("f.txt", 1, true)
+  end)
+  s0:toggle_seen(frow0)
+
+  -- Fresh session with a per-path forward-blame spy (reverse blame excluded).
+  local fwd, fwd_count = {}, {}
+  local function spy(args)
+    local is_blame, is_reverse, path = false, false, nil
+    for _, a in ipairs(args) do
+      if a == "blame" then is_blame = true end
+      if a == "--reverse" then is_reverse = true end
+      path = a
+    end
+    if is_blame and not is_reverse then
+      fwd[#fwd + 1] = path
+      fwd_count[path] = (fwd_count[path] or 0) + 1
+    end
+    return inject_run(args)
+  end
+  local s = glean.open({
+    base = base, target = target, repo_root = repo.root, run = spy,
+    open_window = false, state_dir = dir,
+  })
+  local order = {}
+  for _, cf in ipairs(s.combined_files) do order[#order + 1] = cf.path end
+  h.assert_eq("stage4-A: one forward blame per displayed file", #fwd, #order)
+  for i, p in ipairs(order) do
+    h.assert_eq("stage4-A: blame in document order [" .. i .. "]", fwd[i], p)
+    h.assert_eq("stage4-A: blamed exactly once " .. p, fwd_count[p], 1)
+    h.assert_eq("stage4-A: file loaded " .. p, s:owner_status(p), "loaded")
+  end
+  local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("stage4-A: pre-seen f.txt settles into seen section",
+    joined:find(" seen (", 1, true) ~= nil)
+end
+
+-- Behavior B: a streaming render captured under a superseded generation is
+-- dropped; the current generation renders.
+do
+  local s = open({ state_dir = vim.fn.tempname() })
+  local stale = s._load_gen
+  s._load_gen = stale + 1 -- simulate a reload/scope-switch bumping the generation
+  local rendered = 0
+  local orig = s.render
+  s.render = function(self2) rendered = rendered + 1; return orig(self2) end
+  s._render_dirty = true
+  s:streaming_render(stale)
+  h.assert_eq("stage4-B: stale-generation render dropped", rendered, 0)
+  s:streaming_render(s._load_gen)
+  h.assert_eq("stage4-B: current-generation render fires", rendered, 1)
+end
+
+-- Behavior C: closing the buffer mid-flight makes loader callbacks inert — no
+-- error and no render.
+do
+  local s = open({ state_dir = vim.fn.tempname() })
+  local gen = s._load_gen
+  api.nvim_buf_delete(s.buf, { force = true })
+  s._render_dirty = true
+  h.assert_true("stage4-C: streaming render aborts cleanly on a dead buffer",
+    pcall(function() s:streaming_render(gen) end))
+  h.assert_true("stage4-C: loader pump aborts cleanly on a dead buffer",
+    pcall(function() s:loader_pump(gen) end))
+end
+
+-- Behavior D: a reload re-runs the loader (bumping the generation and reloading
+-- every displayed file); a callback from the pre-reload generation is inert.
+do
+  local s = open({ state_dir = vim.fn.tempname() })
+  local gen0 = s._load_gen
+  s:reload()
+  h.assert_true("stage4-D: reload bumps the load generation", s._load_gen > gen0)
+  for _, cf in ipairs(s.combined_files) do
+    h.assert_eq("stage4-D: reload reloaded " .. cf.path, s:owner_status(cf.path), "loaded")
+  end
+  local rendered = 0
+  local orig = s.render
+  s.render = function(self2) rendered = rendered + 1; return orig(self2) end
+  s._render_dirty = true
+  s:streaming_render(gen0)
+  h.assert_eq("stage4-D: pre-reload generation render dropped", rendered, 0)
+end
+
 -- Stage 4 — combined-scope markers: a partial seen run inside an unseen hunk
 -- whose lines are owned by two different commits. Marking the sub-range routes
 -- each line to its owner store; the run renders as one marker; `=` toggles it;
