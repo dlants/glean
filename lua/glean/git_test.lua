@@ -95,6 +95,43 @@ do
   h.assert_true("blame: names c1 sha", out:find(repo.shas[2], 1, true) ~= nil)
 end
 
+-- blame() accepts a list of { first, last } ranges (multiple -L spans).
+do
+  local out = git:blame(target, "f.txt", { { 1, 1 }, { 3, 3 } })
+  h.assert_true("blame ranges: nonempty", out ~= nil and #out > 0)
+end
+
+-- run_async() under an injected runner returns the same stdout as sync blame,
+-- and nil on the error path.
+do
+  local sync_out = git:blame(target, "f.txt", 2, 2)
+  local async_out, async_err
+  git:run_async({ "blame", "-p", "-L", "2,2", target, "--", "f.txt" }, function(out, err)
+    async_out = out; async_err = err
+  end)
+  h.assert_eq("run_async: matches sync blame", async_out, sync_out)
+  h.assert_true("run_async: no error", async_err == nil)
+
+  local err_out, saw_err
+  git:run_async({ "blame", "-p", "nonexistent-ref", "--", "nope.txt" }, function(out, err)
+    err_out = out; saw_err = err
+  end)
+  h.assert_true("run_async: error path nil stdout", err_out == nil)
+  h.assert_true("run_async: error path has stderr", saw_err ~= nil)
+end
+
+-- run_async() against a real repo (run=nil) yields blame output asynchronously.
+do
+  local real_git = git_mod.new({ repo_root = repo.root })
+  local done, real_out
+  real_git:run_async({ "blame", "-p", "-L", "1,1", target, "--", "f.txt" }, function(out)
+    real_out = out; done = true
+  end)
+  vim.wait(5000, function() return done end)
+  h.assert_true("run_async real: completed", done == true)
+  h.assert_true("run_async real: nonempty", real_out ~= nil and #real_out > 0)
+end
+
 -- rev_parse resolves a ref to a sha.
 do
   h.assert_eq("rev_parse: target", git:rev_parse(target), target)

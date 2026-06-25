@@ -51,6 +51,34 @@ function Git:run(args)
   return res.stdout or ""
 end
 
+-- Async counterpart to `run`: invoke `cb(stdout_or_nil, err)` when the git call
+-- completes. Under an injected runner (tests) this calls it and invokes `cb`
+-- synchronously for deterministic, process-free behavior; otherwise it spawns
+-- `vim.system` without `:wait()` and schedules `cb` on the main loop. The
+-- callback signature mirrors `run`: stdout string on success, or nil + stderr.
+function Git:run_async(args, cb)
+  if self._run then
+    local res = self._run(args)
+    if res.code ~= 0 then
+      cb(nil, res.stderr or "")
+    else
+      cb(res.stdout or "")
+    end
+    return
+  end
+  local cmd = { "git", "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false" }
+  for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+  vim.system(cmd, { cwd = self.repo_root, text = true }, function(res)
+    vim.schedule(function()
+      if res.code ~= 0 then
+        cb(nil, res.stderr or "")
+      else
+        cb(res.stdout or "")
+      end
+    end)
+  end)
+end
+
 -- Resolve a ref to a concrete 40-char sha. Returns nil on failure.
 function Git:rev_parse(ref)
   local out, err = self:run({ "rev-parse", ref })
@@ -216,9 +244,17 @@ end
 -- provenance parsing lives in provenance.lua. A nil ref blames the *working
 -- tree* (uncommitted lines are attributed to the all-zero sha), which the
 -- combined work-tree overlay maps onto the floating commit.
+-- `first` may be a number (paired with `last`) for a single `-L` range, or a
+-- list of `{ first, last }` ranges emitted as multiple `-L` options so only the
+-- diff's changed line spans are blamed instead of the whole (possibly huge)
+-- file.
 function Git:blame(ref, path, first, last)
   local args = { "blame", "-p" }
-  if first and last then
+  if type(first) == "table" then
+    for _, r in ipairs(first) do
+      args[#args + 1] = "-L"; args[#args + 1] = r[1] .. "," .. r[2]
+    end
+  elseif first and last then
     args[#args + 1] = "-L"; args[#args + 1] = first .. "," .. last
   end
   if ref then args[#args + 1] = ref end
