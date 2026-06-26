@@ -238,6 +238,39 @@ only avoids the extmark teardown for untouched rows. The generation guard
   - Expected: dirty set matches the changed section(s) only.
 - Before moving on: full suite, type/lint checks pass.
 
+> **Stage 3 status: DONE.** `render()` now branches on a `structural` flag (first
+> paint or section key-set change → full repaint; otherwise incremental). The
+> incremental path collects the dirty sections in document order and applies them
+> **bottom-to-top**: each `nvim_buf_set_lines(old_lo, old_hi, new_slice)` writes
+> the new content at the section's OLD range, and extmarks are stamped at the
+> section's current (old) rows so they ride later upper edits down to their final
+> positions. `apply_intraline(blocks, ranges)` gained an optional `ranges` arg:
+> the incremental path passes the dirty sections' new row ranges, so NS_INTRA is
+> cleared and intra blocks refined only within them; a full repaint passes no
+> ranges (whole-buffer clear/refine). `self._sections` is now stamped from the
+> NEW layout AFTER the apply (so the OLD ranges drive `set_lines`).
+>
+> **Key deviation / decision:** full-line NS marks span into the next line
+> (`end_row=row+1`, for `hl_eol`), so `nvim_buf_clear_namespace` over a dirty
+> section's line range *also* wipes the previous section's last-line mark (it
+> overlaps the boundary). Range-clearing therefore can't be scoped safely. Fix:
+> track per-section NS mark ids in `self._sec_marks[key]` and delete by id
+> (`nvim_buf_del_extmark`) on re-stamp; `set_lines` alone preserves neighbors'
+> marks (verified). NS_INTRA marks are single-line (no bleed) so they keep the
+> cheap range clear.
+>
+> Structural fallback (full repaint) covers scope toggle and reloads that add/
+> remove files — provably equivalent since it IS a full repaint; per the plan's
+> "byte/extmark equivalence" invariant this is the safe choice over incremental
+> insert/delete of whole sections. Stage-5's sentinel test was updated: under
+> incremental render a change no longer repaints the whole buffer, so it now
+> asserts the no-op render has an empty dirty set and a real change marks a dirty
+> section (the untouched header keeps the injected sentinel). Added `init_test`:
+> stage3-A (incremental buffer text + NS + NS_INTRA extmarks identical to a forced
+> full repaint of the same state after mark/collapse/reload) and stage3-B
+> (untouched file section keeps its extmark ids; only the changed file is dirty).
+> Full suite green (379 init / all suites).
+
 ## Stage 3 — Minimal apply over dirty sections
 
 - Goal: `render()` applies per-dirty-section `set_lines` + scoped extmark

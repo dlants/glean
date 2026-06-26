@@ -1074,11 +1074,13 @@ end
 function Session:render()
   local lines, row_map, highlights, intra_work, sections = self:build()
   local sigs = self:section_sigs(lines, row_map, highlights, sections)
-  local prev = self._sections or {}
-  local dirty = dirty_sections(prev, sigs)
+  local prev = self._sections
+  local dirty = dirty_sections(prev or {}, sigs)
   self._dirty = dirty
-  self._sections = sigs
-  if next(dirty) == nil then return end
+  if next(dirty) == nil then
+    self._sections = sigs
+    return
+  end
   self._render_sig = self:render_sig(lines, row_map)
   self.row_map = row_map
   self.ancestry = M.compute_ancestry(row_map, #lines)
@@ -1094,26 +1096,118 @@ function Session:render()
   if win and api.nvim_win_is_valid(win) then
     cur = api.nvim_win_get_cursor(win)
   end
-  api.nvim_set_option_value("modifiable", true, { buf = self.buf })
-  api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
-  api.nvim_set_option_value("modifiable", false, { buf = self.buf })
-  api.nvim_buf_clear_namespace(self.buf, NS, 0, -1)
-  -- Per-row full-line extmark ids for add/del lines, so phase-2 can downgrade an
-  -- aligned line's background to foreground-only (the emphasis layer then paints
-  -- just the changed spans with the diff background).
-  self._line_marks = {}
+
+  -- Group highlights by their (new-layout) absolute row, so a section's
+  -- re-stamp can pull only the highlights that fall inside it.
+  local hls_by_row = {}
   for _, hl in ipairs(highlights) do
-    local id = api.nvim_buf_set_extmark(self.buf, NS, hl.row, 0, {
-      end_row = hl.row + 1,
+    local b = hls_by_row[hl.row]
+    if not b then
+      b = {}
+      hls_by_row[hl.row] = b
+    end
+    b[#b + 1] = hl
+  end
+  -- Stamp the full-line NS extmark for one highlight at `at_row` (its position
+  -- in the buffer's *current* state), recording add/del marks under `key_row`
+  -- (its position in the *new* layout, where it will land once all edits settle
+  -- and where apply_intraline looks it up).
+  -- Each full-line NS mark spans into the next line (end_row+1) so it covers the
+  -- EOL; that means clearing a section's line range with clear_namespace would
+  -- also wipe the *previous* section's last-line mark (it overlaps the boundary).
+  -- So we track each section's NS mark ids and delete by id on re-stamp, leaving
+  -- neighbors untouched. `at_row` is the section's current buffer row; `key_row`
+  -- is its final-layout row (where apply_intraline looks up add/del marks).
+  local function stamp(hl, at_row, key_row, ids)
+    local id = api.nvim_buf_set_extmark(self.buf, NS, at_row, 0, {
+      end_row = at_row + 1,
       end_col = 0,
       hl_group = hl.hl,
       hl_eol = true,
     })
+    ids[#ids + 1] = id
     if hl.hl == "GleanAdd" or hl.hl == "GleanDel" then
-      self._line_marks[hl.row] = { id = id, base = hl.hl }
+      self._line_marks[key_row] = { id = id, base = hl.hl }
     end
   end
-  self:apply_intraline(intra_work)
+
+  -- A render is structural (forcing a full repaint) when it is the first paint
+  -- or when the set of section keys changed (scope toggle, file added/removed on
+  -- reload). With the key set stable, sections keep document order, so the
+  -- incremental per-section apply is well defined.
+  local structural = prev == nil
+  if not structural then
+    for key in pairs(sigs) do
+      if not prev[key] then structural = true break end
+    end
+  end
+  if not structural then
+    for key in pairs(prev) do
+      if not sigs[key] then structural = true break end
+    end
+  end
+
+  api.nvim_set_option_value("modifiable", true, { buf = self.buf })
+  if structural then
+    api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
+    api.nvim_buf_clear_namespace(self.buf, NS, 0, -1)
+    -- Per-row full-line extmark ids for add/del lines, so phase-2 can downgrade
+    -- an aligned line's background to foreground-only (the emphasis layer then
+    -- paints just the changed spans with the diff background).
+    self._line_marks = {}
+    self._sec_marks = {}
+    for _, sec in ipairs(sections) do
+      local ids = {}
+      for row = sec.lo, sec.hi - 1 do
+        for _, hl in ipairs(hls_by_row[row] or {}) do
+          stamp(hl, row, row, ids)
+        end
+      end
+      self._sec_marks[sec.key] = ids
+    end
+    self:apply_intraline(intra_work)
+  else
+    self._line_marks = self._line_marks or {}
+    self._sec_marks = self._sec_marks or {}
+    -- Dirty sections in document order; applied bottom-to-top so each edit only
+    -- shifts rows below it (already final), keeping every higher section's *old*
+    -- range valid as the cursor of edits moves upward. Each section's content is
+    -- written at its OLD range but is the NEW slice; extmarks are stamped at the
+    -- section's current (old) rows and ride the later upper edits down to their
+    -- final (new) positions automatically.
+    local dirty_secs = {}
+    for _, sec in ipairs(sections) do
+      if dirty[sec.key] then dirty_secs[#dirty_secs + 1] = sec end
+    end
+    for i = #dirty_secs, 1, -1 do
+      local sec = dirty_secs[i]
+      local p = prev[sec.key]
+      local slice = {}
+      for row = sec.lo, sec.hi - 1 do
+        slice[#slice + 1] = lines[row + 1]
+      end
+      api.nvim_buf_set_lines(self.buf, p.lo, p.hi, false, slice)
+      for _, id in ipairs(self._sec_marks[sec.key] or {}) do
+        api.nvim_buf_del_extmark(self.buf, NS, id)
+      end
+      local ids = {}
+      for row = sec.lo, sec.hi - 1 do
+        local at = p.lo + (row - sec.lo)
+        for _, hl in ipairs(hls_by_row[row] or {}) do
+          stamp(hl, at, row, ids)
+        end
+      end
+      self._sec_marks[sec.key] = ids
+    end
+    local ranges = {}
+    for _, sec in ipairs(dirty_secs) do
+      ranges[#ranges + 1] = { lo = sec.lo, hi = sec.hi }
+    end
+    self:apply_intraline(intra_work, ranges)
+  end
+  api.nvim_set_option_value("modifiable", false, { buf = self.buf })
+  self._sections = sigs
+
   if cur then
     local last = math.max(1, #lines)
     cur[1] = math.min(cur[1], last)
@@ -1139,10 +1233,32 @@ end
 -- matches and the buffer is still valid, so a re-render/reload mid-flight
 -- abandons stale work. INTRA_BUDGET bounds the del+add lines refined per tick.
 local INTRA_BUDGET = 40
-function Session:apply_intraline(blocks)
+function Session:apply_intraline(blocks, ranges)
   self._intra_gen = (self._intra_gen or 0) + 1
   local gen = self._intra_gen
-  api.nvim_buf_clear_namespace(self.buf, NS_INTRA, 0, -1)
+  -- Incremental render passes the dirty sections' (new-layout) row ranges: clear
+  -- NS_INTRA and refine blocks only within them, so untouched sections keep their
+  -- emphasis extmarks (auto-shifted by set_lines). A full repaint passes no
+  -- ranges and clears/refines the whole buffer.
+  if ranges then
+    for _, r in ipairs(ranges) do
+      api.nvim_buf_clear_namespace(self.buf, NS_INTRA, r.lo, r.hi)
+    end
+    local function in_dirty(row)
+      for _, r in ipairs(ranges) do
+        if row >= r.lo and row < r.hi then return true end
+      end
+      return false
+    end
+    local kept = {}
+    for _, b in ipairs(blocks) do
+      local row = (b.dels[1] and b.dels[1].row) or (b.adds[1] and b.adds[1].row)
+      if row and in_dirty(row) then kept[#kept + 1] = b end
+    end
+    blocks = kept
+  else
+    api.nvim_buf_clear_namespace(self.buf, NS_INTRA, 0, -1)
+  end
   if #blocks == 0 then
     return
   end

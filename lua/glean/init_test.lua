@@ -977,9 +977,12 @@ do
   s:render()
   h.assert_eq("stage5: no-op render skips repaint",
     api.nvim_buf_get_lines(s.buf, 0, 1, false)[1], "SENTINEL")
+  h.assert_true("stage5: no-op render has empty dirty set", next(s._dirty) == nil)
+  -- A real change marks exactly the affected section(s) dirty and repaints them
+  -- (the untouched header keeps the injected sentinel — incremental render only
+  -- touches dirty sections).
   s:toggle_seen(frow)
-  h.assert_true("stage5: a real change repaints (sentinel gone)",
-    api.nvim_buf_get_lines(s.buf, 0, 1, false)[1] ~= "SENTINEL")
+  h.assert_true("stage5: a real change marks a dirty section", next(s._dirty) ~= nil)
 end
 
 -- The streamed (background-loaded) buffer matches the all-sync render exactly.
@@ -2225,6 +2228,80 @@ do
   h.assert_true("dirty: marked commit dirty", s._dirty[key_a] == true)
   h.assert_true("dirty: header clean", not s._dirty["header"])
   h.assert_true("dirty: other commit clean", not s._dirty[key_b])
+end
+
+-- Stage 3 — minimal apply over dirty sections. The load-bearing invariant: an
+-- incrementally-rendered buffer (after a scripted mark/collapse/reload sequence)
+-- is byte- AND extmark-identical to a full repaint of the same final state. We
+-- prove it by snapshotting the incremental buffer, then forcing a from-scratch
+-- full repaint of the *same* session state and comparing — so collapse/seen
+-- view-state is identical by construction.
+do
+  local NS = api.nvim_get_namespaces()["glean_hl"]
+  local NS_INTRA = api.nvim_get_namespaces()["glean_intra_hl"]
+  -- Flush the chunked (vim.schedule'd) intra-line refinement so extmarks settle.
+  local function flush() vim.wait(80, function() return false end) end
+  local function marks(buf, ns)
+    local out = {}
+    for _, m in ipairs(api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+      local d = m[4] or {}
+      out[#out + 1] = table.concat(
+        { m[2], m[3], d.end_row or -1, d.end_col or -1, d.hl_group or "" }, ":")
+    end
+    table.sort(out)
+    return table.concat(out, "|")
+  end
+  local function snap(buf)
+    flush()
+    return table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n"),
+      marks(buf, NS), marks(buf, NS_INTRA)
+  end
+
+  local s = open({ state_dir = vim.fn.tempname() })
+  local frow = find_row(s, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("f.txt", 1, true)
+  end)
+  s:toggle_seen(frow)
+  local grow = find_row(s, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("g.txt", 1, true)
+  end)
+  s:toggle_collapse(grow)
+  s:reload()
+
+  local il, im, ii = snap(s.buf)
+  -- Force a full repaint of the identical state and compare.
+  s._sections = nil
+  s:render()
+  local fl, fm, fi = snap(s.buf)
+  h.assert_eq("stage3-A: incremental text == full repaint", il, fl)
+  h.assert_eq("stage3-A: NS extmarks == full repaint", im, fm)
+  h.assert_eq("stage3-A: NS_INTRA extmarks == full repaint", ii, fi)
+end
+
+-- Stage 3 — Behavior B: a single-file change re-stamps only that file's section;
+-- an untouched file's extmark ids survive (it is shifted, never repainted).
+do
+  local NS = api.nvim_get_namespaces()["glean_hl"]
+  local function ids_in(buf, lo, hi)
+    local out = {}
+    for _, m in ipairs(api.nvim_buf_get_extmarks(buf, NS, { lo, 0 }, { hi - 1, -1 }, {})) do
+      out[#out + 1] = m[1]
+    end
+    table.sort(out)
+    return table.concat(out, ",")
+  end
+  local b = open({ state_dir = vim.fn.tempname() })
+  local g = b._sections["cf:g.txt"]
+  local before = ids_in(b.buf, g.lo, g.hi)
+  h.assert_true("stage3-B: untouched section has extmarks", #before > 0)
+  local frow = find_row(b, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("f.txt", 1, true)
+  end)
+  b:toggle_seen(frow)
+  h.assert_true("stage3-B: only f.txt dirty", b._dirty["cf:f.txt"] and not b._dirty["cf:g.txt"])
+  local g2 = b._sections["cf:g.txt"]
+  local after = ids_in(b.buf, g2.lo, g2.hi)
+  h.assert_eq("stage3-B: untouched section keeps extmark ids", before, after)
 end
 -- resolve_branch: the base is the merge-base of the repo trunk and the named
 -- branch, and the target is the branch tip, so a review shows exactly what the
