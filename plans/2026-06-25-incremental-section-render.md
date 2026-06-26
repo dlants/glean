@@ -209,6 +209,20 @@ only avoids the extmark teardown for untouched rows. The generation guard
     comments).
 - Before moving on: full suite, type/lint checks pass.
 
+> **Stage 2 status: DONE.** `render()` now captures `build()`'s 5th value and
+> calls `Session:section_sigs(lines, row_map, highlights, sections)` to fold each
+> section's slice of `lines` + its in-range highlight tuples + its `pending` rows
+> into one signature string (`render_sig` applied to a row sub-range). It stores
+> `self._sections = { key -> {sig, lo, hi} }` and computes `self._dirty` via the
+> local `dirty_sections(prev, cur)` (new/gone/changed keys). The old whole-buffer
+> `render_sig` early-out is re-expressed as `if next(dirty) == nil then return`;
+> `self._render_sig` is still updated (kept for any external readers) but no
+> longer gates the return. Apply is unchanged (still whole-buffer set_lines +
+> extmark teardown) — that is Stage 3. Added an `init_test.lua` case (commits
+> scope, 3-commit repo): identical re-render yields empty dirty set; marking one
+> commit's hunk dirties only that commit's section, leaving header and the other
+> commit clean. Full suite green (372 init / all suites).
+
 ## Stage 2 — Per-section signatures + dirty detection (still full apply)
 
 - Goal: `render()` computes per-section signatures, stores `self._sections`, and

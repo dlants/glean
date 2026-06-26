@@ -1026,11 +1026,60 @@ function Session:render_sig(lines, row_map)
   return table.concat(lines, "\n") .. "\0" .. table.concat(pend, ",")
 end
 
+-- Per-section content signatures (Stage 2). For each `{key, lo, hi}` section
+-- emitted by `build()`, fold its slice of `lines`, the highlight tuples whose
+-- row falls in `[lo, hi)`, and the `pending` rows in that span into one string.
+-- This is `render_sig` applied to a row sub-range: it captures everything that
+-- determines the visible result for those rows, so a section is dirty exactly
+-- when its projection changed.
+function Session:section_sigs(lines, row_map, highlights, sections)
+  local hls_by_row = {}
+  for _, hl in ipairs(highlights) do
+    hls_by_row[hl.row] = (hls_by_row[hl.row] or "") .. "\1" .. hl.hl
+  end
+  local out = {}
+  for _, sec in ipairs(sections) do
+    local parts = {}
+    for row = sec.lo, sec.hi - 1 do
+      parts[#parts + 1] = lines[row + 1] or ""
+      local h = hls_by_row[row]
+      if h then parts[#parts + 1] = "\2" .. h end
+      local t = row_map[row]
+      if t and t.pending then parts[#parts + 1] = "\3" end
+    end
+    out[sec.key] = {
+      sig = table.concat(parts, "\n"),
+      lo = sec.lo,
+      hi = sec.hi,
+    }
+  end
+  return out
+end
+
+-- Compute the dirty set: keys that are new, gone, or whose signature changed
+-- between the last paint (`prev`) and the new section signatures (`cur`).
+-- A section that only shifted row position (same sig) is not dirty.
+local function dirty_sections(prev, cur)
+  local dirty = {}
+  for key, c in pairs(cur) do
+    local p = prev[key]
+    if not p or p.sig ~= c.sig then dirty[key] = true end
+  end
+  for key in pairs(prev) do
+    if not cur[key] then dirty[key] = true end
+  end
+  return dirty
+end
+
 function Session:render()
-  local lines, row_map, highlights, intra_work = self:build()
-  local sig = self:render_sig(lines, row_map)
-  if sig == self._render_sig then return end
-  self._render_sig = sig
+  local lines, row_map, highlights, intra_work, sections = self:build()
+  local sigs = self:section_sigs(lines, row_map, highlights, sections)
+  local prev = self._sections or {}
+  local dirty = dirty_sections(prev, sigs)
+  self._dirty = dirty
+  self._sections = sigs
+  if next(dirty) == nil then return end
+  self._render_sig = self:render_sig(lines, row_map)
   self.row_map = row_map
   self.ancestry = M.compute_ancestry(row_map, #lines)
   -- Each render rebuilds ancestry/row_hl in lockstep with row_map; bumping the

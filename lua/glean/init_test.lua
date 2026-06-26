@@ -2182,6 +2182,50 @@ do
   h.assert_eq("commits: header first", csections[1].key, "header")
   h.assert_eq("commits: commit section", csections[2].key, "commit:" .. srepo.shas[2])
 end
+
+-- Stage 2 — per-section signatures + dirty detection. render() records
+-- `self._sections` (key -> {sig, lo, hi}) and `self._dirty` (the changed set).
+-- Re-rendering identical state yields an empty dirty set; marking one commit's
+-- hunk dirties only that commit's section (header/others clean).
+do
+  local drepo = testutil.make_repo({
+    { msg = "base", files = { ["a.txt"] = "a1\n", ["b.txt"] = "b1\n" } },
+    { msg = "edit a", files = { ["a.txt"] = "A1\n" } },
+    { msg = "edit b", files = { ["b.txt"] = "B1\n" } },
+  })
+  local function drun(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = drepo.root, env = drepo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local s = glean.open({
+    base = drepo.shas[1],
+    target = drepo.shas[3],
+    repo_root = drepo.root,
+    run = drun,
+    open_window = false,
+    state_dir = vim.fn.tempname(),
+  })
+  s:set_scope("commits")
+
+  s:render()
+  h.assert_true("dirty: sections recorded after first render", s._sections ~= nil)
+  local key_a = "commit:" .. drepo.shas[2]
+  local key_b = "commit:" .. drepo.shas[3]
+  h.assert_true("dirty: commit a section present", s._sections[key_a] ~= nil)
+
+  -- Identical re-render: nothing changed, dirty set is empty.
+  s:render()
+  h.assert_true("dirty: empty on identical re-render", next(s._dirty) == nil)
+
+  -- Mark commit a's only hunk seen; only its section turns dirty.
+  s.store:mark_seen(drepo.shas[2], "a.txt", { 1, 1 })
+  s:render()
+  h.assert_true("dirty: marked commit dirty", s._dirty[key_a] == true)
+  h.assert_true("dirty: header clean", not s._dirty["header"])
+  h.assert_true("dirty: other commit clean", not s._dirty[key_b])
+end
 -- resolve_branch: the base is the merge-base of the repo trunk and the named
 -- branch, and the target is the branch tip, so a review shows exactly what the
 -- branch adds. With no origin remote the fetch is best-effort (must not fail)
