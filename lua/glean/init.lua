@@ -999,9 +999,13 @@ function Session:build()
       for _, e in ipairs(summary.by_path[path]) do
         local loc = e.outdated and "(Outdated)"
           or (e.lnum and ("L%d"):format(e.lnum) or "L?")
-        emit(("  %s  %s"):format(loc, e.line), {}, e.outdated and "GleanSeen" or "GleanContext")
+        -- A jumpable target back to the source line. Outdated comments (whose
+        -- anchor line is gone) have no live lnum, so they stay non-jumpable.
+        local ctarget = (not e.outdated and e.lnum)
+          and { commentloc = { path = path, lnum = e.lnum } } or {}
+        emit(("  %s  %s"):format(loc, e.line), ctarget, e.outdated and "GleanSeen" or "GleanContext")
         for i, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
-          emit((i == 1 and "    💬 " or "       ") .. part, {}, "GleanComment")
+          emit((i == 1 and "    💬 " or "       ") .. part, ctarget, "GleanComment")
         end
       end
     end
@@ -2265,6 +2269,13 @@ end
 --   target/base (combined scope).
 function Session:jump_target(row)
   local target = self.row_map[row]
+  -- Comment-list rows jump straight to the (post-image) source line they were
+  -- authored against, the same destination <CR> reaches from the inline diff.
+  if target and target.commentloc then
+    local cl = target.commentloc
+    if not cl.lnum then return nil end
+    return { ref = self.target, path = cl.path, lnum = cl.lnum }
+  end
   if not target or not target.line then return nil end
   local dl, path, post_ref, pre_ref
   if self.scope == "commits" then
@@ -2581,10 +2592,32 @@ local function setup_keymaps(buf, session)
       session:update_sticky()
     end,
   })
+  -- Closing one window showing the glean buffer (e.g. one half of a split) must
+  -- not strip interactivity from the others: keymaps are buffer-local and live
+  -- on, but session.win pins window-scoped behaviour (sticky float, cursor
+  -- highlight, jump, q). Re-point it to another window still showing the buffer
+  -- so the review keeps working; only a full buffer wipe (BufWipeout/BufDelete)
+  -- tears the session down.
   api.nvim_create_autocmd("WinClosed", {
     group = group,
     callback = function(ev)
-      if tonumber(ev.match) == session.win then session:close_sticky() end
+      local closed = tonumber(ev.match)
+      if closed ~= session.win then return end
+      session:close_sticky()
+      local replacement
+      for _, w in ipairs(api.nvim_list_wins()) do
+        if w ~= closed and api.nvim_win_is_valid(w)
+          and api.nvim_win_get_buf(w) == session.buf then
+          replacement = w
+          break
+        end
+      end
+      session.win = replacement
+      if replacement then
+        api.nvim_set_option_value("scrolloff", 4, { win = replacement })
+        session._sticky_state = nil
+        vim.schedule(function() session:update_sticky() end)
+      end
     end,
   })
   map("n", "=", function() session:toggle_collapse() end)
@@ -2616,6 +2649,7 @@ local function setup_keymaps(buf, session)
     session:open_comment_editor({}, function(text) session:add_comment(ct, text) end)
   end)
   map("n", "i", function() session:edit_comment_under() end)
+  map("n", "e", function() session:edit_comment_under() end)
   map("n", "dd", function() session:delete_comment_under() end)
   map("n", "dc", function() session:delete_comment_at() end)
   map("n", "u", function() session:undo() end)
@@ -2666,7 +2700,7 @@ function M.open(opts)
   if existing and api.nvim_buf_is_valid(existing) then
     buf = existing
   else
-    buf = api.nvim_create_buf(not worktree, false)
+    buf = api.nvim_create_buf(true, false)
     api.nvim_set_option_value("buftype", "nofile", { buf = buf })
     api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
     api.nvim_set_option_value("swapfile", false, { buf = buf })
@@ -2687,7 +2721,7 @@ function M.open(opts)
       end,
     })
   end
-  api.nvim_set_option_value("buflisted", not worktree, { buf = buf })
+  api.nvim_set_option_value("buflisted", true, { buf = buf })
 
   -- Collapse overrides are content-addressed and kept in process memory keyed by
   -- the buffer, so neither a live reload-from-disk nor a reopen loses the user's
