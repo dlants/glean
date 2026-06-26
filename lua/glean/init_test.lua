@@ -2128,6 +2128,60 @@ do
   h.assert_eq("intra: block 2 single del", #blocks[2].dels, 1)
   h.assert_eq("intra: block 2 single add", #blocks[2].adds, 1)
 end
+
+-- build() emits section boundaries: an ordered list of {key, lo, hi} that tiles
+-- the whole buffer with no gaps/overlaps, with stable, order-stable keys across
+-- repeated renders of the same state. Stage 1 only records them; render still
+-- repaints wholesale.
+do
+  local srepo = testutil.make_repo({
+    { msg = "base", files = { ["a.txt"] = "a1\n", ["b.txt"] = "b1\n" } },
+    { msg = "edit", files = { ["a.txt"] = "A1\n", ["b.txt"] = "B1\n" } },
+  })
+  local function srun(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = srepo.root, env = srepo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local s = glean.open({
+    base = srepo.shas[1],
+    target = srepo.shas[2],
+    repo_root = srepo.root,
+    run = srun,
+    open_window = false,
+    state_dir = vim.fn.tempname(),
+  })
+
+  local function check_tiling(label, lines, sections)
+    h.assert_true(label .. ": has sections", #sections > 0)
+    h.assert_eq(label .. ": first lo is 0", sections[1].lo, 0)
+    h.assert_eq(label .. ": last hi is #lines", sections[#sections].hi, #lines)
+    for i = 2, #sections do
+      h.assert_eq(label .. ": contiguous at " .. i, sections[i].lo, sections[i - 1].hi)
+    end
+  end
+
+  local lines1, _, _, _, sections1 = s:build()
+  check_tiling("combined", lines1, sections1)
+  -- header + two files + (no comments) = 3 sections.
+  h.assert_eq("combined: section count", #sections1, 3)
+  h.assert_eq("combined: header key", sections1[1].key, "header")
+  h.assert_eq("combined: a.txt key", sections1[2].key, "cf:a.txt")
+  h.assert_eq("combined: b.txt key", sections1[3].key, "cf:b.txt")
+
+  local _, _, _, _, sections2 = s:build()
+  h.assert_eq("combined: stable count", #sections2, #sections1)
+  for i = 1, #sections1 do
+    h.assert_eq("combined: stable key " .. i, sections2[i].key, sections1[i].key)
+  end
+
+  s:set_scope("commits")
+  local clines, _, _, _, csections = s:build()
+  check_tiling("commits", clines, csections)
+  h.assert_eq("commits: header first", csections[1].key, "header")
+  h.assert_eq("commits: commit section", csections[2].key, "commit:" .. srepo.shas[2])
+end
 -- resolve_branch: the base is the merge-base of the repo trunk and the named
 -- branch, and the target is the branch tip, so a review shows exactly what the
 -- branch adds. With no origin remote the fetch is best-effort (must not fail)

@@ -1,0 +1,4 @@
+- vs -> close one glean window drops glean controls from all windows
+- e on a comment to re-edit the comment
+- submit comments to a pr via gh (into a pending review)
+- list glean buffer in buffers list

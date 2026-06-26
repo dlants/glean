@@ -795,6 +795,15 @@ function Session:build()
   local row_map = {}
   local highlights = {}
   local intra_blocks = {}
+  local sections = {}
+  -- Top-level section boundaries: each contiguous run of rows produced by one
+  -- build() unit, with a stable, order-stable key. `render()` ignores these in
+  -- Stage 1; later stages diff sections to apply minimal buffer mutations.
+  local function section(key, fn)
+    local lo = #lines
+    fn()
+    sections[#sections + 1] = { key = key, lo = lo, hi = #lines }
+  end
   local function emit(text, target, hl)
     lines[#lines + 1] = text
     local row = #lines - 1
@@ -936,9 +945,12 @@ function Session:build()
   end
 
   local mode_label = self.scope == "combined" and "combined" or "commit-by-commit"
-  emit("── " .. mode_label .. " ──", {}, "GleanModeHeader")
+  section("header", function()
+    emit("── " .. mode_label .. " ──", {}, "GleanModeHeader")
+  end)
   if self.scope == "commits" then
     for ci, commit in ipairs(self.commits) do
+     section("commit:" .. commit.sha, function()
       local mark = self:commit_seen(commit) and "✓" or "●"
       local short = commit.sha:sub(1, 8)
       emit(("%s %s %s"):format(mark, short, commit.summary),
@@ -955,10 +967,12 @@ function Session:build()
             seen_key(commit.sha, file.path), self:resolve_comments(file))
         end
       end
+     end)
     end
   else
     self.combined_files = self:compute_combined()
     for fi, cf in ipairs(self.combined_files) do
+     section("cf:" .. cf.path, function()
       local chevron = cf.raw.collapsed and CHEVRON_CLOSED or CHEVRON_OPEN
       local kind = cf.kind and (" [" .. cf.kind .. "]") or ""
       -- Ownership not yet resolved: stamp every row of this file `pending` so the
@@ -971,11 +985,13 @@ function Session:build()
         emit_file_body(cf, tb, self:combined_owner(cf.path),
           cseen_key(cf.path), self:resolve_comments(cf))
       end
+     end)
     end
   end
 
   local summary = self:collect_comments()
   if #summary.order > 0 then
+   section("comments", function()
     emit("", {})
     emit("══ comments ══", {}, "GleanModeHeader")
     for _, path in ipairs(summary.order) do
@@ -989,9 +1005,10 @@ function Session:build()
         end
       end
     end
+   end)
   end
 
-  return lines, row_map, highlights, intra_blocks
+  return lines, row_map, highlights, intra_blocks, sections
 end
 
 -- A render is a no-op when `build()` reproduces the previous projection
