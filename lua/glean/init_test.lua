@@ -869,8 +869,8 @@ do
   end)
   h.assert_true("stage2-C: found +hi row", nrow ~= nil)
   s:toggle_seen(nrow)
-  h.assert_true("stage2-C: untracked add hash-seen on WORKTREE",
-    next(s.store:seen_hashes(s.store.wt_shard, "new.txt")) ~= nil)
+  h.assert_true("stage2-C: untracked add block-seen on WORKTREE",
+    #s.store:seen_records("new.txt") > 0)
 end
 
 -- Stage 3 — pending hunks inert + load assertion backstop. A non-loaded file's
@@ -1373,8 +1373,8 @@ do
   end)
   h.assert_true("worktree: found w.txt header", frow ~= nil)
   s:toggle_seen(frow)
-  h.assert_true("worktree: content hash stored",
-    next(s.store:seen_hashes(s.store.wt_shard, "w.txt")) ~= nil)
+  h.assert_true("worktree: seen block stored",
+    #s.store:seen_records("w.txt") > 0)
   -- reopen: working file unchanged, so the content hash still matches → fully seen.
   local s2 = openwt(seen_dir)
   local _, fline2 = find_row(s2, function(_, line, t)
@@ -1406,6 +1406,57 @@ do
     return t and t.commit == #s3.commits and t.file and not t.hunk and line:find("w.txt", 1, true)
   end)
   h.assert_true("worktree edit: w.txt seen dropped", fline3:find("✓", 1, true) == nil)
+end
+
+-- Stage 3 — worktree seen-blocks are positional: marking one trivial `}` line
+-- marks exactly that occurrence, never every `}` file-wide; and a partial mark
+-- survives an unrelated edit elsewhere in the same hunk.
+do
+  local wt = testutil.make_repo({
+    { msg = "base", files = { ["t.txt"] = "x\n" } },
+  })
+  local function write(content)
+    local f = assert(io.open(wt.root .. "/t.txt", "w"))
+    f:write(content)
+    f:close()
+  end
+  write("a\n}\nb\n}\nc\n") -- uncommitted: two standalone `}` adds
+  local function runwt(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = wt.root, env = wt.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local dir = vim.fn.tempname()
+  local function openwt()
+    return glean.open({
+      base = wt.shas[1], target = glean.WORKTREE, repo_root = wt.root, run = runwt,
+      open_window = false, state_dir = dir, scope = "commits",
+    })
+  end
+  local s = openwt()
+  -- Find the buffer rows of the two `+}` lines (in order).
+  local brace_rows = {}
+  local n = api.nvim_buf_line_count(s.buf)
+  for r = 0, n - 1 do
+    local t = s.row_map[r]
+    local line = api.nvim_buf_get_lines(s.buf, r, r + 1, false)[1]
+    if t and t.line and line == "+}" then brace_rows[#brace_rows + 1] = r end
+  end
+  h.assert_eq("wt brace: two `}` rows", #brace_rows, 2)
+  local id1 = s:row_identity(s.row_map[brace_rows[1]])
+  local id2 = s:row_identity(s.row_map[brace_rows[2]])
+  h.assert_true("wt brace: distinct ordinals", id1.ord ~= id2.ord)
+
+  -- Mark only the first `}` line.
+  s:mark_visual_range(brace_rows[1], brace_rows[1])
+  h.assert_true("wt brace: first `}` seen", s:id_seen(id1))
+  h.assert_true("wt brace: second `}` NOT seen (no file-wide bleed)", not s:id_seen(id2))
+
+  -- Persisted as exactly one single-line block.
+  local recs = s.store:seen_records("t.txt")
+  h.assert_eq("wt brace: one stored block", #recs, 1)
+  h.assert_eq("wt brace: block is one line", #recs[1].content, 1)
 end
 
 -- Stage 4 — combined overlay with the WORKTREE as target: a committed branch
@@ -1455,8 +1506,8 @@ do
   s:toggle_seen(frow)
   h.assert_true("wt combined: committed B range-seen on c1",
     state.covers(s.store:seen_ranges(wm.shas[2], "m.txt"), 2))
-  h.assert_true("wt combined: dirty D hash-seen on WORKTREE",
-    next(s.store:seen_hashes(s.store.wt_shard, "m.txt")) ~= nil)
+  h.assert_true("wt combined: dirty D block-seen on WORKTREE",
+    #s.store:seen_records("m.txt") > 0)
   local jseen = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("wt combined: m.txt fully seen", jseen:find(" seen (1 hunks)", 1, true) ~= nil)
   -- reopen: persisted committed + floating seen still collapses the file.
@@ -1838,17 +1889,19 @@ do
   end
   h.assert_true("wt del: found w.txt", cf ~= nil)
   local owner = s:combined_owner(cf.path)
-  local did
+  local did, base = nil, 0
   for _, hunk in ipairs(cf.hunks) do
-    for _, dl in ipairs(hunk.lines) do
+    for li, dl in ipairs(hunk.lines) do
       if dl.kind == "del" and dl.text == "y" then
-        did = s:line_identity(dl, cf.path, owner)
+        did = s:line_identity(dl, cf.path, owner, base + li)
       end
     end
+    base = base + #hunk.lines
   end
   h.assert_true("wt del: y is content-addressed", did ~= nil and did.kind == "wt")
   h.assert_true("wt del: starts unseen", not s:line_seen(did))
-  s.store:mark({ did })
+  s:perform({ kind = "seen", op = "mark", ids = { did } })
+  s:render()
   h.assert_true("wt del: markable & persists", s:line_seen(did))
 end
 

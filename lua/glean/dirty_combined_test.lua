@@ -76,7 +76,7 @@ do
   -- A live poll rebuilds the model + reloads the store from disk. The mark must
   -- survive (it is content-addressed under the WORKTREE shard).
   s:reload()
-  h.assert_true("combined: identity still seen after reload", s.store:is_seen(id))
+  h.assert_true("combined: identity still seen after reload", s:id_seen(id))
 end
 
 -- Same flow but mark via the file *header* row (no hunk index): a cfile header
@@ -146,7 +146,7 @@ do
   local uid = s:row_identity(s.row_map[urow])
   h.assert_true("untracked: row has a seen identity", uid ~= nil)
   s:toggle_seen(urow)
-  h.assert_true("untracked: identity seen after toggle", uid ~= nil and s.store:is_seen(uid))
+  h.assert_true("untracked: identity seen after toggle", uid ~= nil and s:id_seen(uid))
 end
 
 h.finish()

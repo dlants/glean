@@ -71,24 +71,24 @@ do
   h.assert_eq("roundtrip: unmatched lnum empty", #s2:comments_at("shaA", "f.txt", 999), 0)
 end
 
--- Content-hash: per-line set is order/duplicate independent, and a line is seen
--- iff its current text's hash is in the set (content-addressed, not positional).
+-- Worktree seen-blocks: stored as { anchor, content } records, re-anchored
+-- positionally via M.resolve against the live diff (one closest match), so a
+-- trivial single-line block marks exactly one ordinal, never file-wide.
 do
   local dir = vim.fn.tempname()
   local s = state.new({ dir = dir })
-  s:mark_seen_hashes("WORKTREE", "f.txt", { "beta", "gamma" })
-  h.assert_true("hash: beta seen", s:is_seen_hash("WORKTREE", "f.txt", "beta"))
-  h.assert_true("hash: gamma seen", s:is_seen_hash("WORKTREE", "f.txt", "gamma"))
-  h.assert_true("hash: alpha unseen", not s:is_seen_hash("WORKTREE", "f.txt", "alpha"))
+  s:add_seen_record("f.txt", { anchor = 2, content = { "beta", "gamma" } })
+  local recs = s:seen_records("f.txt")
+  h.assert_eq("seen-block: stored one record", #recs, 1)
+  h.assert_eq("seen-block: content preserved", recs[1].content[2], "gamma")
 
-  -- a repeated line text is seen wherever it appears (per-line addressing).
-  s:mark_seen_hashes("WORKTREE", "f.txt", { "dup", "dup" })
-  h.assert_true("hash: duplicate text seen", s:is_seen_hash("WORKTREE", "f.txt", "dup"))
+  -- resolve finds the closest single occurrence of a trivial block.
+  local diff = { "alpha", "}", "beta", "}", "gamma" }
+  h.assert_eq("seen-block: trivial resolves to closest one", state.resolve({ "}" }, 4, diff), 4)
 
-  -- unmark removes by content; the line is unseen regardless of position.
-  s:unmark_seen_hashes("WORKTREE", "f.txt", { "beta" })
-  h.assert_true("hash: unmarked text unseen", not s:is_seen_hash("WORKTREE", "f.txt", "beta"))
-  h.assert_true("hash: gamma still seen", s:is_seen_hash("WORKTREE", "f.txt", "gamma"))
+  -- set_seen_records replaces; an empty list prunes the path entry.
+  s:set_seen_records("f.txt", {})
+  h.assert_eq("seen-block: cleared", #s:seen_records("f.txt"), 0)
 end
 
 -- Committed deletion ranges round-trip through save/load, parallel to add ranges.
@@ -121,65 +121,24 @@ do
   s:unmark(ids)
   h.assert_true("identity: none seen after unmark", not s:is_seen(ids[1]))
   h.assert_eq("identity: mark+unmark restores JSON", vim.json.encode(s:commit("shaA")), empty)
-
-  -- worktree identities resolve to the content-hash set.
-  local wid = state.wt_identity("f.txt", "hello")
-  h.assert_true("identity: wt unseen initially", not s:is_seen(wid))
-  s:mark({ wid })
-  h.assert_true("identity: wt seen after mark", s:is_seen(wid))
 end
 
--- Hash adapter over a literal new_lnum -> text map.
-do
-  local dir = vim.fn.tempname()
-  local s = state.new({ dir = dir })
-  local lines = { "one", "two", "three", "four" }
-  local a = state.hash_adapter(s, "WORKTREE", "f.txt", lines)
-  h.assert_true("adapter: unseen initially", not a.is_seen(2))
-  a.mark({ 2, 3 })
-  h.assert_true("adapter: marked seen", a.is_seen(2) and a.is_seen(3))
-  h.assert_true("adapter: range_covered", a.range_covered(2, 3))
-  h.assert_true("adapter: range not covered", not a.range_covered(1, 3))
-  a.unmark({ 2, 3 })
-  h.assert_true("adapter: unmarked", not a.is_seen(2))
-  a.add_comment(4, "note")
-  h.assert_eq("adapter: comment by line-hash", a.comments_at(4)[1].text, "note")
-
-  -- comment follows content even when the line moves position.
-  local moved = state.hash_adapter(s, "WORKTREE", "f.txt", { "z", "four" })
-  h.assert_eq("adapter: comment follows content", moved.comments_at(2)[1].text, "note")
-end
-
--- Worktree per-line marks: marking a sub-run then the whole region leaves every
--- line seen, and unmarking the whole clears the set (no leftover hashes).
-do
-  local dir = vim.fn.tempname()
-  local s = state.new({ dir = dir })
-  local lines = { "one", "two", "three", "four" }
-  local a = state.hash_adapter(s, "WORKTREE", "f.txt", lines)
-  a.mark({ 2 })
-  a.mark({ 1, 2, 3, 4 })
-  h.assert_true("wt set: all seen", a.is_seen(1) and a.is_seen(4))
-  a.unmark({ 1, 2, 3, 4 })
-  h.assert_true("wt set: cleared", next(s:seen_hashes("WORKTREE", "f.txt")) == nil)
-  h.assert_true("wt set: none seen", not a.is_seen(2))
-end
-
--- Worktree shard round-trips with worktree=true.
+-- Worktree shard round-trips: seen-block records and worktree comments persist
+-- through save/reload under the worktree shard.
 do
   local dir = vim.fn.tempname()
   local s = state.new({ dir = dir })
   s:load({ "WORKTREE" })
-  s:mark_seen_hashes("WORKTREE", "f.txt", { "two", "three" })
+  s:add_seen_record("f.txt", { anchor = 2, content = { "two", "three" } })
   s:wt_add_comment("WORKTREE", "f.txt", "four", "hi")
   s:save_commit("WORKTREE")
 
   local s2 = state.new({ dir = dir })
   s2:load({ "WORKTREE" })
-  h.assert_true("wt roundtrip: worktree flag", s2.data["WORKTREE"].worktree == true)
-  h.assert_true("wt roundtrip: two seen", s2:is_seen_hash("WORKTREE", "f.txt", "two"))
-  h.assert_true("wt roundtrip: three seen", s2:is_seen_hash("WORKTREE", "f.txt", "three"))
-  h.assert_true("wt roundtrip: one unseen", not s2:is_seen_hash("WORKTREE", "f.txt", "one"))
+  local recs = s2:seen_records("f.txt")
+  h.assert_eq("wt roundtrip: one seen-block", #recs, 1)
+  h.assert_eq("wt roundtrip: block anchor", recs[1].anchor, 2)
+  h.assert_eq("wt roundtrip: block content", recs[1].content[2], "three")
   h.assert_eq("wt roundtrip: comment", s2:wt_comments_for("WORKTREE", "f.txt", "four")[1].text, "hi")
 end
 
@@ -235,33 +194,24 @@ do
   -- empty content is nil.
   h.assert_eq("resolve: empty content nil", state.resolve({}, 1, diff), nil)
 end
--- Stage 5 migration: a legacy worktree shard whose per-file `seen` is the old
--- block list (array of {head,hash,n}) is discarded on load, while a current
--- per-line hash set survives and `is_seen_hash` works against it.
+-- Seen-block records round-trip on the worktree shard, and a mark fully undone
+-- (set to empty) restores the shard JSON byte-identically.
 do
   local dir = vim.fn.tempname()
-  vim.fn.mkdir(dir, "p")
-  local legacy = {
-    worktree = true,
-    files = {
-      ["old.txt"] = { seen = { { head = "a", hash = "h", n = 2 } }, comments = {} },
-      ["new.txt"] = { seen = { [state.line_hash("kept")] = true }, comments = {} },
-    },
-  }
-  vim.fn.writefile({ vim.json.encode(legacy) }, dir .. "/" .. state.COMMENTS_ID .. ".json")
   local s = state.new({ dir = dir })
   s:load({ state.COMMENTS_ID })
-  h.assert_eq("migrate: legacy block seen discarded",
-    next(s:seen_hashes(state.COMMENTS_ID, "old.txt")), nil)
-  h.assert_true("migrate: current hash set survives",
-    s:is_seen_hash(state.COMMENTS_ID, "new.txt", "kept"))
-  -- A line marked through the migrated shard round-trips on reload.
-  s:mark_seen_hashes(state.COMMENTS_ID, "old.txt", { "fresh" })
+  local empty = vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} })
+  s:add_seen_record("old.txt", { anchor = 1, content = { "fresh" } })
   s:save_commit(state.COMMENTS_ID)
   local s2 = state.new({ dir = dir })
   s2:load({ state.COMMENTS_ID })
-  h.assert_true("migrate: post-migration mark persists",
-    s2:is_seen_hash(state.COMMENTS_ID, "old.txt", "fresh"))
+  h.assert_eq("seen-block roundtrip: persists on reload",
+    s2:seen_records("old.txt")[1].content[1], "fresh")
+
+  -- Undo the mark: the slice prunes back to byte-identical JSON.
+  s:set_seen_records("old.txt", {})
+  h.assert_eq("seen-block: mark+unmark restores JSON",
+    vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
 end
 
 -- Stage 2 — branch-anchored worktree shard. The store routes all
@@ -272,13 +222,13 @@ end
 do
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
-  local id = state.wt_identity("w.txt", "line")
+  local rec = { anchor = 1, content = { "line" } }
 
   local a = state.new({ dir = dir, wt_shard = "WORKTREE/feature/a" })
   a:load({})
-  a:mark({ id })
+  a:add_seen_record("w.txt", rec)
   a:save_commit(a.wt_shard)
-  h.assert_true("wt_shard: seen under A", a:is_seen(id))
+  h.assert_eq("wt_shard: seen-block under A", #a:seen_records("w.txt"), 1)
 
   -- The branch-with-slash shard maps to a single readable file.
   h.assert_eq("wt_shard: slash-safe filename readable",
@@ -286,12 +236,12 @@ do
 
   local b = state.new({ dir = dir, wt_shard = "WORKTREE/feature/b" })
   b:load({})
-  h.assert_true("wt_shard: unseen under B", not b:is_seen(id))
+  h.assert_eq("wt_shard: absent under B", #b:seen_records("w.txt"), 0)
 
-  -- Reopening A's shard still sees the mark; B's load left A's file untouched.
+  -- Reopening A's shard still has the block; B's load left A's file untouched.
   local a2 = state.new({ dir = dir, wt_shard = "WORKTREE/feature/a" })
   a2:load({})
-  h.assert_true("wt_shard: A persists on reload", a2:is_seen(id))
+  h.assert_eq("wt_shard: A persists on reload", #a2:seen_records("w.txt"), 1)
 end
 
 -- Stage 2 — comments exhibit the same branch isolation as seen-marks.

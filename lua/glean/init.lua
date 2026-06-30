@@ -224,7 +224,7 @@ local function hunk_marker_runs(hunk, is_seen)
   end
   for i, dl in ipairs(hunk.lines) do
     local changed = dl.kind == "add" or dl.kind == "del"
-    if changed and is_seen(dl) then
+    if changed and is_seen(dl, i) then
       if not cur then
         cur = { lo = i, hi_line = i, lnum_lo = dl.new_lnum, lnum_hi = dl.new_lnum, n = 1, texts = { dl.text } }
       else
@@ -522,45 +522,89 @@ end
 -- The stable seen-identity of one changed diff line, or nil for a context line
 -- or a line with no in-range owner. A WORKTREE-owned line is content-addressed;
 -- a committed add line is (sha, new_lnum); a committed del line is (sha, lnum).
-function Session:line_identity(dl, path, owner)
+-- `ord` is the line's flattened diff-line ordinal within its file; worktree
+-- identities carry it so seen-ness is resolved positionally (block re-anchoring)
+-- rather than by file-wide content match. Committed identities ignore it.
+function Session:line_identity(dl, path, owner, ord)
   if dl.kind ~= "add" and dl.kind ~= "del" then return nil end
   local sha, lnum = owner(dl)
   if not sha then return nil end
-  if sha == M.WORKTREE then return state_mod.wt_identity(path, dl.text) end
+  if sha == M.WORKTREE then
+    local id = state_mod.wt_identity(path, dl.text)
+    id.ord = ord
+    return id
+  end
   if dl.kind == "add" then return state_mod.add_identity(sha, path, lnum) end
   return state_mod.del_identity(sha, path, lnum)
 end
 
 -- The seen-identities of a hunk's changed (add/del) lines — the one place that
 -- defines "which lines matter". Context lines and unowned lines are excluded.
-function Session:changed_lines(hunk, path, owner)
+-- `base_ord` is the flattened diff-line ordinal of the line *before* this hunk's
+-- first line within its file (0 for the first hunk), so each line's ordinal is
+-- `base_ord + index`. Worktree identities carry that ordinal for positional
+-- (block) seen-resolution; committed identities ignore it. When omitted it
+-- defaults to 0 (sufficient for committed-only callers).
+function Session:changed_lines(hunk, path, owner, base_ord)
+  base_ord = base_ord or 0
   local ids = {}
-  for _, dl in ipairs(hunk.lines) do
-    local id = self:line_identity(dl, path, owner)
+  for i, dl in ipairs(hunk.lines) do
+    local id = self:line_identity(dl, path, owner, base_ord + i)
     if id then ids[#ids + 1] = id end
   end
   return ids
 end
 
+-- The flattened-ordinal base of each hunk within a file (hunk object -> count of
+-- diff lines preceding it). Used to translate a per-hunk line index into the
+-- file-wide ordinal worktree identities are addressed by.
+local function hunk_base_ords(file)
+  local bases, acc = {}, 0
+  for _, h in ipairs(file.hunks) do
+    bases[h] = acc
+    acc = acc + #h.lines
+  end
+  return bases
+end
+
+-- Is a single line identity in the seen set? Worktree identities are resolved
+-- positionally against the live diff (block re-anchoring); the rest delegate to
+-- the store.
+function Session:id_seen(id)
+  if id.kind == "wt" then
+    return id.ord ~= nil and self:wt_seen_ords(id.path)[id.ord] == true
+  end
+  return self.store:is_seen(id)
+end
+
+-- Are all of the given identities seen? (a hunk/file/commit fold)
+function Session:ids_all_seen(ids)
+  for _, id in ipairs(ids) do
+    if not self:id_seen(id) then return false end
+  end
+  return true
+end
+
 -- Is a single line identity in the seen set?
 function Session:line_seen(id)
-  return self.store:is_seen(id)
+  return self:id_seen(id)
 end
 
 -- A hunk is seen iff it has at least one changed line and every changed line's
 -- identity is seen. This is the single predicate the renderer and the rollups
 -- share, so placement and the header glyphs agree by construction.
-function Session:hunk_seen(hunk, path, owner)
-  local ids = self:changed_lines(hunk, path, owner)
+function Session:hunk_seen(hunk, path, owner, base_ord)
+  local ids = self:changed_lines(hunk, path, owner, base_ord)
   if #ids == 0 then return false end
-  return self.store:all_seen(ids)
+  return self:ids_all_seen(ids)
 end
 
 -- Is a file fully seen? (every hunk's changed lines seen)
 function Session:file_seen(commit, file)
   local owner = self:commit_owner(commit)
+  local bases = hunk_base_ords(file)
   for _, hunk in ipairs(file.hunks) do
-    if not self:hunk_seen(hunk, file.path, owner) then return false end
+    if not self:hunk_seen(hunk, file.path, owner, bases[hunk]) then return false end
   end
   return true
 end
@@ -683,29 +727,80 @@ function Session:displayed_files()
   return fs
 end
 
+-- The displayed diff file holding `path`'s uncommitted lines: in commit scope
+-- the synthetic worktree commit's file, in combined scope the combined file.
+function Session:file_for_path(path)
+  if self.scope == "commits" then
+    for _, c in ipairs(self.commits) do
+      if c.sha == M.WORKTREE then
+        for _, f in ipairs(c.files) do
+          if f.path == path then return f end
+        end
+      end
+    end
+    return nil
+  end
+  for _, cf in ipairs(self.combined_files or {}) do
+    if cf.path == path then return cf end
+  end
+  return nil
+end
+
+-- The flattened diff-line texts of `path`'s displayed file (the resolution space
+-- worktree seen-blocks and comments re-anchor against), or nil if not displayed.
+function Session:wt_flat_texts(path)
+  local file = self:file_for_path(path)
+  if not file then return nil end
+  local texts = {}
+  for i, dl in ipairs(flatten_diff_lines(file)) do texts[i] = dl.text end
+  return texts
+end
+
+-- The set of flattened ordinals currently marked seen for an uncommitted file,
+-- computed by re-anchoring each stored seen-block via `M.resolve` (single
+-- closest match). Cached per render (reset in build) since it depends on the
+-- live diff. A trivial one-line block resolves to exactly one ordinal, never
+-- file-wide; a block whose own text changed fails to resolve and so is unseen.
+function Session:wt_seen_ords(path)
+  self._wt_seen = self._wt_seen or {}
+  local cached = self._wt_seen[path]
+  if cached then return cached end
+  local set = {}
+  local texts = self:wt_flat_texts(path)
+  if texts then
+    for _, rec in ipairs(self.store:seen_records(path)) do
+      local start = state_mod.resolve(rec.content, rec.anchor, texts)
+      if start then
+        for k = 0, #rec.content - 1 do set[start + k] = true end
+      end
+    end
+  end
+  self._wt_seen[path] = set
+  return set
+end
+
 -- Re-anchor a file's comments against its current diff-line texts: map the
--- flattened ordinal each comment resolves to (its content match, or its stored
--- `anchor` when the content is gone) to the list of comments shown there. A
--- comment whose anchor falls outside the file is dropped from the inline view
--- (it still appears in the summary).
+-- flattened ordinal each comment resolves to (its content match, or a clamped
+-- fallback when the content is gone) to the list of comments shown there. An
+-- orphaned comment (content no longer in the diff) is clamped into range and
+-- flagged `outdated` so it still surfaces inline, dimmed and dismissible.
 function Session:resolve_comments(file)
   local flat = flatten_diff_lines(file)
+  if #flat == 0 then return {} end
   local texts = {}
   for i, dl in ipairs(flat) do texts[i] = dl.text end
   local by_ord = {}
   for _, rec in ipairs(self.store:comments_for(file.path)) do
     local start = state_mod.resolve(rec.content, rec.anchor, texts)
-    local ord = start or rec.anchor
-    if ord and ord >= 1 and ord <= #flat then
-      by_ord[ord] = by_ord[ord] or {}
-      by_ord[ord][#by_ord[ord] + 1] = {
-        path = file.path,
-        anchor = rec.anchor,
-        content = rec.content,
-        text = rec.text,
-        outdated = start == nil,
-      }
-    end
+    local ord = start or math.max(1, math.min(rec.anchor or 1, #flat))
+    by_ord[ord] = by_ord[ord] or {}
+    by_ord[ord][#by_ord[ord] + 1] = {
+      path = file.path,
+      anchor = rec.anchor,
+      content = rec.content,
+      text = rec.text,
+      outdated = start == nil,
+    }
   end
   return by_ord
 end
@@ -814,6 +909,9 @@ end
 -- ---------------------------------------------------------------------------
 
 function Session:build()
+  -- Worktree seen-marks are resolved positionally against the live diff; the
+  -- per-path ord cache is rebuilt each render since the diff may have changed.
+  self._wt_seen = {}
   local lines = {}
   local row_map = {}
   local highlights = {}
@@ -840,8 +938,10 @@ function Session:build()
   -- (path + record) so `dd`/`i`/`dc` anywhere on it acts on the whole comment.
   local function emit_comment(c, htarget)
     local ctarget = vim.tbl_extend("force", htarget or {}, { comment = c })
+    local lead = c.outdated and "    💬 (outdated) " or "    💬 "
+    local hl = c.outdated and "GleanSeen" or "GleanComment"
     for i, part in ipairs(vim.split(c.text, "\n", { plain = true })) do
-      emit((i == 1 and "    💬 " or "       ") .. part, ctarget, "GleanComment")
+      emit((i == 1 and lead or "       ") .. part, ctarget, hl)
     end
   end
 
@@ -852,9 +952,9 @@ function Session:build()
     -- fully seen and always renders whole, never collapsing sub-ranges. A run is
     -- any contiguous block of seen changed lines (adds or dels), via the shared
     -- line-identity predicate.
-    local seen_line = function(dl)
-      local id = self:line_identity(dl, path, owner)
-      return id ~= nil and self.store:is_seen(id)
+    local seen_line = function(dl, li)
+      local id = self:line_identity(dl, path, owner, base_ord + li)
+      return id ~= nil and self:id_seen(id)
     end
     local runs = sec == "seen" and {} or hunk_marker_runs(hunk, seen_line)
     local run_at = {}
@@ -936,7 +1036,7 @@ function Session:build()
     for hi, hunk in ipairs(file.hunks) do
       base_ord[hi] = acc
       acc = acc + #hunk.lines
-      if self:hunk_seen(hunk, file.path, owner) then seen_idx[#seen_idx + 1] = hi
+      if self:hunk_seen(hunk, file.path, owner, base_ord[hi]) then seen_idx[#seen_idx + 1] = hi
       else unseen_idx[#unseen_idx + 1] = hi end
     end
     -- The seen section sits on top as the only collapsible region: a
@@ -1528,13 +1628,93 @@ end
 -- shards. Every seen action (commit/combined toggle, visual span, marker run)
 -- now carries a flat list of seen-`ids`, so this is a single fold over the
 -- unified identity store with no scope- or owner-specific branching.
+-- Persist a marking action. Committed identities fold through the store's range
+-- API; worktree identities are stored as content block records (re-anchored
+-- positionally at render), grouped per path into maximal contiguous-ordinal
+-- runs so each selected block is one record.
 function Session:apply_seen(a, op)
-  if op == "mark" then self.store:mark(a.ids) else self.store:unmark(a.ids) end
-  local touched = {}
+  local non_wt, wt_by_path = {}, {}
   for _, id in ipairs(a.ids) do
-    touched[id.kind == "wt" and self.store.wt_shard or id.sha] = true
+    if id.kind == "wt" then
+      wt_by_path[id.path] = wt_by_path[id.path] or {}
+      local list = wt_by_path[id.path]
+      list[#list + 1] = id
+    else
+      non_wt[#non_wt + 1] = id
+    end
+  end
+  local touched = {}
+  if #non_wt > 0 then
+    if op == "mark" then self.store:mark(non_wt) else self.store:unmark(non_wt) end
+    for _, id in ipairs(non_wt) do touched[id.sha] = true end
+  end
+  for path, ids in pairs(wt_by_path) do
+    if op == "mark" then self:apply_wt_mark(path, ids) else self:apply_wt_unmark(path, ids) end
+    touched[self.store.wt_shard] = true
   end
   for sha in pairs(touched) do self.store:save_commit(sha) end
+end
+
+-- Store the selected worktree lines (each carrying its flattened ordinal and
+-- text) as seen-block records, one per maximal contiguous-ordinal run.
+function Session:apply_wt_mark(path, ids)
+  table.sort(ids, function(a, b) return (a.ord or 0) < (b.ord or 0) end)
+  local run
+  local function flush()
+    if run then
+      self.store:add_seen_record(path, { anchor = run.anchor, content = run.content })
+      run = nil
+    end
+  end
+  for _, id in ipairs(ids) do
+    if run and id.ord == run.last + 1 then
+      run.content[#run.content + 1] = id.text
+      run.last = id.ord
+    else
+      flush()
+      run = { anchor = id.ord, last = id.ord, content = { id.text } }
+    end
+  end
+  flush()
+end
+
+-- Remove the selected worktree ordinals from `path`'s seen-block records,
+-- re-anchoring each stored block against the live diff and rewriting it minus
+-- the unmarked ordinals (splitting a partially-unmarked block into the runs that
+-- survive). A fully unmarked block leaves no record, restoring byte-identity.
+function Session:apply_wt_unmark(path, ids)
+  local remove = {}
+  for _, id in ipairs(ids) do
+    if id.ord then remove[id.ord] = true end
+  end
+  local texts = self:wt_flat_texts(path) or {}
+  local kept = {}
+  for _, rec in ipairs(self.store:seen_records(path)) do
+    local start = state_mod.resolve(rec.content, rec.anchor, texts)
+    if not start then
+      kept[#kept + 1] = { anchor = rec.anchor, content = rec.content }
+    else
+      local run
+      local function flush()
+        if run then kept[#kept + 1] = { anchor = run.anchor, content = run.content } end
+        run = nil
+      end
+      for k = 0, #rec.content - 1 do
+        local ord = start + k
+        if remove[ord] then
+          flush()
+        elseif run and ord == run.last + 1 then
+          run.content[#run.content + 1] = texts[ord]
+          run.last = ord
+        else
+          flush()
+          run = { anchor = ord, last = ord, content = { texts[ord] } }
+        end
+      end
+      flush()
+    end
+  end
+  self.store:set_seen_records(path, kept)
 end
 
 function Session:apply_comment(a, op)
@@ -1827,9 +2007,10 @@ end
 -- defined purely as add/remove over these identities.
 function Session:target_identities(target)
   local out = {}
-  local function gather(hunks, path, owner)
+  local function gather(file, hunks, path, owner)
+    local bases = hunk_base_ords(file)
     for _, h in ipairs(hunks) do
-      for _, id in ipairs(self:changed_lines(h, path, owner)) do
+      for _, id in ipairs(self:changed_lines(h, path, owner, bases[h])) do
         out[#out + 1] = id
       end
     end
@@ -1840,7 +2021,7 @@ function Session:target_identities(target)
     local owner = self:commit_owner(commit)
     local files = target.file and { commit.files[target.file] } or commit.files
     for _, file in ipairs(files) do
-      gather(target.hunk and { file.hunks[target.hunk] } or file.hunks, file.path, owner)
+      gather(file, target.hunk and { file.hunks[target.hunk] } or file.hunks, file.path, owner)
     end
   else
     local cf = self.combined_files and self.combined_files[target.cfile]
@@ -1851,7 +2032,7 @@ function Session:target_identities(target)
     assert(self:owner_status(cf.path) == "loaded",
       "target_identities on non-loaded file: " .. cf.path)
     local owner = self:combined_owner(cf.path)
-    gather(target.hunk and { cf.hunks[target.hunk] } or cf.hunks, cf.path, owner)
+    gather(cf, target.hunk and { cf.hunks[target.hunk] } or cf.hunks, cf.path, owner)
   end
   return out
 end
@@ -1875,7 +2056,7 @@ function Session:row_identity(target)
     local commit = self.commits[target.commit]
     local file = commit.files[target.file]
     return self:line_identity(file.hunks[target.hunk].lines[target.line], file.path,
-      self:commit_owner(commit))
+      self:commit_owner(commit), target_ordinal(file, target))
   end
   if not (target.cfile and target.hunk and target.line) then return nil end
   local cf = self.combined_files[target.cfile]
@@ -1884,7 +2065,7 @@ function Session:row_identity(target)
   assert(self:owner_status(cf.path) == "loaded",
     "row_identity on non-loaded file: " .. cf.path)
   return self:line_identity(cf.hunks[target.hunk].lines[target.line], cf.path,
-    self:combined_owner(cf.path))
+    self:combined_owner(cf.path), target_ordinal(cf, target))
 end
 
 -- Toggle seen on the cursor's target. The action is decided by which section the
@@ -1916,11 +2097,11 @@ function Session:toggle_seen(row)
   elseif target.sec == "unseen" then
     op = "mark"
   else
-    op = self.store:all_seen(ids) and "unmark" or "mark"
+    op = self:ids_all_seen(ids) and "unmark" or "mark"
   end
   local changed, seen_keys = {}, {}
   for _, id in ipairs(ids) do
-    if (op == "mark") ~= self.store:is_seen(id) then
+    if (op == "mark") ~= self:id_seen(id) then
       changed[#changed + 1] = id
       seen_keys[self:seen_collapse_key(id)] = true
     end
@@ -2086,7 +2267,7 @@ function Session:mark_visual_range(srow, erow)
     -- Pending rows are inert (no markable identity); skip before row_identity,
     -- whose non-loaded assertion is a backstop, not a selection filter.
     local id = t and not t.pending and self:row_identity(t)
-    if id and not self.store:is_seen(id) then ids[#ids + 1] = id end
+    if id and not self:id_seen(id) then ids[#ids + 1] = id end
   end
   if #ids == 0 then return end
   self:perform({ kind = "seen", op = "mark", ids = ids })
@@ -2099,23 +2280,24 @@ end
 function Session:unmark_marker(target)
   local mk = target.marker
   if not mk then return end
-  local hunk, path, owner
+  local file, hunk, path, owner
   if self.scope == "commits" then
     local commit = self.commits[target.commit]
-    local file = commit.files[target.file]
+    file = commit.files[target.file]
     hunk, path, owner = file.hunks[target.hunk], file.path, self:commit_owner(commit)
   else
-    local cf = self.combined_files[target.cfile]
+    file = self.combined_files[target.cfile]
     -- Markers only exist on loaded files (seen runs); a non-loaded one here is a
     -- violated invariant.
-    assert(self:owner_status(cf.path) == "loaded",
-      "unmark_marker on non-loaded file: " .. cf.path)
-    hunk, path, owner = cf.hunks[target.hunk], cf.path, self:combined_owner(cf.path)
+    assert(self:owner_status(file.path) == "loaded",
+      "unmark_marker on non-loaded file: " .. file.path)
+    hunk, path, owner = file.hunks[target.hunk], file.path, self:combined_owner(file.path)
   end
+  local base = hunk_base_ords(file)[hunk]
   local ids = {}
   for li = mk.lo, mk.hi_line do
-    local id = self:line_identity(hunk.lines[li], path, owner)
-    if id and self.store:is_seen(id) then ids[#ids + 1] = id end
+    local id = self:line_identity(hunk.lines[li], path, owner, base + li)
+    if id and self:id_seen(id) then ids[#ids + 1] = id end
   end
   if #ids == 0 then return end
   self:perform({ kind = "seen", op = "unmark", ids = ids })

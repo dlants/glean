@@ -258,6 +258,40 @@ Invariants (all stages):
 
 ## Stage 3 — Block-based worktree seen-marks + orphaned-comment surfacing
 
+> Stage 3 status: DONE. Worktree seen-marks are now positional block records,
+> not a content-hash set. `state.lua` drops the seen-hash API
+> (`mark_seen_hashes`/`unmark_seen_hashes`/`is_seen_hash`/`seen_hashes`) and the
+> test-only `hash_adapter`, and gains `seen_records`/`add_seen_record`/
+> `set_seen_records` storing `{anchor, content}` block records under the worktree
+> shard's top-level `seen_marks[path]` list (same shape/shard as comments). The
+> unified store fold no longer resolves `kind=="wt"` (it has no diff view).
+> `init.lua` resolves worktree seen-ness positionally: `wt_identity` carries the
+> flattened-diff `ord`; `Session:wt_seen_ords(path)` re-anchors each stored block
+> via `M.resolve` (single closest match) into a per-render ord set (reset in
+> `build`); `Session:id_seen`/`ids_all_seen` route wt ids through it while
+> committed ids still hit the store. `line_identity`/`changed_lines`/`hunk_seen`/
+> `file_seen`/`row_identity`/`target_identities`/`unmark_marker`/the renderer's
+> `seen_line` all thread the ordinal (via `hunk_base_ords`). `apply_seen` splits
+> ids: committed → store range API; worktree → `apply_wt_mark` (group selected
+> ords into maximal contiguous runs → one block record each) / `apply_wt_unmark`
+> (re-anchor each stored block, rewrite minus the unmarked ords, splitting
+> partials; a fully-unmarked block leaves no record → byte-identical shard).
+> Orphaned comments: `resolve_comments` now clamps an unresolved comment's anchor
+> into range instead of dropping it, so it still surfaces inline, and
+> `emit_comment` renders `outdated` comments with a "(outdated)" lead + dimmed
+> `GleanSeen` highlight; the carried comment record keeps `dd`/delete working as
+> the dismiss affordance.
+>
+> Decisions/deviations: store-level unified wt seen API (`store:is_seen/mark/
+> unmark` on a `kind=="wt"` id) is intentionally inert — worktree seen-ness is a
+> Session/diff concern. Pure `state` tests that previously exercised it (and the
+> hash-set/adapter/migration cases) were rewritten to the block-record API.
+> Tests added/updated: `state_test` (seen-block resolve/roundtrip/byte-identity,
+> branch isolation); `init_test` (trivial `}` collision marks exactly one
+> occurrence, store assertions use `seen_records`, wt-del marks via the action
+> layer with an ordinal); `dirty_combined_test` (wt seen checked via
+> `s:id_seen`). Full suite green (no luacheck/stylua config present in repo).
+
 - Goal: partial marks survive unrelated edits in the same hunk; a marked block
   whose own text changes goes unseen; a trivial single-line mark (`}`/blank)
   marks exactly one location, never file-wide; orphaned comments stay visible,

@@ -351,6 +351,7 @@ function Store:wt_commit(id)
     self.data[id] = c
   end
   c.worktree = true
+  c.files = c.files or {}
   return c
 end
 
@@ -364,42 +365,59 @@ function Store:wt_file(id, path)
   return f
 end
 
--- Mark each given new-file line text seen (by content hash). Duplicate or
--- repeated calls are idempotent.
-function Store:mark_seen_hashes(id, path, texts)
-  if #texts == 0 then
-    return
-  end
-  local f = self:wt_file(id, path)
-  for _, t in ipairs(texts) do
-    f.seen[M.line_hash(t)] = true
-  end
+-- ── Worktree (content-addressed) seen-marks ────────────────────────────────
+-- Uncommitted lines have no stable line numbers, so a seen mark is stored as a
+-- content *block record* `{ anchor, content = {texts} }` under the worktree
+-- shard's top-level `seen_marks[path]` list — the same shape comments use. At
+-- render the block is re-anchored against the file's current flattened diff via
+-- `M.resolve` (single closest match), so a trivial one-line block marks exactly
+-- one location and a block whose own text changed simply fails to resolve.
+
+function Store:seen_records(path)
+  local c = self.data[self.wt_shard]
+  return (c and c.seen_marks and c.seen_marks[path]) or {}
 end
 
--- Unmark each given new-file line text (by content hash).
-function Store:unmark_seen_hashes(id, path, texts)
-  local c = self.data[id]
-  local f = c and c.files and c.files[path]
-  if not f then
-    return
+local function wt_slice(store)
+  local c = store.data[store.wt_shard]
+  if not c then
+    c = {}
+    store.data[store.wt_shard] = c
   end
-  for _, t in ipairs(texts) do
-    f.seen[M.line_hash(t)] = nil
-  end
+  return c
 end
 
--- Is a new-file line text's content hash in the seen set for (worktree, path)?
-function Store:is_seen_hash(id, path, text)
-  local c = self.data[id]
-  local f = c and c.files and c.files[path]
-  return (f and f.seen and f.seen[M.line_hash(text)]) == true
+-- Append a seen-mark block record { anchor, content = {...} } for `path`.
+function Store:add_seen_record(path, record)
+  local c = wt_slice(self)
+  c.seen_marks = c.seen_marks or {}
+  c.seen_marks[path] = c.seen_marks[path] or {}
+  local list = c.seen_marks[path]
+  list[#list + 1] = { anchor = record.anchor, content = record.content }
 end
 
--- The seen content-hash set for (worktree, path) (possibly empty).
-function Store:seen_hashes(id, path)
-  local c = self.data[id]
-  local f = c and c.files and c.files[path]
-  return (f and f.seen) or {}
+-- Replace the seen-mark records for `path`. An empty list prunes the entry, and
+-- the whole worktree slice when it then carries no seen-marks, comments, or
+-- files — so a mark fully undone restores the shard to byte-identical JSON.
+function Store:set_seen_records(path, list)
+  local c = self.data[self.wt_shard]
+  if not c then
+    if not list or #list == 0 then return end
+    c = wt_slice(self)
+  end
+  c.seen_marks = c.seen_marks or {}
+  if not list or #list == 0 then
+    c.seen_marks[path] = nil
+    if next(c.seen_marks) == nil then c.seen_marks = nil end
+  else
+    c.seen_marks[path] = list
+  end
+  local sm_empty = not c.seen_marks or next(c.seen_marks) == nil
+  local cm_empty = not c.comments or next(c.comments) == nil
+  local f_empty = not c.files or next(c.files) == nil
+  if sm_empty and cm_empty and f_empty then
+    self.data[self.wt_shard] = nil
+  end
 end
 
 -- Append a comment anchored to a new-file line's content hash.
@@ -528,45 +546,6 @@ function M.range_adapter(store, sha, path)
   }
 end
 
-function M.hash_adapter(store, id, path, lines)
-  local function texts_of(lnums)
-    local out = {}
-    for _, l in ipairs(lnums) do
-      out[#out + 1] = lines[l]
-    end
-    return out
-  end
-  return {
-    worktree = true,
-    is_seen = function(lnum)
-      return store:is_seen_hash(id, path, lines[lnum])
-    end,
-    mark = function(lnums)
-      store:mark_seen_hashes(id, path, texts_of(lnums))
-    end,
-    unmark = function(lnums)
-      store:unmark_seen_hashes(id, path, texts_of(lnums))
-    end,
-    range_covered = function(s, e)
-      for l = s, e do
-        if not store:is_seen_hash(id, path, lines[l]) then
-          return false
-        end
-      end
-      return true
-    end,
-    add_comment = function(lnum, text)
-      store:wt_add_comment(id, path, lines[lnum], text)
-    end,
-    remove_comment = function(lnum, text)
-      store:wt_remove_comment(id, path, lines[lnum], text)
-    end,
-    comments_at = function(lnum)
-      return store:wt_comments_for(id, path, lines[lnum])
-    end,
-  }
-end
-
 -- ── Unified seen-identity API ───────────────────────────────────────────────
 -- A line identity is a stable, serializable key for one changed diff line. It
 -- is the single representation the higher layers fold over to derive seen-ness
@@ -594,9 +573,10 @@ function Store:is_seen(id)
     return M.covers(self:seen_ranges(id.sha, id.path), id.lnum)
   elseif id.kind == "del" then
     return M.covers(self:seen_del_ranges(id.sha, id.path), id.lnum)
-  elseif id.kind == "wt" then
-    return self:is_seen_hash(self.wt_shard, id.path, id.text)
   end
+  -- `kind == "wt"` is resolved positionally by the Session (block re-anchoring
+  -- against the live diff), which the store has no view of, so it is never seen
+  -- at the store layer.
   return false
 end
 
@@ -618,9 +598,8 @@ function Store:mark(ids)
       self:mark_seen(id.sha, id.path, { id.lnum, id.lnum })
     elseif id.kind == "del" then
       self:mark_seen_del(id.sha, id.path, { id.lnum, id.lnum })
-    elseif id.kind == "wt" then
-      self:mark_seen_hashes(self.wt_shard, id.path, { id.text })
     end
+    -- wt identities are stored as block records by the Session, not here.
   end
 end
 
@@ -650,10 +629,8 @@ function Store:unmark(ids)
     elseif id.kind == "del" then
       self:unmark_seen_del(id.sha, id.path, { id.lnum, id.lnum })
       prune_file(self, id.sha, id.path)
-    elseif id.kind == "wt" then
-      self:unmark_seen_hashes(self.wt_shard, id.path, { id.text })
-      prune_file(self, self.wt_shard, id.path)
     end
+    -- wt identities are removed as block records by the Session, not here.
   end
 end
 
