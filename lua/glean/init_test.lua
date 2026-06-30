@@ -276,7 +276,8 @@ do
   h.assert_eq("visual: one comment stored", #s.store:comments_for("f.txt"), 1)
   local inline = 0
   for _, t in pairs(s.row_map) do
-    if t and t.comment and t.comment.text == "block note" then inline = inline + 1 end
+    if t and t.comment and not t.summary_comment
+        and t.comment.text == "block note" then inline = inline + 1 end
   end
   h.assert_eq("visual: rendered inline once", inline, 1)
 end
@@ -348,6 +349,58 @@ do
     joined:find("L2  TWO", 1, true) ~= nil)
   h.assert_true("summary: outdated comment flagged",
     joined:find("(Outdated)", 1, true) ~= nil)
+end
+
+-- Comment summary navigation + editing: <CR> on a summary comment row expands
+-- its (collapsed) file/hunk and parks the cursor on the comment in the diff
+-- above; <CR> on a summary file row jumps to that file's header; deleting under
+-- a summary row drops the comment from the store.
+do
+  local dir = vim.fn.tempname()
+  local s = open({ scope = "commits", state_dir = dir })
+  local twrow = find_row(s, function(_, line, t)
+    return t and t.commit == 1 and t.line and line == "+TWO"
+  end)
+  s:add_comment_at(twrow, "nav note")
+  -- Collapse every f.txt copy so the comment is only present in the summary.
+  while true do
+    local fhrow = find_row(s, function(_, _, t)
+      return t and t.file and not t.hunk and not t.line
+        and not t.collapsed_seen and s:row_file(t).path == "f.txt"
+        and not s.commits[t.commit].files[t.file].collapsed
+    end)
+    if not fhrow then break end
+    s:toggle_collapse(fhrow)
+  end
+  h.assert_true("summary-nav: comment hidden when collapsed",
+    find_row(s, function(_, _, t)
+      return t and t.comment and not t.summary_comment
+    end) == nil)
+
+  local scrow = find_row(s, function(_, _, t) return t and t.summary_comment end)
+  h.assert_true("summary-nav: summary comment row present", scrow ~= nil)
+  local crow = s:jump(scrow)
+  local ct = crow and s.row_map[crow]
+  h.assert_true("summary-nav: landed on inline comment",
+    ct ~= nil and ct.comment ~= nil and not ct.summary_comment
+      and ct.comment.text == "nav note")
+  h.assert_true("summary-nav: inline comment row carries hunk identity",
+    ct ~= nil and ct.hunk ~= nil)
+  local hlo, hhi = s:hunk_range(crow)
+  h.assert_true("summary-nav: comment row resolves a hunk range",
+    hlo ~= nil and hhi ~= nil and hlo <= crow and crow <= hhi)
+
+  local sfrow = find_row(s, function(_, _, t) return t and t.summary_file end)
+  h.assert_true("summary-nav: summary file row present", sfrow ~= nil)
+  local frow = s:jump(sfrow)
+  local ft = frow and s.row_map[frow]
+  h.assert_true("summary-nav: landed on file header",
+    ft ~= nil and ft.file and not ft.hunk and not ft.line)
+
+  scrow = find_row(s, function(_, _, t) return t and t.summary_comment end)
+  s:delete_comment_under(scrow)
+  h.assert_eq("summary-nav: deleted via summary row",
+    #s.store:comments_for("f.txt"), 0)
 end
 
 -- Comment summary (out-of-range owner): a comment authored in combined scope on

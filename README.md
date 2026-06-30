@@ -58,6 +58,12 @@ The comment editor opens in a markdown split. Submit with `<CR>` (normal mode)
 or by writing the buffer (`:w`); abort with `q` or `<C-c>`. Submitting an
 empty/whitespace-only buffer is treated as an abort.
 
+Every comment is also listed in a summary section at the bottom of the buffer.
+The summary rows are live: `i`/`dd` edit or delete the comment from there, and
+`<CR>` navigates back into the diff — on a comment row it expands that hunk and
+parks the cursor on the comment above; on a file row it jumps to that file's
+header.
+
 ## Keymaps (inside the glean buffer)
 
 - `m` (normal) — toggle seen on the hunk/file/commit under the cursor; on a marker row/line, unmark that run
@@ -72,7 +78,7 @@ empty/whitespace-only buffer is treated as an abort.
 - `u` / `<C-r>` — undo / redo (seen, comment, collapse actions)
 - `]c` / `[c` — next / previous hunk
 - `]f` / `[f` — next / previous file
-- `<CR>` — jump to the source line (live file when the ref is HEAD, else a read-only `git show` buffer)
+- `<CR>` — jump to the source line (live file when the ref is HEAD, else a read-only `git show` buffer); on a comment-summary row, navigate to the comment/file in the diff instead
 - `D` — open an ephemeral side-by-side diff for the hunk under the cursor
 - `S` — toggle scope (combined / commits)
 - `q` — close the window

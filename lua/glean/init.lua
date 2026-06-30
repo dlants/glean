@@ -705,6 +705,7 @@ function Session:collect_comments()
       local dl = flat[start or rec.anchor]
       local entry = {
         anchor = rec.anchor,
+        content = rec.content,
         line = rec.content[1] or "",
         lnum = dl and (dl.new_lnum or dl.old_lnum),
         outdated = start == nil,
@@ -815,8 +816,8 @@ function Session:build()
   -- A stored comment rendered as real, cursor-addressable buffer rows (multi-
   -- line text splits across rows). Every row carries the same comment identity
   -- (path + record) so `dd`/`i`/`dc` anywhere on it acts on the whole comment.
-  local function emit_comment(c)
-    local ctarget = { comment = c }
+  local function emit_comment(c, htarget)
+    local ctarget = vim.tbl_extend("force", htarget or {}, { comment = c })
     for i, part in ipairs(vim.split(c.text, "\n", { plain = true })) do
       emit((i == 1 and "    💬 " or "       ") .. part, ctarget, "GleanComment")
     end
@@ -872,7 +873,7 @@ function Session:build()
             emit(m .. dl.text,
               vim.tbl_extend("force", mtarget, { line = ri }), "GleanSeen")
             for _, c in ipairs(comments_by_ord[base_ord + ri] or {}) do
-              emit_comment(c)
+              emit_comment(c, target)
             end
           end
         end
@@ -895,7 +896,7 @@ function Session:build()
           flush()
         end
         for _, c in ipairs(comments_by_ord[base_ord + li] or {}) do
-          emit_comment(c)
+          emit_comment(c, target)
         end
         li = li + 1
       end
@@ -995,14 +996,15 @@ function Session:build()
     emit("", {})
     emit("══ comments ══", {}, "GleanModeHeader")
     for _, path in ipairs(summary.order) do
-      emit(path, {}, "GleanFileHeader")
+      -- `<CR>` on the file row jumps to that file's header in the diff above.
+      emit(path, { summary_file = path }, "GleanFileHeader")
       for _, e in ipairs(summary.by_path[path]) do
         local loc = e.outdated and "(Outdated)"
           or (e.lnum and ("L%d"):format(e.lnum) or "L?")
-        -- A jumpable target back to the source line. Outdated comments (whose
-        -- anchor line is gone) have no live lnum, so they stay non-jumpable.
-        local ctarget = (not e.outdated and e.lnum)
-          and { commentloc = { path = path, lnum = e.lnum } } or {}
+        -- The comment record carried so `dd`/`i`/`e` act on it directly, plus
+        -- `summary_comment` so `<CR>` expands its hunk and jumps to it above.
+        local c = { path = path, anchor = e.anchor, content = e.content, text = e.text }
+        local ctarget = { comment = c, summary_comment = { path = path } }
         emit(("  %s  %s"):format(loc, e.line), ctarget, e.outdated and "GleanSeen" or "GleanContext")
         for i, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
           emit((i == 1 and "    💬 " or "       ") .. part, ctarget, "GleanComment")
@@ -2266,6 +2268,84 @@ function Session:open_comment_editor(initial, on_submit)
 end
 
 -- ---------------------------------------------------------------------------
+-- The first (topmost) diff file-header row for `path`, or nil. File headers
+-- carry a file/cfile index with no hunk or line.
+function Session:file_header_row(path)
+  local best
+  for r, t in pairs(self.row_map) do
+    if t and (t.file or t.cfile) and not t.hunk and not t.line then
+      local f = self:row_file(t)
+      if f and f.path == path and (not best or r < best) then best = r end
+    end
+  end
+  return best
+end
+
+-- The topmost inline diff row rendering comment `c` (matched by path/anchor/
+-- text), excluding the bottom summary rows, or nil when it isn't displayed.
+function Session:comment_row(c)
+  local best
+  for r, t in pairs(self.row_map) do
+    local rc = t and not t.summary_comment and t.comment
+    if rc and rc.path == c.path and rc.anchor == c.anchor and rc.text == c.text
+        and (not best or r < best) then best = r end
+  end
+  return best
+end
+
+-- Expand the file (and its seen section) for every displayed copy of `path`, so
+-- a re-render reveals its body. Overrides are set directly -- this is ephemeral
+-- navigation, not an undoable collapse toggle.
+function Session:expand_path(path)
+  if self.scope == "commits" then
+    for _, commit in ipairs(self.commits) do
+      for _, file in ipairs(commit.files) do
+        if file.path == path then
+          self.collapse[file_key(commit.sha, path)] = false
+          self.collapse[seen_key(commit.sha, path)] = false
+        end
+      end
+    end
+  else
+    self.collapse[cfile_key(path)] = false
+    self.collapse[cseen_key(path)] = false
+  end
+  self:apply_collapse()
+end
+
+-- `<CR>` on a summary file row: park the cursor on that file's header above.
+function Session:reveal_summary_file(path)
+  local r = self:file_header_row(path)
+  if r then self:restore_cursor(r) end
+  return r
+end
+
+-- `<CR>` on a summary comment row: expand the file, its seen section, and every
+-- marker run hiding its line, then park the cursor on the comment in the diff
+-- (falling back to the file header when the comment is outdated / not shown).
+function Session:reveal_summary_comment(c)
+  if not c then return end
+  self:expand_path(c.path)
+  self:render()
+  local changed = false
+  for _, t in pairs(self.row_map) do
+    if t.marker then
+      local f = self:row_file(t)
+      if f and f.path == c.path then
+        local a = self:collapse_action(t)
+        if a and self.collapse[a.key] ~= false then
+          self.collapse[a.key] = false
+          changed = true
+        end
+      end
+    end
+  end
+  if changed then self:render() end
+  local r = self:comment_row(c) or self:file_header_row(c.path)
+  if r then self:restore_cursor(r) end
+  return r
+end
+
 -- Jump-to-source (Stage 5).
 -- ---------------------------------------------------------------------------
 
@@ -2276,13 +2356,6 @@ end
 --   target/base (combined scope).
 function Session:jump_target(row)
   local target = self.row_map[row]
-  -- Comment-list rows jump straight to the (post-image) source line they were
-  -- authored against, the same destination <CR> reaches from the inline diff.
-  if target and target.commentloc then
-    local cl = target.commentloc
-    if not cl.lnum then return nil end
-    return { ref = self.target, path = cl.path, lnum = cl.lnum }
-  end
   if not target or not target.line then return nil end
   local dl, path, post_ref, pre_ref
   if self.scope == "commits" then
@@ -2326,6 +2399,16 @@ end
 -- populated from `git show ref:path`, with filetype inferred from the path.
 function Session:jump(row)
   if row == nil then row = self:cursor_row() end
+  local target = self.row_map[row]
+  -- Summary-section rows navigate *within* the glean buffer rather than to the
+  -- source file: a file row jumps to that file's header above, a comment row
+  -- expands its hunk and parks the cursor on the comment in the diff.
+  if target and target.summary_file then
+    return self:reveal_summary_file(target.summary_file)
+  end
+  if target and target.summary_comment then
+    return self:reveal_summary_comment(target.comment)
+  end
   local jt = self:jump_target(row)
   if not jt then return end
   local win = self.win
