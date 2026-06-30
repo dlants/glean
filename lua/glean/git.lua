@@ -93,6 +93,22 @@ function Git:current_branch()
   return (out:gsub("%s+$", ""))
 end
 
+-- The repository's shared git directory (`git rev-parse --git-common-dir`),
+-- resolved to an absolute path. Every linked worktree of a repo points at the
+-- same common dir, so this is a stable per-repo identity (whereas `--git-dir`
+-- differs per worktree). git may return a relative path (e.g. `.git`); we
+-- anchor it under `repo_root` and normalize. Returns nil on failure.
+function Git:common_dir()
+  local out = self:run({ "rev-parse", "--git-common-dir" })
+  if not out then return nil end
+  out = out:gsub("%s+$", "")
+  if out == "" then return nil end
+  if out:sub(1, 1) ~= "/" then
+    out = self.repo_root .. "/" .. out
+  end
+  return (vim.fn.resolve(vim.fn.fnamemodify(out, ":p")):gsub("/$", ""))
+end
+
 -- The upstream tracking ref for `ref` (default HEAD), e.g. `origin/main`.
 -- Returns the ref name, or nil when no upstream is configured.
 function Git:upstream(ref)

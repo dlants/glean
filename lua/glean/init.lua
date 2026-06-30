@@ -86,6 +86,18 @@ local function resolve_repo_root(buf_name)
   return git_mod.discover_repo_root(buf_dir) or cwd
 end
 
+-- The persisted review-store directory for `git`'s repository. Anchored on the
+-- git common dir (`Git:common_dir`), so every linked worktree of one repo shares
+-- a single store while distinct repos diverge. The common dir is reduced to a
+-- stable, filesystem-safe digest under the global base `stdpath("data")/glean`.
+-- Falls back to the global base when the common dir can't be resolved.
+function M.repo_state_dir(git)
+  local base = vim.fn.stdpath("data") .. "/glean"
+  local common = git:common_dir()
+  if not common then return base end
+  return base .. "/" .. vim.fn.sha256(common):sub(1, 16)
+end
+
 -- A short, human-readable label for a diff: `<repo>/<branch> <base>..<target>`,
 -- with the floating commit shown as `dirty`. Used for the listed buffer name.
 local function diff_label(git, base, target)
@@ -2774,7 +2786,8 @@ function M.open(opts)
   local files, commit_list, shas = build_model(git, opts.base, opts.target, commit_files)
   if not files then error("glean: build_model failed: " .. tostring(commit_list)) end
 
-  local store = state_mod.new({ dir = opts.state_dir })
+  local state_dir = opts.state_dir or M.repo_state_dir(git)
+  local store = state_mod.new({ dir = state_dir })
   store:load(shas)
 
   -- One buffer per (repo, base, target); reuse it on reopen. The live work-tree

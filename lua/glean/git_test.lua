@@ -226,4 +226,40 @@ do
   h.assert_true("mnemonicPrefix: no w/ prefix leaked",
     not paths["w/f.txt"] and not paths["i/f.txt"])
 end
+-- common_dir(): absolute path to the repo's shared .git, identical across linked
+-- worktrees (so the per-repo store dir is stable), distinct across repos.
+do
+  local cd = git:common_dir()
+  h.assert_true("common_dir: absolute", cd:sub(1, 1) == "/")
+  h.assert_true("common_dir: points at .git", cd:sub(-4) == ".git")
+
+  -- A linked worktree of the same repo resolves to the same common dir.
+  local wt = repo.root .. "/../glean_wt_" .. tostring(vim.fn.getpid())
+  repo.run({ "worktree", "add", "--detach", wt })
+  local wt_git = git_mod.new({
+    repo_root = wt,
+    run = function(args)
+      local cmd = { "git" }
+      for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+      local res = vim.system(cmd, { cwd = wt, env = repo.env, text = true }):wait()
+      return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+    end,
+  })
+  h.assert_eq("common_dir: shared across worktrees", wt_git:common_dir(), cd)
+  repo.run({ "worktree", "remove", "--force", wt })
+
+  -- A distinct repo resolves elsewhere.
+  local other = testutil.make_repo({ { msg = "x", files = { ["a"] = "a\n" } } })
+  local other_git = git_mod.new({
+    repo_root = other.root,
+    run = function(args)
+      local cmd = { "git" }
+      for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+      local res = vim.system(cmd, { cwd = other.root, env = other.env, text = true }):wait()
+      return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+    end,
+  })
+  h.assert_true("common_dir: distinct repos diverge", other_git:common_dir() ~= cd)
+end
+
 h.finish()

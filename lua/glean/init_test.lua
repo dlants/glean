@@ -2437,4 +2437,21 @@ do
   h.assert_eq("resolve_branch: remote target tip", rgit:rev_parse(target), remote_tip)
   h.assert_eq("resolve_branch: remote base is fork point", base, rrepo.shas[1])
 end
+-- repo_state_dir: derived from the git common dir, so two handles over the same
+-- common dir agree and distinct common dirs diverge; all under the global base.
+do
+  local function stub(common)
+    return { common_dir = function() return common end }
+  end
+  local base_dir = vim.fn.stdpath("data") .. "/glean"
+  local a = glean.repo_state_dir(stub("/repos/x/.git"))
+  local a2 = glean.repo_state_dir(stub("/repos/x/.git"))
+  local b = glean.repo_state_dir(stub("/repos/y/.git"))
+  h.assert_eq("repo_state_dir: stable for same common dir", a, a2)
+  h.assert_true("repo_state_dir: diverges across repos", a ~= b)
+  h.assert_true("repo_state_dir: under global base", a:find(base_dir, 1, true) == 1)
+  -- Unresolvable common dir falls back to the global base.
+  h.assert_eq("repo_state_dir: fallback", glean.repo_state_dir(stub(nil)), base_dir)
+end
+
 h.finish()
