@@ -1389,6 +1389,13 @@ function Session:update_sticky()
   if not (win and api.nvim_win_is_valid(win)) then
     return self:close_sticky()
   end
+  -- The float is anchored to `win`; it must only exist while that window is
+  -- actually displaying the glean buffer. If a different buffer was swapped in
+  -- (possibly without firing this buffer's local autocmds, e.g. when the glean
+  -- buffer is still visible in another split), tear the float down.
+  if api.nvim_win_get_buf(win) ~= self.buf then
+    return self:_close_sticky_win()
+  end
   local gen = self._render_gen or 0
   local w0 = vim.fn.line("w0", win) - 1
   local width = api.nvim_win_get_width(win)
@@ -2576,17 +2583,13 @@ local function setup_keymaps(buf, session)
     callback = function() session:close_sticky() end,
   })
   -- A different buffer being displayed in the glean window (or the glean buffer
-  -- being shown again) doesn't fire Win/BufLeave, so the float anchored to the
-  -- window would otherwise linger over the swapped-in buffer. Tear it down when
-  -- the glean buffer leaves a window and reinstate it when it returns.
-  api.nvim_create_autocmd("BufWinLeave", {
+  -- being shown again) doesn't fire this buffer's Win/BufLeave (especially while
+  -- the glean buffer stays visible in another split), so the float anchored to
+  -- the window would otherwise linger over the swapped-in buffer. Re-evaluate on
+  -- every window/buffer switch: update_sticky tears the float down when its
+  -- window no longer shows the glean buffer, and rebuilds it when it returns.
+  api.nvim_create_autocmd({ "BufWinEnter", "BufEnter", "WinEnter" }, {
     group = group,
-    buffer = buf,
-    callback = function() session:_close_sticky_win() end,
-  })
-  api.nvim_create_autocmd("BufWinEnter", {
-    group = group,
-    buffer = buf,
     callback = function()
       session._sticky_state = nil
       session:update_sticky()
