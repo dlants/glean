@@ -870,7 +870,7 @@ do
   h.assert_true("stage2-C: found +hi row", nrow ~= nil)
   s:toggle_seen(nrow)
   h.assert_true("stage2-C: untracked add hash-seen on WORKTREE",
-    next(s.store:seen_hashes(glean.WORKTREE, "new.txt")) ~= nil)
+    next(s.store:seen_hashes(s.store.wt_shard, "new.txt")) ~= nil)
 end
 
 -- Stage 3 — pending hunks inert + load assertion backstop. A non-loaded file's
@@ -1374,7 +1374,7 @@ do
   h.assert_true("worktree: found w.txt header", frow ~= nil)
   s:toggle_seen(frow)
   h.assert_true("worktree: content hash stored",
-    next(s.store:seen_hashes(glean.WORKTREE, "w.txt")) ~= nil)
+    next(s.store:seen_hashes(s.store.wt_shard, "w.txt")) ~= nil)
   -- reopen: working file unchanged, so the content hash still matches → fully seen.
   local s2 = openwt(seen_dir)
   local _, fline2 = find_row(s2, function(_, line, t)
@@ -1456,7 +1456,7 @@ do
   h.assert_true("wt combined: committed B range-seen on c1",
     state.covers(s.store:seen_ranges(wm.shas[2], "m.txt"), 2))
   h.assert_true("wt combined: dirty D hash-seen on WORKTREE",
-    next(s.store:seen_hashes(glean.WORKTREE, "m.txt")) ~= nil)
+    next(s.store:seen_hashes(s.store.wt_shard, "m.txt")) ~= nil)
   local jseen = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("wt combined: m.txt fully seen", jseen:find(" seen (1 hunks)", 1, true) ~= nil)
   -- reopen: persisted committed + floating seen still collapses the file.

@@ -98,6 +98,16 @@ function M.repo_state_dir(git)
   return base .. "/" .. vim.fn.sha256(common):sub(1, 16)
 end
 
+-- The worktree (content-addressed) shard id for `git`'s current branch. Splits
+-- the dual role of M.WORKTREE: the sentinel constant still identifies the
+-- synthetic floating commit in control flow, while this branch-anchored id is
+-- the *storage* shard under which uncommitted seen-marks and comments persist,
+-- so switching branches no longer bleeds content-addressed state. A detached
+-- HEAD shares a single `WORKTREE/HEAD` shard.
+function M.wt_shard(git)
+  return state_mod.COMMENTS_ID .. "/" .. (git:current_branch() or "HEAD")
+end
+
 -- A short, human-readable label for a diff: `<repo>/<branch> <base>..<target>`,
 -- with the floating commit shown as `dirty`. Used for the listed buffer name.
 local function diff_label(git, base, target)
@@ -1522,7 +1532,7 @@ function Session:apply_seen(a, op)
   if op == "mark" then self.store:mark(a.ids) else self.store:unmark(a.ids) end
   local touched = {}
   for _, id in ipairs(a.ids) do
-    touched[id.kind == "wt" and state_mod.COMMENTS_ID or id.sha] = true
+    touched[id.kind == "wt" and self.store.wt_shard or id.sha] = true
   end
   for sha in pairs(touched) do self.store:save_commit(sha) end
 end
@@ -1539,7 +1549,7 @@ function Session:apply_comment(a, op)
     self.store:remove_comment_record(a.path, a.record)
     self.store:add_comment_record(a.path, a.old_record)
   end
-  self.store:save_commit(state_mod.COMMENTS_ID)
+  self.store:save_commit(self.store.wt_shard)
 end
 
 -- Set a collapse key (nil clears it -> default) and mirror onto the model field
@@ -1851,7 +1861,7 @@ end
 -- section keys so marking re-collapses exactly that destination section.
 function Session:seen_collapse_key(id)
   if self.scope == "commits" then
-    return seen_key(id.kind == "wt" and M.WORKTREE or id.sha, id.path)
+    return seen_key(id.kind == "wt" and self.store.wt_shard or id.sha, id.path)
   end
   return cseen_key(id.path)
 end
@@ -2584,7 +2594,7 @@ function Session:reload()
   self._commit_files = self._commit_files or {}
   local files, commits, shas = build_model(self.git, self.base, self.target, self._commit_files)
   if not files then return end
-  local store = state_mod.new({ dir = self.state_dir })
+  local store = state_mod.new({ dir = self.state_dir, wt_shard = self.wt_shard })
   store:load(shas)
   self.files = files
   self.commits = commits
@@ -2787,7 +2797,8 @@ function M.open(opts)
   if not files then error("glean: build_model failed: " .. tostring(commit_list)) end
 
   local state_dir = opts.state_dir or M.repo_state_dir(git)
-  local store = state_mod.new({ dir = state_dir })
+  local wt_shard = M.wt_shard(git)
+  local store = state_mod.new({ dir = state_dir, wt_shard = wt_shard })
   store:load(shas)
 
   -- One buffer per (repo, base, target); reuse it on reopen. The live work-tree
@@ -2837,7 +2848,8 @@ function M.open(opts)
     base = opts.base,
     target = opts.target,
     worktree = worktree,
-    state_dir = opts.state_dir,
+    state_dir = state_dir,
+    wt_shard = wt_shard,
     files = files,
     commits = commit_list,
     _commit_files = commit_files,

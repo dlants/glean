@@ -264,4 +264,51 @@ do
     s2:is_seen_hash(state.COMMENTS_ID, "old.txt", "fresh"))
 end
 
+-- Stage 2 — branch-anchored worktree shard. The store routes all
+-- content-addressed (kind="wt") seen/comment access through `wt_shard`, so a mark
+-- made on branch A's shard is invisible when the same identity is queried under
+-- branch B's shard, while round-tripping within A. Branch names containing "/"
+-- map to a single safe shard file.
+do
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local id = state.wt_identity("w.txt", "line")
+
+  local a = state.new({ dir = dir, wt_shard = "WORKTREE/feature/a" })
+  a:load({})
+  a:mark({ id })
+  a:save_commit(a.wt_shard)
+  h.assert_true("wt_shard: seen under A", a:is_seen(id))
+
+  -- The branch-with-slash shard maps to a single readable file.
+  h.assert_eq("wt_shard: slash-safe filename readable",
+    vim.fn.filereadable(a:shard_path("WORKTREE/feature/a")), 1)
+
+  local b = state.new({ dir = dir, wt_shard = "WORKTREE/feature/b" })
+  b:load({})
+  h.assert_true("wt_shard: unseen under B", not b:is_seen(id))
+
+  -- Reopening A's shard still sees the mark; B's load left A's file untouched.
+  local a2 = state.new({ dir = dir, wt_shard = "WORKTREE/feature/a" })
+  a2:load({})
+  h.assert_true("wt_shard: A persists on reload", a2:is_seen(id))
+end
+
+-- Stage 2 — comments exhibit the same branch isolation as seen-marks.
+do
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local rec = { anchor = 1, content = { "x" }, text = "hi" }
+
+  local a = state.new({ dir = dir, wt_shard = "WORKTREE/a" })
+  a:load({})
+  a:add_comment_record("c.txt", rec)
+  a:save_commit(a.wt_shard)
+  h.assert_eq("wt_shard comments: present under A", #a:comments_for("c.txt"), 1)
+
+  local b = state.new({ dir = dir, wt_shard = "WORKTREE/b" })
+  b:load({})
+  h.assert_eq("wt_shard comments: absent under B", #b:comments_for("c.txt"), 0)
+end
+
 h.finish()

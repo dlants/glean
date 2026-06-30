@@ -221,6 +221,23 @@ Invariants (all stages):
 
 ## Stage 2 — Branch-anchored worktree shard
 
+> Stage 2 status: DONE. `Store.new` now carries `wt_shard` (`opts.wt_shard or
+> M.COMMENTS_ID`); every content-addressed (`kind="wt"`) reference in
+> `state.lua` — `load`, `is_seen`/`mark`/`unmark`, `comments_commit`,
+> `remove_comment_record`, `comments_for` — routes through `self.wt_shard`.
+> `shard_path` percent-encodes any char outside `[%w._-]`, so a
+> `WORKTREE/feature/foo` id maps to one safe, reversible filename.
+> `init.lua`: `M.wt_shard(git)` = `WORKTREE/<current_branch or HEAD>`; `M.open`
+> sets it on the store and the session, the two save sites + the render seen-key
+> use `store.wt_shard`, and `reload()` reconstructs the store with the session's
+> `wt_shard`. Decision: detached HEAD shares a single `WORKTREE/HEAD` shard.
+> Also fixed a latent Stage-1 bug — the session stored `opts.state_dir` (nil
+> when derived), so a live `reload()` wrote to the global dir; it now stores the
+> resolved `state_dir`. Tests: `state_test.lua` adds branch-isolation cases for
+> seen-marks (incl. slash-safe filename) and comments; the three init_test
+> assertions that probed the hardcoded `WORKTREE` shard now read
+> `s.store.wt_shard`. Full suite green.
+
 - Goal: marks/comments on uncommitted lines made on branch A do not appear when
   the same working copy is on branch B; round-tripping within branch A persists.
 - Implementation: add `store.wt_shard` (defaulting to `M.COMMENTS_ID`), route

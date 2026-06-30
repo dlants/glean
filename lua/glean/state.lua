@@ -173,11 +173,19 @@ Store.__index = Store
 function M.new(opts)
   opts = opts or {}
   local dir = opts.dir or (vim.fn.stdpath("data") .. "/glean")
-  return setmetatable({ dir = dir, data = {} }, Store)
+  return setmetatable({ dir = dir, data = {}, wt_shard = opts.wt_shard or M.COMMENTS_ID }, Store)
 end
 
+-- Map a shard id to a filesystem-safe filename. Most ids are commit shas or the
+-- bare worktree sentinel, but branch-anchored worktree shards carry the branch
+-- name (e.g. `WORKTREE/feature/foo`), so any character outside a safe set is
+-- percent-encoded. The mapping is reversible and collision-free, keeping the
+-- id↔filename relationship in this one place.
 function Store:shard_path(sha)
-  return self.dir .. "/" .. sha .. ".json"
+  local safe = sha:gsub("[^%w._-]", function(ch)
+    return string.format("%%%02X", ch:byte())
+  end)
+  return self.dir .. "/" .. safe .. ".json"
 end
 
 -- Read the shards for the given commit shas into `self.data`, replacing any
@@ -223,8 +231,8 @@ function Store:load(shas)
   end
   -- Comments are content-addressed and global; their shard must be present for
   -- every review, even committed-range reviews that don't span it.
-  if not wanted[M.COMMENTS_ID] then
-    self:read_shard(M.COMMENTS_ID)
+  if not wanted[self.wt_shard] then
+    self:read_shard(self.wt_shard)
   end
   return self.data
 end
@@ -432,10 +440,10 @@ end
 -- Comments are re-anchored by content at render time, independent of any commit.
 
 function Store:comments_commit()
-  local c = self.data[M.COMMENTS_ID]
+  local c = self.data[self.wt_shard]
   if not c then
     c = { worktree = true, files = {} }
-    self.data[M.COMMENTS_ID] = c
+    self.data[self.wt_shard] = c
   end
   c.comments = c.comments or {}
   return c
@@ -464,7 +472,7 @@ end
 -- Remove the last comment for `path` matching the given record by anchor,
 -- content[] and text. Used to reverse an add; no-op if none match.
 function Store:remove_comment_record(path, record)
-  local c = self.data[M.COMMENTS_ID]
+  local c = self.data[self.wt_shard]
   local list = c and c.comments and c.comments[path]
   if not list then return end
   for i = #list, 1, -1 do
@@ -478,7 +486,7 @@ end
 
 -- All comment records for `path` (possibly empty).
 function Store:comments_for(path)
-  local c = self.data[M.COMMENTS_ID]
+  local c = self.data[self.wt_shard]
   return (c and c.comments and c.comments[path]) or {}
 end
 
@@ -587,7 +595,7 @@ function Store:is_seen(id)
   elseif id.kind == "del" then
     return M.covers(self:seen_del_ranges(id.sha, id.path), id.lnum)
   elseif id.kind == "wt" then
-    return self:is_seen_hash(M.COMMENTS_ID, id.path, id.text)
+    return self:is_seen_hash(self.wt_shard, id.path, id.text)
   end
   return false
 end
@@ -611,7 +619,7 @@ function Store:mark(ids)
     elseif id.kind == "del" then
       self:mark_seen_del(id.sha, id.path, { id.lnum, id.lnum })
     elseif id.kind == "wt" then
-      self:mark_seen_hashes(M.COMMENTS_ID, id.path, { id.text })
+      self:mark_seen_hashes(self.wt_shard, id.path, { id.text })
     end
   end
 end
@@ -643,8 +651,8 @@ function Store:unmark(ids)
       self:unmark_seen_del(id.sha, id.path, { id.lnum, id.lnum })
       prune_file(self, id.sha, id.path)
     elseif id.kind == "wt" then
-      self:unmark_seen_hashes(M.COMMENTS_ID, id.path, { id.text })
-      prune_file(self, M.COMMENTS_ID, id.path)
+      self:unmark_seen_hashes(self.wt_shard, id.path, { id.text })
+      prune_file(self, self.wt_shard, id.path)
     end
   end
 end
