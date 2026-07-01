@@ -1200,6 +1200,7 @@ local function dirty_sections(prev, cur)
 end
 
 function Session:render()
+  if not (api.nvim_buf_is_valid(self.buf) and api.nvim_buf_is_loaded(self.buf)) then return end
   local lines, row_map, highlights, intra_work, sections = self:build()
   local sigs = self:section_sigs(lines, row_map, highlights, sections)
   local prev = self._sections
