@@ -100,11 +100,29 @@ glean has no external plugin dependencies — it shells out to `git`. Neovim
 ```lua
 require("glean.init").setup({
   default_base = "main",   -- trunk used for fork-point / upstream resolution
+  min_seen_run = 5,        -- combined-scope: demote seen runs shorter than this to unseen
 })
 ```
 
 `setup` registers the `:Glean` command and defines the
 highlight groups (re-derived from `DiffAdd`/`DiffDelete` on every `ColorScheme`).
+
+### `min_seen_run`
+
+When you revisit code you previously reviewed and an agent has since changed it,
+a single combined-scope hunk can end up with short, scattered runs of
+previously-seen lines interleaved with newer unseen changes. `min_seen_run` is a
+display-only threshold (default `5`): in the combined scope, a seen run shorter
+than `min_seen_run` lines inside an otherwise-unseen hunk is rendered as ordinary
+unseen `+`/`-` rows instead of a collapsed `✓ marked N lines` marker, so you no
+longer have to unmark scattered lines by hand. Longer seen runs still collapse to
+a marker. Set `min_seen_run` to `1` (or `0`) to disable demotion.
+
+The persisted seen store is never touched by this — it stays the plain
+`(commit, line)` model. If you explicitly re-mark a demoted line as seen in the
+current context, that mark is recorded as a content-addressed sticky override
+that keeps the line seen across renders and reopens, and self-invalidates once
+the line's content changes again.
 
 ## Related plugins
 

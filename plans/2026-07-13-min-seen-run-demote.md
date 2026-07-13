@@ -249,6 +249,12 @@ route through `apply_seen`'s unmark branch, which clears stickiness too.
 
 ## Stage 4 — Docs
 
+**Status: DONE.** Added a `min_seen_run` entry to the `setup` example and a new
+`### min_seen_run` subsection in `README.md` describing the combined-scope
+display-only demotion and the content-addressed sticky override. Added an
+architecture paragraph in `context.md` covering within-hunk demotion and
+stickiness. Prose only; full suite green.
+
 - Goal: document `min_seen_run` in `README.md` (user-facing) and note the
   display-demote + content-addressed sticky behavior in `context.md`'s
   architecture notes.

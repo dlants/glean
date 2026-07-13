@@ -17,6 +17,15 @@ it is seen" are one computation by construction. Collapse state is ephemeral
 view-state, initialized from seen status then evolved independently (never
 persisted).
 
+In the combined scope, within-hunk marker rendering applies a display-only
+demotion (config `min_seen_run`, default 5): a seen run shorter than the
+threshold inside a partially-seen hunk renders as plain unseen rows rather than a
+collapsed `✓ marked` marker. This never touches the persisted `(sha, lnum)` seen
+model or section/rollup counts — it is purely how a partially-seen hunk looks
+inside. Explicit re-marks record a content-addressed sticky override (keyed by
+path + `state.line_hash(text)`, persisted in the always-loaded `WORKTREE` shard
+alongside comments) that exempts a line from demotion across renders/reopens and
+self-invalidates when the line's content changes.
 Line identities come in three kinds:
 - committed add line → `(sha, post-image lnum)`
 - committed del line → `(remover_sha, pre-image lnum)`
