@@ -387,6 +387,20 @@ local function wt_slice(store)
   return c
 end
 
+-- Prune the worktree shard when it carries no seen-marks, comments, files, or
+-- sticky marks, so a fully-undone edit restores byte-identical JSON.
+local function wt_prune(store)
+  local c = store.data[store.wt_shard]
+  if not c then return end
+  local sm_empty = not c.seen_marks or next(c.seen_marks) == nil
+  local cm_empty = not c.comments or next(c.comments) == nil
+  local f_empty = not c.files or next(c.files) == nil
+  local st_empty = not c.sticky or next(c.sticky) == nil
+  if sm_empty and cm_empty and f_empty and st_empty then
+    store.data[store.wt_shard] = nil
+  end
+end
+
 -- Append a seen-mark block record { anchor, content = {...} } for `path`.
 function Store:add_seen_record(path, record)
   local c = wt_slice(self)
@@ -412,12 +426,44 @@ function Store:set_seen_records(path, list)
   else
     c.seen_marks[path] = list
   end
-  local sm_empty = not c.seen_marks or next(c.seen_marks) == nil
-  local cm_empty = not c.comments or next(c.comments) == nil
-  local f_empty = not c.files or next(c.files) == nil
-  if sm_empty and cm_empty and f_empty then
-    self.data[self.wt_shard] = nil
-  end
+  wt_prune(self)
+end
+
+-- ── Content-addressed sticky seen-overrides ────────────────────────────────
+-- A sticky mark exempts a line from the combined-scope display-demotion of short
+-- seen runs: an explicit user mark records the line's content (path + content
+-- hash) here so the line keeps rendering seen even when its store-seen run is too
+-- short to survive demotion. Because the key is the content hash, a sticky mark
+-- self-invalidates the moment the line's text changes (the hash stops matching),
+-- which is exactly the "revisit previously reviewed code" behavior we want. This
+-- set is a sibling of comments/seen-marks in the always-loaded worktree shard; it
+-- never touches the seen `(sha, lnum)` model.
+
+-- Record a line's content as a sticky seen-override for `path`.
+function Store:add_sticky(path, text)
+  local c = wt_slice(self)
+  c.sticky = c.sticky or {}
+  c.sticky[path] = c.sticky[path] or {}
+  c.sticky[path][M.line_hash(text)] = true
+end
+
+-- Drop a line's sticky seen-override for `path`, pruning emptied containers so
+-- the shard round-trips to byte-identical JSON.
+function Store:remove_sticky(path, text)
+  local c = self.data[self.wt_shard]
+  local set = c and c.sticky and c.sticky[path]
+  if not set then return end
+  set[M.line_hash(text)] = nil
+  if next(set) == nil then c.sticky[path] = nil end
+  if next(c.sticky) == nil then c.sticky = nil end
+  wt_prune(self)
+end
+
+-- Is a line's content a sticky seen-override for `path`?
+function Store:is_sticky(path, text)
+  local c = self.data[self.wt_shard]
+  local set = c and c.sticky and c.sticky[path]
+  return set ~= nil and set[M.line_hash(text)] == true
 end
 
 -- Append a comment anchored to a new-file line's content hash.

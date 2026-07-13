@@ -261,4 +261,30 @@ do
   h.assert_eq("wt_shard comments: absent under B", #b:comments_for("c.txt"), 0)
 end
 
+-- Sticky seen-overrides: content-addressed under the worktree shard, round-trip
+-- on reload, self-invalidate on content change, and prune to byte-identical JSON
+-- when removed.
+do
+  local dir = vim.fn.tempname()
+  local s = state.new({ dir = dir })
+  s:load({ state.COMMENTS_ID })
+  local empty = vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} })
+
+  s:add_sticky("s.txt", "A1")
+  h.assert_true("sticky: recorded line is sticky", s:is_sticky("s.txt", "A1"))
+  h.assert_true("sticky: other content not sticky", not s:is_sticky("s.txt", "A1x"))
+  h.assert_true("sticky: other path not sticky", not s:is_sticky("o.txt", "A1"))
+
+  s:save_commit(state.COMMENTS_ID)
+  local s2 = state.new({ dir = dir })
+  s2:load({ state.COMMENTS_ID })
+  h.assert_true("sticky: persists on reload", s2:is_sticky("s.txt", "A1"))
+
+  -- Removing the sticky mark prunes the slice back to byte-identical JSON.
+  s:remove_sticky("s.txt", "A1")
+  h.assert_true("sticky: removed no longer sticky", not s:is_sticky("s.txt", "A1"))
+  h.assert_eq("sticky: add+remove restores JSON",
+    vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
+end
+
 h.finish()

@@ -1207,6 +1207,107 @@ do
   h.assert_true("disabled: short run marker present", disabled:find("✓ marked 2 lines", 1, true) ~= nil)
 end
 
+-- Stage 3 — content-addressed sticky override on explicit marks. A short store-
+-- seen run demotes; an explicit visual mark of the demoted lines records a
+-- content-addressed sticky override so they render seen again (and re-collapse to
+-- a marker), persist across reopen, and self-invalidate when the line text later
+-- changes -- all without mutating the seen `(sha, lnum)` store.
+do
+  local srepo = testutil.make_repo({
+    { msg = "base", files = { ["s.txt"] = "ctx\n" } },
+    { msg = "c1: add A1..A4", files = { ["s.txt"] = "ctx\nA1\nA2\nA3\nA4\n" } },
+    { msg = "c2: add A5", files = { ["s.txt"] = "ctx\nA1\nA2\nA3\nA4\nA5\n" } },
+  })
+  local srun = function(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = srepo.root, env = srepo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local sdir = vim.fn.tempname()
+  local function open_s(target)
+    return glean.open({
+      base = srepo.shas[1], target = target or srepo.shas[3], repo_root = srepo.root,
+      run = srun, open_window = false, state_dir = sdir, scope = "combined",
+      min_seen_run = 5,
+    })
+  end
+  local function joined(s)
+    return table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  end
+  local function rows_for(s, texts)
+    local want = {}
+    for _, t in ipairs(texts) do want["+" .. t] = true end
+    local rs = {}
+    for r = 0, api.nvim_buf_line_count(s.buf) - 1 do
+      local line = api.nvim_buf_get_lines(s.buf, r, r + 1, false)[1]
+      local tgt = s.row_map[r]
+      if line and want[line] and tgt and tgt.cfile and tgt.line then rs[#rs + 1] = r end
+    end
+    return rs
+  end
+
+  local s = open_s()
+  -- Seed the short store-seen run directly (bypassing the mark path) so it demotes.
+  local cf = s.combined_files[1]
+  local owner = s:combined_owner(cf.path)
+  local function id_for(text)
+    for _, hunk in ipairs(cf.hunks) do
+      for _, dl in ipairs(hunk.lines) do
+        if dl.kind == "add" and dl.text == text then return s:line_identity(dl, cf.path, owner) end
+      end
+    end
+  end
+  for _, t in ipairs({ "A1", "A2" }) do
+    local id = id_for(t)
+    s.store:mark_seen(id.sha, id.path, { id.lnum, id.lnum })
+  end
+  s.store:save_commit(id_for("A1").sha)
+  s:render()
+  h.assert_true("sticky: short run demoted before mark", joined(s):find("marked", 1, true) == nil)
+
+  -- Behavior 2: marking the already-store-seen demoted lines records stickiness
+  -- and re-renders them seen (a marker), without mutating the seen-store shard.
+  local csha = id_for("A1").sha
+  local seen_before = vim.json.encode(s.store.data[csha])
+  local rs = rows_for(s, { "A1", "A2" })
+  s:mark_visual_range(rs[1], rs[#rs])
+  h.assert_true("sticky: marked demoted lines render seen", joined(s):find("✓ marked 2 lines", 1, true) ~= nil)
+  h.assert_eq("sticky: seen-store shard unchanged by already-seen mark",
+    vim.json.encode(s.store.data[csha]), seen_before)
+
+  -- Behavior 1: stickiness persists across a reopen of the session.
+  local s2 = open_s()
+  s2:render()
+  h.assert_true("sticky: survives reopen", joined(s2):find("✓ marked 2 lines", 1, true) ~= nil)
+
+  -- Behavior 3: after the sticky line's text changes, its content hash no longer
+  -- matches, so the run re-demotes. Rewrite s.txt (A1 -> A1x) in a fresh commit
+  -- range that reuses the same content-addressed sticky store.
+  local f = assert(io.open(srepo.root .. "/s.txt", "w"))
+  f:write("ctx\nA1x\nA2\nA3\nA4\nA5\n")
+  f:close()
+  srepo.run({ "add", "--", "s.txt" })
+  srepo.run({ "commit", "-q", "-m", "c3: A1 -> A1x" })
+  local newtarget = srepo.run({ "rev-parse", "HEAD" })
+  local s3 = open_s(newtarget)
+  -- Seed A2 (unchanged) and A1x seen so they'd form a short run; A2's sticky
+  -- still matches, A1x's does not.
+  local cf3 = s3.combined_files[1]
+  local owner3 = s3:combined_owner(cf3.path)
+  local function id3(text)
+    for _, hunk in ipairs(cf3.hunks) do
+      for _, dl in ipairs(hunk.lines) do
+        if dl.kind == "add" and dl.text == text then return s3:line_identity(dl, cf3.path, owner3) end
+      end
+    end
+  end
+  local a2 = id3("A2")
+  s3.store:mark_seen(a2.sha, a2.path, { a2.lnum, a2.lnum })
+  s3:render()
+  h.assert_true("sticky: changed line re-demotes (A1x plain row)", joined(s3):find("\n+A1x", 1, true) ~= nil)
+end
+
 -- (e): comments in combined route to the owning commit of each line.
 do
   local dir = vim.fn.tempname()

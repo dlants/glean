@@ -987,7 +987,10 @@ function Session:build()
     -- per-line display-seen predicate. Store-derived section placement above is
     -- untouched; this only changes how a partially-seen hunk looks inside.
     if self.scope == "combined" and sec ~= "seen" then
-      local display = display_seen_map(runs, self.min_seen_run, nil)
+      local is_sticky = function(li)
+        return self.store:is_sticky(path, hunk.lines[li].text)
+      end
+      local display = display_seen_map(runs, self.min_seen_run, is_sticky)
       runs = hunk_marker_runs(hunk, function(_, li) return display[li] == true end)
     end
     local run_at = {}
@@ -1686,6 +1689,14 @@ function Session:apply_seen(a, op)
     if op == "mark" then self:apply_wt_mark(path, ids) else self:apply_wt_unmark(path, ids) end
     touched[self.store.wt_shard] = true
   end
+  -- Content-addressed sticky overrides (combined scope): an explicit mark exempts
+  -- the line from short-run display-demotion, and self-invalidates when its text
+  -- changes. Applied even when the seen-store was a no-op (already-seen lines), so
+  -- the override still sticks and re-renders.
+  for _, s in ipairs(a.sticky or {}) do
+    if op == "mark" then self.store:add_sticky(s.path, s.text) else self.store:remove_sticky(s.path, s.text) end
+    touched[self.store.wt_shard] = true
+  end
   for sha in pairs(touched) do self.store:save_commit(sha) end
 end
 
@@ -2109,6 +2120,38 @@ end
 -- whether every addressed identity is already seen. Mark/unmark is defined
 -- solely as add/remove over the target's changed-line identities; both scopes go
 -- through the unified identity store, so placement and the action agree.
+-- The content-addressed sticky records a target covers: one { path, text } per
+-- changed (add/del) line, combined scope only (demotion is combined-only, so
+-- stickiness is meaningless elsewhere). Recorded for every marked line -- even
+-- already-store-seen ones -- so an explicit mark exempts the line from short-run
+-- display-demotion and self-invalidates when its text later changes.
+function Session:target_sticky(target)
+  if self.scope ~= "combined" then return {} end
+  local cf = self.combined_files and self.combined_files[target.cfile]
+  if not cf then return {} end
+  local hunks = target.hunk and { cf.hunks[target.hunk] } or cf.hunks
+  local out = {}
+  for _, h in ipairs(hunks) do
+    for _, dl in ipairs(h.lines) do
+      if dl.kind == "add" or dl.kind == "del" then
+        out[#out + 1] = { path = cf.path, text = dl.text }
+      end
+    end
+  end
+  return out
+end
+
+-- The content-addressed sticky record for a single row's diff line, or nil if
+-- the row is not a changed (add/del) diff line. Feeds the visual-mark path.
+function Session:row_sticky(target)
+  if not (target and target.cfile and target.hunk and target.line) then return nil end
+  local cf = self.combined_files and self.combined_files[target.cfile]
+  if not cf then return nil end
+  local dl = cf.hunks[target.hunk] and cf.hunks[target.hunk].lines[target.line]
+  if not dl or (dl.kind ~= "add" and dl.kind ~= "del") then return nil end
+  return { path = cf.path, text = dl.text }
+end
+
 function Session:toggle_seen(row)
   if row == nil then row = self:cursor_row() end
   local target = self.row_map[row]
@@ -2140,8 +2183,9 @@ function Session:toggle_seen(row)
       seen_keys[self:seen_collapse_key(id)] = true
     end
   end
-  if #changed == 0 then return end
-  local action = { kind = "seen", op = op, ids = changed }
+  local sticky = self:target_sticky(target)
+  if #changed == 0 and #sticky == 0 then return end
+  local action = { kind = "seen", op = op, ids = changed, sticky = sticky }
   -- Marking always re-collapses the destination seen section, even if it had been
   -- explicitly expanded: clearing the override restores the collapsed default.
   if op == "mark" then
@@ -2295,16 +2339,23 @@ function Session:prev_file() self:nav_to(is_file_row, false) end
 -- those not already seen, so the action reverses exactly.
 function Session:mark_visual_range(srow, erow)
   if srow > erow then srow, erow = erow, srow end
-  local ids = {}
+  local ids, sticky = {}, {}
   for row = srow, erow do
     local t = self.row_map[row]
     -- Pending rows are inert (no markable identity); skip before row_identity,
     -- whose non-loaded assertion is a backstop, not a selection filter.
     local id = t and not t.pending and self:row_identity(t)
-    if id and not self:id_seen(id) then ids[#ids + 1] = id end
+    if id then
+      if not self:id_seen(id) then ids[#ids + 1] = id end
+      -- Record stickiness for every selected changed line (combined scope),
+      -- even already-store-seen ones, so an explicit mark exempts it from
+      -- short-run display-demotion and self-invalidates on content change.
+      local rec = self.scope == "combined" and self:row_sticky(t)
+      if rec then sticky[#sticky + 1] = rec end
+    end
   end
-  if #ids == 0 then return end
-  self:perform({ kind = "seen", op = "mark", ids = ids })
+  if #ids == 0 and #sticky == 0 then return end
+  self:perform({ kind = "seen", op = "mark", ids = ids, sticky = sticky })
   self:render()
 end
 

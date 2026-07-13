@@ -205,6 +205,26 @@ the disabled (threshold 1) case. Full suite green.
 
 ## Stage 3 — Content-addressed sticky override on explicit marks
 
+**Status: DONE.** A content-addressed sticky set lives under the always-loaded
+worktree shard (`c.sticky[path][line_hash(text)] = true`) with
+`Store:add_sticky`/`remove_sticky`/`is_sticky` in `state.lua`; a shared
+`wt_prune` helper (now also used by `set_seen_records`) drops the shard back to
+byte-identical JSON once seen-marks/comments/files/sticky are all empty. Rendering:
+`emit_hunk` (combined, unseen section) now passes a real `is_sticky(li)` closure
+(`store:is_sticky(path, hunk.lines[li].text)`) into `display_seen_map`, so sticky
+lines survive short-run demotion. Marks: `apply_seen` applies `a.sticky` records
+(add on mark / remove on unmark, so undo/redo reverse cleanly) even when the
+seen-store mutation is empty; `toggle_seen` and `mark_visual_range` collect
+sticky records (`target_sticky`/`row_sticky`, combined scope only) for every
+marked line — including already-store-seen ones — and no longer early-return when
+only stickiness changed. New integration tests in `init_test.lua` cover
+demote→mark→seen (marker), no seen-store mutation for the already-seen case,
+persistence across reopen, and content-change re-demotion; `state_test.lua` adds
+store-level sticky round-trip / self-invalidation / prune tests. Full suite green.
+Deviation: stickiness is applied in both `toggle_seen` and `mark_visual_range`
+(the plan only named these two paths); `unmark_marker` was intentionally left to
+route through `apply_seen`'s unmark branch, which clears stickiness too.
+
 - Goal: a persisted, content-addressed sticky set (parallel to comments) exists;
   `mark_visual_range` and `toggle_seen` record a sticky mark for every line the
   user marks (even already-store-seen ones) and re-render; a demoted line
