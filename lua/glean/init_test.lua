@@ -1109,6 +1109,7 @@ do
     return glean.open({
       base = crepo.shas[1], target = crepo.shas[3], repo_root = crepo.root,
       run = crun, open_window = false, state_dir = cdir, scope = "combined",
+      min_seen_run = 1,
     })
   end
   local function crow(s, text)
@@ -1147,6 +1148,63 @@ do
   h.assert_true("combined marker: A1 visible again", joined:find("\n+A1", 1, true) ~= nil)
   h.assert_eq("combined marker: c1 store empty", #s.store:seen_ranges(crepo.shas[2], "mm.txt"), 0)
   h.assert_eq("combined marker: c2 store empty", #s.store:seen_ranges(crepo.shas[3], "mm.txt"), 0)
+end
+
+-- Stage 2 — combined-scope demotion (render-only). A short store-seen run
+-- interleaved with newer unseen changes renders as ordinary unseen +rows (no
+-- marker); a long run still collapses to a single marker. Seeds the store
+-- directly (bypassing the mark path) so the render behavior is isolated from
+-- the sticky-override layer.
+do
+  local drepo = testutil.make_repo({
+    { msg = "base", files = { ["d.txt"] = "ctx\n" } },
+    { msg = "c1: add A1..A6", files = { ["d.txt"] = "ctx\nA1\nA2\nA3\nA4\nA5\nA6\n" } },
+    { msg = "c2: add A7", files = { ["d.txt"] = "ctx\nA1\nA2\nA3\nA4\nA5\nA6\nA7\n" } },
+  })
+  local drun = function(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = drepo.root, env = drepo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local function seed_and_render(threshold, marks)
+    local s = glean.open({
+      base = drepo.shas[1], target = drepo.shas[3], repo_root = drepo.root,
+      run = drun, open_window = false, state_dir = vim.fn.tempname(),
+      scope = "combined", min_seen_run = threshold,
+    })
+    local cf = s.combined_files[1]
+    local owner = s:combined_owner(cf.path)
+    local function id_for(text)
+      for _, hunk in ipairs(cf.hunks) do
+        for _, dl in ipairs(hunk.lines) do
+          if dl.kind == "add" and dl.text == text then
+            return s:line_identity(dl, cf.path, owner)
+          end
+        end
+      end
+    end
+    for _, t in ipairs(marks) do
+      local id = id_for(t)
+      s.store:mark_seen(id.sha, id.path, { id.lnum, id.lnum })
+    end
+    s:render()
+    return table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  end
+
+  local short = seed_and_render(5, { "A1", "A2" })
+  h.assert_true("demote: no marker for short run", short:find("marked", 1, true) == nil)
+  h.assert_true("demote: A1 rendered as plain row", short:find("\n+A1", 1, true) ~= nil)
+  h.assert_true("demote: A2 rendered as plain row", short:find("\n+A2", 1, true) ~= nil)
+
+  local long = seed_and_render(5, { "A1", "A2", "A3", "A4", "A5", "A6" })
+  h.assert_true("collapse: long run marker present", long:find("✓ marked 6 lines", 1, true) ~= nil)
+  h.assert_true("collapse: A1 hidden under marker", long:find("\n+A1", 1, true) == nil)
+  h.assert_true("collapse: hunk stays unseen", long:find(" seen (", 1, true) == nil)
+
+  -- threshold <= 1 disables demotion: the short run collapses again.
+  local disabled = seed_and_render(1, { "A1", "A2" })
+  h.assert_true("disabled: short run marker present", disabled:find("✓ marked 2 lines", 1, true) ~= nil)
 end
 
 -- (e): comments in combined route to the owning commit of each line.

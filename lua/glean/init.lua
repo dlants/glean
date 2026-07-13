@@ -982,6 +982,14 @@ function Session:build()
       return id ~= nil and self:id_seen(id)
     end
     local runs = sec == "seen" and {} or hunk_marker_runs(hunk, seen_line)
+    -- Combined scope only: demote short seen runs interleaved with newer unseen
+    -- changes to plain unseen rows, re-deriving markers from the resulting
+    -- per-line display-seen predicate. Store-derived section placement above is
+    -- untouched; this only changes how a partially-seen hunk looks inside.
+    if self.scope == "combined" and sec ~= "seen" then
+      local display = display_seen_map(runs, self.min_seen_run, nil)
+      runs = hunk_marker_runs(hunk, function(_, li) return display[li] == true end)
+    end
     local run_at = {}
     for _, run in ipairs(runs) do run_at[run.lo] = run end
     -- Intra-line emphasis pairs deleted lines against added lines by textual

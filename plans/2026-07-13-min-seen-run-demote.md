@@ -177,6 +177,16 @@ no luacheck configured in repo.
 
 ## Stage 2 — Wire demotion into combined-scope rendering
 
+**Status: DONE.** `emit_hunk` now, in combined scope's non-seen section, feeds
+its store-derived runs through `display_seen_map(self.min_seen_run)` and
+re-derives marker runs from the resulting per-line predicate (sticky arg left
+`nil` until Stage 3). Short seen runs render as plain unseen `+/-` rows; runs
+`>= threshold` still collapse. Section placement/counts untouched. The
+pre-existing "combined marker" test (a 2-line marker) now passes
+`min_seen_run = 1` to keep testing marker routing with demotion disabled; a new
+render test covers demote (short run, no marker), collapse (6-line marker), and
+the disabled (threshold 1) case. Full suite green.
+
 - Goal: `emit_hunk` (combined scope, unseen section) feeds its raw runs through
   `display_seen_map` and re-derives markers from the resulting predicate; short
   non-sticky runs now render as ordinary unseen rows. Commits scope and the seen
