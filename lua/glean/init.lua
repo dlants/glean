@@ -46,6 +46,10 @@ local NS_STICKY = api.nvim_create_namespace("glean_sticky_hl")
 
 M.config = {
   default_base = "main",
+  -- Combined-scope display-only demotion threshold: a seen run inside a
+  -- partially-seen hunk shorter than this collapses back to unseen rows rather
+  -- than a `✓ marked` marker. 0 or 1 disables demotion entirely.
+  min_seen_run = 5,
 }
 
 -- Registry of live glean buffers, keyed by (repo_root, base, target), so a
@@ -240,6 +244,27 @@ local function hunk_marker_runs(hunk, is_seen)
   end
   close()
   return runs
+end
+
+-- Display-only demotion of short seen runs (combined scope). Given the raw
+-- marker `runs` from `hunk_marker_runs` (store-derived seen), a `threshold`, and
+-- an `is_sticky(i)` predicate over `hunk.lines` indices, returns a per-index map
+-- of which changed lines should still render as seen. A run of length
+-- `>= threshold` keeps every line; a shorter run keeps only its sticky lines and
+-- demotes the rest to plain unseen rows. `threshold <= 1` disables demotion
+-- (every seen line stays). The persisted store is never consulted or mutated.
+local function display_seen_map(runs, threshold, is_sticky)
+  local map = {}
+  local disabled = not threshold or threshold <= 1
+  for _, run in ipairs(runs) do
+    local keep_all = disabled or run.n >= threshold
+    for i = run.lo, run.hi_line do
+      if keep_all or (is_sticky and is_sticky(i)) then
+        map[i] = true
+      end
+    end
+  end
+  return map
 end
 
 -- ---------------------------------------------------------------------------
@@ -3037,6 +3062,7 @@ function M.open(opts)
     commits = commit_list,
     _commit_files = commit_files,
     scope = opts.scope or "combined",
+    min_seen_run = opts.min_seen_run or M.config.min_seen_run,
     buf = buf,
     win = nil,
     row_map = {},
@@ -3257,6 +3283,7 @@ end
 -- Internal helpers exposed for unit tests only.
 M._internal = {
   hunk_marker_runs = hunk_marker_runs,
+  display_seen_map = display_seen_map,
   marker_key = marker_key,
   cmarker_key = cmarker_key,
 }

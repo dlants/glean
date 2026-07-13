@@ -2507,4 +2507,34 @@ do
   h.assert_eq("repo_state_dir: fallback", glean.repo_state_dir(stub(nil)), base_dir)
 end
 
+-- display_seen_map: the pure demotion pass. Runs are `{lo, hi_line, n}`
+-- descriptors over hunk-line indices; a run >= threshold keeps every line, a
+-- shorter run keeps only its sticky lines, and threshold <= 1 disables demotion.
+do
+  local dsm = glean._internal.display_seen_map
+  local none = function() return false end
+
+  -- Long run (n >= threshold) stays fully display-seen.
+  local long = dsm({ { lo = 3, hi_line = 8, n = 6 } }, 5, none)
+  for i = 3, 8 do h.assert_true("dsm: long run keeps line " .. i, long[i] == true) end
+
+  -- Short run (n < threshold), no sticky lines: every line demotes.
+  local short = dsm({ { lo = 3, hi_line = 4, n = 2 } }, 5, none)
+  h.assert_true("dsm: short run demotes all", next(short) == nil)
+
+  -- Short run with one sticky line: only the sticky line survives.
+  local sticky = dsm({ { lo = 3, hi_line = 4, n = 2 } }, 5, function(i) return i == 4 end)
+  h.assert_true("dsm: sticky line stays seen", sticky[4] == true)
+  h.assert_true("dsm: non-sticky line demotes", sticky[3] == nil)
+
+  -- threshold <= 1 disables demotion: even a short run keeps every line.
+  local disabled = dsm({ { lo = 3, hi_line = 4, n = 2 } }, 1, none)
+  h.assert_true("dsm: threshold<=1 keeps line 3", disabled[3] == true)
+  h.assert_true("dsm: threshold<=1 keeps line 4", disabled[4] == true)
+
+  -- Boundary: n == threshold counts as long.
+  local boundary = dsm({ { lo = 1, hi_line = 5, n = 5 } }, 5, none)
+  h.assert_true("dsm: n==threshold keeps all", boundary[1] == true and boundary[5] == true)
+end
+
 h.finish()
