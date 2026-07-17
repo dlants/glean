@@ -392,7 +392,10 @@ function Session:load_owner_async(path, gen, cb)
     local map = (out and provenance.parse_blame(out)) or {}
     if self.target == M.WORKTREE then provenance.map_zero_sha(map, M.WORKTREE) end
     self:del_attribution_async(path, function(del_attr)
-      if gen ~= self._load_gen then return end
+      -- `reload` nils `_owner` before `start_owner_loader` bumps the generation;
+      -- if a render error aborts reload in between, a stale in-flight callback
+      -- can pass the generation guard yet find `_owner` gone. Guard both.
+      if gen ~= self._load_gen or not self._owner then return end
       self._owner[path] = { status = "loaded", prov = map, del_attr = del_attr }
       cb()
     end)
@@ -951,6 +954,11 @@ function Session:build()
     sections[#sections + 1] = { key = key, lo = lo, hi = #lines }
   end
   local function emit(text, target, hl)
+    -- The buffer is a pure line-projection: every row must be a single line.
+    -- Defend the `nvim_buf_set_lines` contract at the sole row-append site so a
+    -- stray newline in any source value (worktree/comment content) can never
+    -- crash the renderer (and, via a half-finished reload, corrupt loader state).
+    if text:find("[\r\n]") then text = text:gsub("[\r\n]", " ") end
     lines[#lines + 1] = text
     local row = #lines - 1
     row_map[row] = target
