@@ -2045,6 +2045,21 @@ local function hunk_key(t)
   return nil
 end
 
+-- A stable key for a single diff-line row, surviving a re-render: the model
+-- (commit/file or cfile) + hunk + line indices don't change when rows collapse,
+-- only whether the row is rendered. Lets an action re-find "the same line" in
+-- the fresh row_map after render. Nil for non-line rows (headers/markers).
+local function line_anchor(t)
+  if not t then return nil end
+  if t.commit and t.file and t.hunk and t.line then
+    return ("c:%d:%d:%d:%d"):format(t.commit, t.file, t.hunk, t.line)
+  end
+  if t.cfile and t.hunk and t.line then
+    return ("f:%d:%d:%d"):format(t.cfile, t.hunk, t.line)
+  end
+  return nil
+end
+
 -- Whether two hunk targets belong to the same displayed file (commit+file in
 -- the commits scope, cfile in combined).
 local function same_file(a, b)
@@ -2363,8 +2378,24 @@ function Session:mark_visual_range(srow, erow)
     end
   end
   if #ids == 0 and #sticky == 0 then return end
+  -- The marked span collapses into a marker on render, shifting everything below
+  -- it up. Anchor on the first still-rendered diff line after the selection so
+  -- the cursor stays on the same logical line rather than the same buffer row.
+  local anchor
+  for row = erow + 1, api.nvim_buf_line_count(self.buf) - 1 do
+    anchor = line_anchor(self.row_map[row])
+    if anchor then break end
+  end
   self:perform({ kind = "seen", op = "mark", ids = ids, sticky = sticky })
   self:render()
+  if anchor then
+    for r, t in pairs(self.row_map) do
+      if line_anchor(t) == anchor then
+        pcall(api.nvim_win_set_cursor, self.win, { r + 1, 0 })
+        break
+      end
+    end
+  end
 end
 
 -- Unmark a marker run seen: a marker target carries {lo, hi_line} indices into
