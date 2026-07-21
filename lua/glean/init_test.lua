@@ -833,7 +833,9 @@ do
   h.assert_eq("stage2: owner_status nil before load", s:owner_status("f.txt"), nil)
   local jp = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("stage2: pending f.txt has no seen section", jp:find(" seen (", 1, true) == nil)
-  h.assert_true("stage2: pending f.txt body shown", jp:find("\n+TWO", 1, true) ~= nil)
+  h.assert_true("stage2: pending f.txt hides body", jp:find("\n+TWO", 1, true) == nil)
+  h.assert_true("stage2: pending f.txt shows loading placeholder",
+    jp:find("resolving review state", 1, true) ~= nil)
 
   -- Behavior B: load ownership, re-render — the pre-seen hunk migrates up.
   s:load_combined_owners()
@@ -883,14 +885,24 @@ do
   -- Drop the cache: every combined file is now pending (not loaded).
   s._owner = nil
   s:render()
-  local hrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.hunk and not t.line and t.pending
+  -- A pending file renders an explicit loading placeholder instead of its diff
+  -- body, so it never flashes as unmarked and then restreams into placement.
+  local frow = find_row(s, function(_, line, t)
+    return t and t.cfile and not t.hunk and not t.line and t.pending
   end)
-  h.assert_true("stage3: found a pending hunk row", hrow ~= nil)
-  local path = s.combined_files[s.row_map[hrow].cfile].path
+  h.assert_true("stage3: found a pending file header row", frow ~= nil)
+  local path = s.combined_files[s.row_map[frow].cfile].path
+  local jload = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("stage3: pending file shows loading placeholder",
+    jload:find("resolving review state", 1, true) ~= nil)
+  h.assert_true("stage3: pending file emits no hunk rows",
+    find_row(s, function(_, _, t)
+      return t and t.cfile and t.hunk and s.combined_files[t.cfile].path == path
+    end) == nil)
 
-  -- Behavior A: `m` on a pending hunk is a no-op — no dispatch, no seen section.
-  s:toggle_seen(hrow)
+  -- Behavior A: `m` on a pending file header is a no-op — no dispatch, no seen
+  -- section, ownership stays unloaded.
+  s:toggle_seen(frow)
   local ja = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("stage3-A: pending toggle renders no seen section",
     ja:find(" seen (", 1, true) == nil)
@@ -898,7 +910,7 @@ do
 
   -- Behavior C: directly invoking the action layer on a pending target trips the
   -- backstop assertion (a violated invariant, not a user-facing path).
-  local ptarget = s.row_map[hrow]
+  local ptarget = { cfile = s.row_map[frow].cfile, hunk = 1, sec = "unseen" }
   local ok = pcall(function() return s:target_identities(ptarget) end)
   h.assert_true("stage3-C: target_identities asserts on non-loaded file", not ok)
 
@@ -1013,6 +1025,33 @@ do
   h.assert_eq("stage4-D: pre-reload generation render dropped", rendered, 0)
 end
 
+-- Regression: a content-only reload whose combined diff is byte-for-byte
+-- identical re-blames nothing — every file's forward provenance is kept, so the
+-- loader queue is empty and no `git blame` subprocess runs. This is the live
+-- work-tree fast path: writing one file must not re-derive every file.
+do
+  local blames = 0
+  local function spy(args)
+    for _, a in ipairs(args) do
+      if a == "blame" then blames = blames + 1 break end
+    end
+    return inject_run(args)
+  end
+  local s = glean.open({
+    base = base, target = target, repo_root = repo.root, run = spy,
+    open_window = false, state_dir = vim.fn.tempname(),
+  })
+  for _, cf in ipairs(s.combined_files) do
+    h.assert_eq("incremental-reload: loaded at open " .. cf.path, s:owner_status(cf.path), "loaded")
+  end
+  blames = 0
+  s:reload()
+  h.assert_eq("incremental-reload: unchanged files re-blame zero times", blames, 0)
+  for _, cf in ipairs(s.combined_files) do
+    h.assert_eq("incremental-reload: still loaded " .. cf.path, s:owner_status(cf.path), "loaded")
+  end
+end
+
 -- Stage 5 — tuning + polish.
 
 -- A render that reproduces the prior projection byte-for-byte is a no-op: it
@@ -1070,13 +1109,17 @@ do
   local s = open({ state_dir = vim.fn.tempname() })
   s._owner = nil
   s:render()
-  local lrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.line and t.pending and line:sub(1, 1) == "+"
+  -- A pending file emits no line rows (only a loading placeholder), so drive the
+  -- backstop through a synthetic add-line target on the first pending file.
+  local frow = find_row(s, function(_, _, t)
+    return t and t.cfile and not t.hunk and not t.line and t.pending
   end)
-  h.assert_true("stage5: found a pending add row", lrow ~= nil)
-  local path = s.combined_files[s.row_map[lrow].cfile].path
+  h.assert_true("stage5: found a pending file", frow ~= nil)
+  local cfi = s.row_map[frow].cfile
+  local path = s.combined_files[cfi].path
+  local ptarget = { cfile = cfi, hunk = 1, line = 1, sec = "unseen", pending = true }
   h.assert_true("stage5: mark-during-load is a hard error",
-    not pcall(function() return s:row_identity(s.row_map[lrow]) end))
+    not pcall(function() return s:row_identity(ptarget) end))
 
   s:load_owner(path)
   s:render()

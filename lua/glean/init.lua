@@ -44,12 +44,23 @@ local NS_INTRA = api.nvim_create_namespace("glean_intra_hl")
 local NS_CURSOR = api.nvim_create_namespace("glean_cursor_hl")
 local NS_STICKY = api.nvim_create_namespace("glean_sticky_hl")
 
+-- Half the machine's logical CPUs (at least 1): the default ceiling on how many
+-- `git blame` subprocesses the background ownership loader runs concurrently.
+local function default_blame_jobs()
+  local ok, cpus = pcall(function() return vim.uv.cpu_info() end)
+  local n = (ok and cpus) and #cpus or 1
+  return math.max(1, math.floor(n / 2))
+end
+
 M.config = {
   default_base = "main",
   -- Combined-scope display-only demotion threshold: a seen run inside a
   -- partially-seen hunk shorter than this collapses back to unseen rows rather
   -- than a `✓ marked` marker. 0 or 1 disables demotion entirely.
   min_seen_run = 5,
+  -- Max concurrent `git blame` subprocesses the background ownership loader
+  -- runs at once (combined scope). Defaults to half the logical CPU count.
+  max_blame_jobs = default_blame_jobs(),
 }
 
 -- Registry of live glean buffers, keyed by (repo_root, base, target), so a
@@ -425,9 +436,11 @@ function Session:streaming_render(gen)
   self:render()
 end
 
--- Advance the serial queue: load the next pending file, then schedule a
--- streaming re-render and recurse. When the queue drains, force a final repaint
--- so the last file's placement settles even if no throttle is pending.
+-- One worker of the bounded-parallel queue: claim the next pending file (the
+-- shared `_load_idx` cursor is bumped synchronously, so concurrent workers never
+-- grab the same path), load it, then schedule a streaming re-render and recurse
+-- to claim the next. When the queue drains, force a final repaint so the last
+-- file's placement settles even if no throttle is pending.
 function Session:loader_pump(gen)
   if gen ~= self._load_gen then return end
   if not api.nvim_buf_is_valid(self.buf) then return end
@@ -460,7 +473,14 @@ function Session:start_owner_loader()
   self._load_queue = queue
   self._load_idx = 0
   if #queue == 0 then return end
-  self:loader_pump(self._load_gen)
+  -- Dispatch up to `max_blame_jobs` workers that drain the shared queue in
+  -- parallel, bounding concurrent `git blame` subprocesses. Under the injected
+  -- (synchronous) test runner each worker runs to completion before the next is
+  -- dispatched, so the queue still drains before this returns.
+  local workers = math.max(1, math.min(self.max_blame_jobs or 1, #queue))
+  for _ = 1, workers do
+    self:loader_pump(self._load_gen)
+  end
 end
 
 -- Resolve combined-scope deletions to the immutable identity of the commit that
@@ -1147,10 +1167,20 @@ function Session:build()
       -- already correct; only seen placement is deferred until the loader runs.
       local pending = self:owner_status(cf.path) ~= "loaded" or nil
       local tb = { cfile = fi, pending = pending }
-      emit(chevron .. " " .. cf.path .. kind, tb, "GleanFileHeader")
+      -- Pending files render an explicit "loading" placeholder rather than the
+      -- full diff: with ownership unresolved every line would resolve as unseen,
+      -- so painting the body now would flash the whole file as unmarked and then
+      -- restream it into its seen placement once the loader lands. Withholding
+      -- the body until "loaded" makes the transition go loading -> settled.
+      local badge = pending and "  ⟳ loading…" or ""
+      emit(chevron .. " " .. cf.path .. kind .. badge, tb, "GleanFileHeader")
       if not cf.raw.collapsed then
-        emit_file_body(cf, tb, self:combined_owner(cf.path),
-          cseen_key(cf.path), self:resolve_comments(cf))
+        if pending then
+          emit("  ⟳ resolving review state…", tb, "GleanSeen")
+        else
+          emit_file_body(cf, tb, self:combined_owner(cf.path),
+            cseen_key(cf.path), self:resolve_comments(cf))
+        end
       end
      end)
     end
@@ -2895,6 +2925,25 @@ end
 -- content-addressed collapse overrides, the cursor, and (via immediate saves)
 -- all authored seen/comments. Reloads the store from disk and clears the
 -- per-target memoized caches so the projection reflects the latest content.
+-- A per-file content signature of the combined diff (path -> hash of its hunk
+-- geometry + line text), used by `reload` to tell which files actually changed.
+-- A content-only worktree edit rewrites just the edited file's diff, so every
+-- other file's forward blame provenance is still valid and can be kept.
+local function combined_file_sigs(files)
+  local sigs = {}
+  for _, f in ipairs(files or {}) do
+    local parts = {}
+    for _, h in ipairs(f.hunks) do
+      parts[#parts + 1] = (h.new_start or 0) .. "," .. (h.new_count or 0)
+      for _, dl in ipairs(h.lines) do
+        parts[#parts + 1] = (dl.kind or "") .. ":" .. (dl.text or "")
+      end
+    end
+    sigs[f.path] = vim.fn.sha256(table.concat(parts, "\n"))
+  end
+  return sigs
+end
+
 function Session:reload()
   if not api.nvim_buf_is_valid(self.buf) then return end
   self._commit_files = self._commit_files or {}
@@ -2906,17 +2955,36 @@ function Session:reload()
   self.commits = commits
   self.store = store
   self._wt_lines = nil
-  self._owner = nil
-  self._blame_ranges = nil
   -- Del attribution (reverse blame base..HEAD) and its parent->child stack
   -- depend only on the commit set, not on worktree content, so a content-only
   -- reload (the common live-update case) keeps them; they are dropped only when
   -- the commit set actually changes (new commit / amend / rebase).
   local gen = table.concat(shas or {}, ",")
-  if gen ~= self._del_gen then
+  local commit_set_changed = gen ~= self._del_gen
+  -- Incrementally invalidate blame provenance per file. Blame is per-file, so a
+  -- content-only edit only invalidates the edited file(s); every unchanged file
+  -- keeps its cached forward provenance (and blame ranges), avoiding one
+  -- `git blame` subprocess per file on every save. A commit-set change (new
+  -- commit / amend / rebase) can shift every file's ownership, so drop it all.
+  local old_owner, old_ranges, old_sigs = self._owner, self._blame_ranges, self._file_sigs
+  local new_sigs = combined_file_sigs(files)
+  self._file_sigs = new_sigs
+  if commit_set_changed then
     self._del_attr = nil
     self._del_child = nil
     self._del_gen = gen
+    self._owner = nil
+    self._blame_ranges = nil
+  else
+    local owner, ranges = {}, {}
+    for path, sig in pairs(new_sigs) do
+      if old_sigs and old_sigs[path] == sig then
+        if old_owner then owner[path] = old_owner[path] end
+        if old_ranges then ranges[path] = old_ranges[path] end
+      end
+    end
+    self._owner = owner
+    self._blame_ranges = ranges
   end
   self.combined_files = nil
   self:apply_collapse()
@@ -3159,8 +3227,14 @@ function M.open(opts)
     files = files,
     commits = commit_list,
     _commit_files = commit_files,
+    -- Baselines so the first content-only reload after open is already
+    -- incremental (keeps per-file blame for unchanged files) rather than
+    -- re-blaming everything once before the incremental path can engage.
+    _file_sigs = combined_file_sigs(files),
+    _del_gen = table.concat(shas or {}, ","),
     scope = opts.scope or "combined",
     min_seen_run = opts.min_seen_run or M.config.min_seen_run,
+    max_blame_jobs = opts.max_blame_jobs or M.config.max_blame_jobs,
     buf = buf,
     win = nil,
     row_map = {},

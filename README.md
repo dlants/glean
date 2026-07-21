@@ -101,6 +101,7 @@ glean has no external plugin dependencies — it shells out to `git`. Neovim
 require("glean.init").setup({
   default_base = "main",   -- trunk used for fork-point / upstream resolution
   min_seen_run = 5,        -- combined-scope: demote seen runs shorter than this to unseen
+  max_blame_jobs = 4,      -- max concurrent `git blame` jobs (default: half the CPU count)
 })
 ```
 
@@ -123,6 +124,15 @@ The persisted seen store is never touched by this — it stays the plain
 current context, that mark is recorded as a content-addressed sticky override
 that keeps the line seen across renders and reopens, and self-invalidates once
 the line's content changes again.
+
+### `max_blame_jobs`
+
+In the combined scope, per-line commit ownership is resolved with `git blame`,
+one invocation per displayed file, run in the background so the buffer paints
+immediately and seen placement streams in as each file settles. `max_blame_jobs`
+caps how many of those blame subprocesses run concurrently (default: half the
+logical CPU count, at least 1). Raise it to load large reviews faster at the cost
+of more parallel git processes; set it to `1` for the old fully-serial behavior.
 
 ## Related plugins
 
