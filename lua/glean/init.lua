@@ -1483,14 +1483,25 @@ function Session:apply_intraline(blocks, ranges)
       hl_eol = true,
     })
   end
+  -- Rows/segments are captured from the render that produced `blocks`; an
+  -- interleaved buffer change (live poll reload, incremental re-render) can make
+  -- them outrun the current line, so clamp to the real line length and skip rows
+  -- that no longer exist rather than letting set_extmark raise.
   local function paint(row, segs, hl)
+    local line = api.nvim_buf_get_lines(self.buf, row, row + 1, false)[1]
+    if not line then return end
+    local len = #line
     for _, seg in ipairs(segs) do
-      api.nvim_buf_set_extmark(self.buf, NS_INTRA, row, 1 + seg.start_col, {
-        end_row = row,
-        end_col = 1 + seg.end_col,
-        hl_group = hl,
-        priority = 4200,
-      })
+      local s = math.min(1 + seg.start_col, len)
+      local e = math.min(1 + seg.end_col, len)
+      if e > s then
+        api.nvim_buf_set_extmark(self.buf, NS_INTRA, row, s, {
+          end_row = row,
+          end_col = e,
+          hl_group = hl,
+          priority = 4200,
+        })
+      end
     end
   end
   local bi = 1

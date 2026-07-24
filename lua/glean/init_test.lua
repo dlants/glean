@@ -2739,4 +2739,28 @@ do
   h.assert_true("dsm: n==threshold keeps all", boundary[1] == true and boundary[5] == true)
 end
 
+-- apply_intraline paints from rows/segments captured at render time; if the
+-- buffer shrinks underneath the scheduled chunk (live-poll reload, incremental
+-- re-render), the stale cols must be clamped/skipped rather than raising
+-- "Invalid 'col': out of range".
+do
+  local s = open({ state_dir = vim.fn.tempname() })
+  s:render()
+  local last = api.nvim_buf_line_count(s.buf) - 1
+  local blocks = {
+    -- Row exists but is far shorter than the captured spans.
+    { dels = { { row = last, text = "a long deleted line" } },
+      adds = { { row = last, text = "a long added line" } } },
+    -- Row past the end of the buffer entirely.
+    { dels = { { row = last + 50, text = "gone" } },
+      adds = { { row = last + 51, text = "also gone" } } },
+  }
+  -- Run the chunked work inline so a raised error surfaces to pcall rather than
+  -- being swallowed by the scheduler.
+  local sched = vim.schedule
+  vim.schedule = function(f) f() end
+  local ok = pcall(s.apply_intraline, s, blocks)
+  vim.schedule = sched
+  h.assert_true("intra: stale rows/cols do not raise", ok)
+end
 h.finish()
