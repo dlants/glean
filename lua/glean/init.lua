@@ -430,6 +430,7 @@ end
 -- itself when superseded (stale generation) or the buffer is gone.
 function Session:streaming_render(gen)
   if gen ~= self._load_gen then return end
+  if self._suspended then return end
   if not api.nvim_buf_is_valid(self.buf) then return end
   if not self._render_dirty then return end
   self._render_dirty = false
@@ -465,6 +466,7 @@ end
 function Session:start_owner_loader()
   self._load_gen = (self._load_gen or 0) + 1
   if self.scope ~= "combined" then return end
+  if self._suspended then return end
   self.combined_files = self.combined_files or self:compute_combined()
   local queue = {}
   for _, cf in ipairs(self.combined_files) do
@@ -3007,7 +3009,7 @@ end
 -- Each tick compares a cheap dirty signature and reloads only when it changed,
 -- so an idle buffer does no rebuild work and the cursor never jumps.
 function Session:start_live()
-  if not self.worktree or self._timer then return end
+  if not self.worktree or self._timer or self._suspended then return end
   self._sig = self.git:dirty_sig()
   local timer = vim.uv.new_timer()
   self._timer = timer
@@ -3021,6 +3023,38 @@ function Session:start_live()
       end
     end)
   end)
+end
+
+-- A buffer that is in no window is detached from all background work: the live
+-- poll timer, the blame loader (its generation is bumped, so in-flight jobs and
+-- pending streaming renders drop themselves on their existing guard) and the
+-- throttled repaint. Nothing is persisted or discarded -- the model stays put,
+-- only the machinery that keeps it fresh stops.
+function Session:suspend()
+  if self._suspended then return end
+  self._suspended = true
+  self:stop_live()
+  self._load_gen = (self._load_gen or 0) + 1
+  self._render_dirty = false
+  self._render_armed = false
+  self:close_sticky()
+end
+
+-- Re-attach. The work tree may have moved while we were hidden, so reconcile
+-- against the signature captured at suspend time: reload on change, otherwise
+-- just repaint and finish the blame queue that suspending abandoned.
+function Session:resume()
+  if not self._suspended then return end
+  self._suspended = false
+  local sig = self.worktree and self.git:dirty_sig() or nil
+  if sig and sig ~= self._sig then
+    self._sig = sig
+    self:reload()
+  else
+    self:render()
+    self:start_owner_loader()
+  end
+  self:start_live()
 end
 
 function Session:stop_live()
@@ -3202,6 +3236,27 @@ function M.open(opts)
     api.nvim_set_option_value("filetype", "glean", { buf = buf })
     pcall(api.nvim_buf_set_name, buf, "Glean:" .. diff_label(git, opts.base, opts.target))
     buffers[key] = buf
+    -- Background work is attached to *visibility*, not to the session's
+    -- lifetime: a buffer sitting in no window must not poll the work tree or
+    -- spawn blame jobs. Visibility is re-derived from `win_findbuf` rather than
+    -- tracked per event, since BufWinLeave fires before the window is gone and
+    -- one split of two closing must not detach the still-visible buffer.
+    local function sync_active()
+      local s = sessions[key]
+      if not s then return end
+      if #vim.fn.win_findbuf(buf) > 0 then s:resume() else s:suspend() end
+    end
+    api.nvim_create_autocmd("BufWinEnter", {
+      buffer = buf,
+      callback = sync_active,
+    })
+    api.nvim_create_autocmd({ "BufWinLeave", "BufHidden" }, {
+      buffer = buf,
+      callback = function() vim.schedule(sync_active) end,
+    })
+    api.nvim_create_autocmd("WinClosed", {
+      callback = function() vim.schedule(sync_active) end,
+    })
     api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
       buffer = buf,
       callback = function()

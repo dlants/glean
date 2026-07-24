@@ -26,6 +26,13 @@ inside. Explicit re-marks record a content-addressed sticky override (keyed by
 path + `state.line_hash(text)`, persisted in the always-loaded `WORKTREE` shard
 alongside comments) that exempts a line from demotion across renders/reopens and
 self-invalidates when the line's content changes.
+
+Background work (the live work-tree poll timer and the background `git blame`
+loader) is attached to *visibility*, not to session lifetime: when no window
+shows the glean buffer the session suspends, and it resumes — reconciling
+against the work-tree signature captured at suspend time — when it is displayed
+again.
+
 Line identities come in three kinds:
 - committed add line → `(sha, post-image lnum)`
 - committed del line → `(remover_sha, pre-image lnum)`
