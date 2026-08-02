@@ -47,6 +47,12 @@ inside an otherwise-unseen hunk collapses into a `✓ marked N lines` marker row
 Collapse state is ephemeral view-state (initialized from seen status, then
 evolves independently and is never persisted).
 
+Files are grouped under a row per directory component; a directory row rolls up
+the files beneath it, so `=` folds the whole subtree away and `m` marks every
+file under it seen (or unmarks them all when the directory is already fully
+seen). Directories with a single changed child collapse into one row, so a lone
+chain renders as `a/b/c/` (or, if it holds a single file, as `a/b/c/file`).
+
 ## Comments
 
 Comments are content-addressed records attached per path and re-anchored to
@@ -66,10 +72,10 @@ header.
 
 ## Keymaps (inside the glean buffer)
 
-- `m` (normal) — toggle seen on the hunk/file/commit under the cursor; on a marker row/line, unmark that run
+- `m` (normal) — toggle seen on the hunk/file/directory/commit under the cursor; on a marker row/line, unmark that run
 - `m` (visual) — mark the selected lines seen
 - `ac` (visual / operator) — text object selecting the hunk under the cursor (e.g. `vac`)
-- `=` — toggle collapse (section, file, commit, or marker row)
+- `=` — toggle collapse (section, file, directory, commit, or marker row)
 - `c` (normal) — comment on the current line
 - `c` (visual) — comment on the selected span
 - `i` — edit the comment under the cursor

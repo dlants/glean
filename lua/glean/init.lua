@@ -142,6 +142,78 @@ local function file_key(sha, path) return "f:" .. sha .. "\0" .. path end
 local function cfile_key(path) return "cf:" .. path end
 local function seen_key(sha, path) return "s:" .. sha .. "\0" .. path end
 local function cseen_key(path) return "cs:" .. path end
+-- Directory-grouping collapse keys: per (commit, dir prefix) in commit scope,
+-- per dir prefix in combined scope.
+local function dir_key(sha, prefix) return "d:" .. sha .. "\0" .. prefix end
+local function cdir_key(prefix) return "cd:" .. prefix end
+
+-- Flatten an ordered path list into a preorder directory tree: a `dir` entry per
+-- directory component the moment it opens, then the files inside it. Pure and
+-- order-preserving -- a directory that reappears later in the list (unsorted
+-- input) simply opens a second row sharing the first one's collapse key. Each
+-- dir entry carries `files`, the indices of every path beneath it, so a single
+-- directory row can address them all.
+-- Collapse single-child directory chains: `a/` holding only `b/` holding only
+-- `c/` renders as one `a/b/c/` row, and a chain bottoming out at a lone file
+-- renders as a single `a/b/c/file` row. Operates on the flat preorder list from
+-- back to front so each subtree is already collapsed when its parent is
+-- considered. A merged dir keeps the deepest prefix (and thus its collapse key);
+-- its `files` set is unchanged since a chain link adds no siblings.
+local function collapse_chains(out)
+  for i = #out, 1, -1 do
+    while out[i] and out[i].kind == "dir" do
+      local depth = out[i].depth
+      local last = i + 1
+      while last <= #out and out[last].depth > depth do last = last + 1 end
+      local kids = 0
+      for k = i + 1, last - 1 do
+        if out[k].depth == depth + 1 then kids = kids + 1 end
+      end
+      if kids ~= 1 then break end
+      local child = out[i + 1]
+      if child.kind == "file" then
+        if last - i ~= 2 then break end
+        child.name = out[i].name .. "/" .. child.name
+        child.depth = depth
+        table.remove(out, i)
+        break
+      end
+      out[i].name = out[i].name .. "/" .. child.name
+      out[i].prefix = child.prefix
+      table.remove(out, i + 1)
+      for k = i + 1, last - 2 do out[k].depth = out[k].depth - 1 end
+    end
+  end
+  return out
+end
+
+local function dir_layout(paths)
+  local out, open, nodes = {}, {}, {}
+  for i, path in ipairs(paths) do
+    local comps = vim.split(path, "/", { plain = true })
+    local ndirs = #comps - 1
+    local common = 0
+    while common < #open and common < ndirs and open[common + 1] == comps[common + 1] do
+      common = common + 1
+    end
+    for k = #open, common + 1, -1 do open[k], nodes[k] = nil, nil end
+    for k = common + 1, ndirs do
+      open[k] = comps[k]
+      local node = {
+        kind = "dir", depth = k - 1, name = comps[k],
+        prefix = table.concat(comps, "/", 1, k), files = {},
+      }
+      nodes[k] = node
+      out[#out + 1] = node
+    end
+    for k = 1, ndirs do
+      local f = nodes[k].files
+      f[#f + 1] = i
+    end
+    out[#out + 1] = { kind = "file", depth = ndirs, index = i, name = comps[#comps] }
+  end
+  return collapse_chains(out)
+end
 
 -- Content-addressed collapse key for a marker (a contiguous seen run inside an
 -- unseen hunk). Keyed on the run's joined line texts so it stays stable when the
@@ -915,7 +987,8 @@ function M.compute_ancestry(row_map, n)
   for row = 0, n - 1 do
     local t = row_map[row]
     if t then
-      if t.commit and not t.file and not t.cfile and not t.sec and not t.hunk then
+      if t.commit and not t.file and not t.cfile and not t.sec and not t.hunk
+          and not t.dir then
         commit_row, file_row, sec_row, hunk_row = row, nil, nil, nil
       elseif t.seen then
         sec_row, hunk_row = row, nil
@@ -939,6 +1012,25 @@ end
 -- w0, return the ordered list of header rows to pin, [commit, file, sec, hunk],
 -- filtered to rows strictly above w0 (a still-visible header isn't duplicated).
 -- An empty list means no float should be shown.
+-- The float text for a pinned row (pure). A file header renders its basename
+-- indented under directory rows, but the float has no enclosing directory rows
+-- for context, so it shows the full path flush left instead.
+function M.sticky_text(line, path)
+  if not path then return line end
+  local rest = line:match("^%s*(.*)$")
+  -- The buffer shows some suffix of the path (a basename, or several components
+  -- when a single-child directory chain was collapsed into the file row); swap
+  -- the longest such suffix present for the full path.
+  local comps = vim.split(path, "/", { plain = true })
+  for k = 1, #comps do
+    local suffix = table.concat(comps, "/", k)
+    if rest:find(suffix, 1, true) then
+      return (rest:gsub(vim.pesc(suffix), function() return path end, 1))
+    end
+  end
+  return rest
+end
+
 function M.compute_pinned(ancestry, w0)
   local pinned = {}
   local a = ancestry[w0]
@@ -1144,24 +1236,62 @@ function Session:build()
       local short = commit.sha:sub(1, 8)
       emit(("%s %s %s"):format(mark, short, commit.summary),
         { commit = ci }, "GleanCommitHeader")
-      for fi, file in ipairs(commit.files) do
-        local fchev = file.collapsed and CHEVRON_CLOSED or CHEVRON_OPEN
-        local fmark = self:file_seen(commit, file) and "✓" or " "
-        local kind = file.kind and (" [" .. file.kind .. "]") or ""
-        emit(("%s %s %s%s"):format(fchev, fmark, file.path, kind),
-          { commit = ci, file = fi }, "GleanFileHeader")
-        if not file.collapsed then
-          emit_file_body(file, { commit = ci, file = fi },
-            self:commit_owner(commit),
-            seen_key(commit.sha, file.path), self:resolve_comments(file))
+      local paths = {}
+      for fi, f in ipairs(commit.files) do paths[fi] = f.path end
+      local skip
+      for _, node in ipairs(dir_layout(paths)) do
+        if skip and node.depth <= skip then skip = nil end
+        if not skip then
+          local indent = ("  "):rep(node.depth)
+          if node.kind == "dir" then
+            local key = dir_key(commit.sha, node.prefix)
+            local collapsed = self.collapse[key] or false
+            local seen = true
+            for _, i in ipairs(node.files) do
+              if not self:file_seen(commit, commit.files[i]) then seen = false break end
+            end
+            emit(("%s%s %s %s/"):format(indent, collapsed and CHEVRON_CLOSED or CHEVRON_OPEN,
+              seen and "✓" or " ", node.name),
+              { commit = ci, dir = node.prefix, dirfiles = node.files }, "GleanFileHeader")
+            if collapsed then skip = node.depth end
+          else
+            local fi, file = node.index, commit.files[node.index]
+            local fchev = file.collapsed and CHEVRON_CLOSED or CHEVRON_OPEN
+            local fmark = self:file_seen(commit, file) and "✓" or " "
+            local kind = file.kind and (" [" .. file.kind .. "]") or ""
+            emit(("%s%s %s %s%s"):format(indent, fchev, fmark, node.name, kind),
+              { commit = ci, file = fi }, "GleanFileHeader")
+            if not file.collapsed then
+              emit_file_body(file, { commit = ci, file = fi },
+                self:commit_owner(commit),
+                seen_key(commit.sha, file.path), self:resolve_comments(file))
+            end
+          end
         end
       end
      end)
     end
   else
     self.combined_files = self:compute_combined()
-    for fi, cf in ipairs(self.combined_files) do
-     section("cf:" .. cf.path, function()
+    local cpaths = {}
+    for i, cf in ipairs(self.combined_files) do cpaths[i] = cf.path end
+    local cskip
+    local layout = dir_layout(cpaths)
+    for ni, node in ipairs(layout) do
+      if cskip and node.depth <= cskip then cskip = nil end
+      if not cskip and node.kind == "dir" then
+        section("dir:" .. ni .. ":" .. node.prefix, function()
+          local key = cdir_key(node.prefix)
+          local collapsed = self.collapse[key] or false
+          emit(("%s%s %s/"):format(("  "):rep(node.depth),
+            collapsed and CHEVRON_CLOSED or CHEVRON_OPEN, node.name),
+            { dir = node.prefix, dirfiles = node.files }, "GleanFileHeader")
+          if collapsed then cskip = node.depth end
+        end)
+      elseif not cskip then
+       local fi = node.index
+       local cf = self.combined_files[fi]
+       section("cf:" .. cf.path, function()
       local chevron = cf.raw.collapsed and CHEVRON_CLOSED or CHEVRON_OPEN
       local kind = cf.kind and (" [" .. cf.kind .. "]") or ""
       -- Ownership not yet resolved: stamp every row of this file `pending` so the
@@ -1175,7 +1305,8 @@ function Session:build()
       -- restream it into its seen placement once the loader lands. Withholding
       -- the body until "loaded" makes the transition go loading -> settled.
       local badge = pending and "  ⟳ loading…" or ""
-      emit(chevron .. " " .. cf.path .. kind .. badge, tb, "GleanFileHeader")
+      emit(("  "):rep(node.depth) .. chevron .. " " .. node.name .. kind .. badge,
+        tb, "GleanFileHeader")
       if not cf.raw.collapsed then
         if pending then
           emit("  ⟳ resolving review state…", tb, "GleanSeen")
@@ -1184,7 +1315,8 @@ function Session:build()
             cseen_key(cf.path), self:resolve_comments(cf))
         end
       end
-     end)
+       end)
+      end
     end
   end
 
@@ -1629,7 +1761,10 @@ function Session:update_sticky()
   end
   local texts = {}
   for _, row in ipairs(pinned) do
-    texts[#texts + 1] = api.nvim_buf_get_lines(self.buf, row, row + 1, false)[1] or ""
+    local line = api.nvim_buf_get_lines(self.buf, row, row + 1, false)[1] or ""
+    local t = self.row_map[row]
+    local f = t and not t.hunk and not t.line and self:row_file(t) or nil
+    texts[#texts + 1] = M.sticky_text(line, f and f.path)
   end
   api.nvim_buf_set_lines(sbuf, 0, -1, false, texts)
   api.nvim_buf_clear_namespace(sbuf, NS_STICKY, 0, -1)
@@ -2030,6 +2165,15 @@ function Session:collapse_action(target)
   local key, obj, field, default_collapsed
   -- A marker row toggles only its content-addressed marker key (default
   -- collapsed), with no model mirror -- like the seen-section override.
+  if target.dir then
+    local key = (self.scope == "combined") and cdir_key(target.dir)
+      or dir_key(self.commits[target.commit].sha, target.dir)
+    local prev = self.collapse[key]
+    return {
+      kind = "collapse", key = key, value = not prev,
+      field_value = not prev, prev = prev, prev_field_value = nil,
+    }
+  end
   if target.marker then
     local path
     if self.scope == "commits" then
@@ -2131,8 +2275,21 @@ function Session:target_identities(target)
     if not commit then return out end
     local owner = self:commit_owner(commit)
     local files = target.file and { commit.files[target.file] } or commit.files
+    if target.dirfiles then
+      files = {}
+      for _, i in ipairs(target.dirfiles) do files[#files + 1] = commit.files[i] end
+    end
     for _, file in ipairs(files) do
       gather(file, target.hunk and { file.hunks[target.hunk] } or file.hunks, file.path, owner)
+    end
+  elseif target.dirfiles then
+    -- A directory row addresses every file beneath it; files whose ownership is
+    -- still loading are inert and contribute nothing.
+    for _, i in ipairs(target.dirfiles) do
+      local cf = self.combined_files and self.combined_files[i]
+      if cf and self:owner_status(cf.path) == "loaded" then
+        gather(cf, cf.hunks, cf.path, self:combined_owner(cf.path))
+      end
     end
   else
     local cf = self.combined_files and self.combined_files[target.cfile]
@@ -2193,17 +2350,26 @@ end
 -- display-demotion and self-invalidates when its text later changes.
 function Session:target_sticky(target)
   if self.scope ~= "combined" then return {} end
-  local cf = self.combined_files and self.combined_files[target.cfile]
-  if not cf then return {} end
-  local hunks = target.hunk and { cf.hunks[target.hunk] } or cf.hunks
   local out = {}
-  for _, h in ipairs(hunks) do
-    for _, dl in ipairs(h.lines) do
-      if dl.kind == "add" or dl.kind == "del" then
-        out[#out + 1] = { path = cf.path, text = dl.text }
+  local function collect(cf, hunks)
+    for _, h in ipairs(hunks) do
+      for _, dl in ipairs(h.lines) do
+        if dl.kind == "add" or dl.kind == "del" then
+          out[#out + 1] = { path = cf.path, text = dl.text }
+        end
       end
     end
   end
+  if target.dirfiles then
+    for _, i in ipairs(target.dirfiles) do
+      local cf = self.combined_files and self.combined_files[i]
+      if cf and self:owner_status(cf.path) == "loaded" then collect(cf, cf.hunks) end
+    end
+    return out
+  end
+  local cf = self.combined_files and self.combined_files[target.cfile]
+  if not cf then return {} end
+  collect(cf, target.hunk and { cf.hunks[target.hunk] } or cf.hunks)
   return out
 end
 
@@ -2230,7 +2396,7 @@ function Session:toggle_seen(row)
   if target.pending then return end
   if self.scope == "commits" then
     if not target.commit then return end
-  else
+  elseif not target.dirfiles then
     if not target.cfile then return end
   end
   local ids = self:target_identities(target)
@@ -2680,6 +2846,16 @@ function Session:expand_path(path)
   else
     self.collapse[cfile_key(path)] = false
     self.collapse[cseen_key(path)] = false
+  end
+  -- Every enclosing directory row must be open too, or the file's rows are not
+  -- emitted at all.
+  local comps = vim.split(path, "/", { plain = true })
+  for k = 1, #comps - 1 do
+    local prefix = table.concat(comps, "/", 1, k)
+    self.collapse[cdir_key(prefix)] = false
+    for _, commit in ipairs(self.commits or {}) do
+      self.collapse[dir_key(commit.sha, prefix)] = false
+    end
   end
   self:apply_collapse()
 end
@@ -3520,6 +3696,7 @@ end
 
 -- Internal helpers exposed for unit tests only.
 M._internal = {
+  dir_layout = dir_layout,
   hunk_marker_runs = hunk_marker_runs,
   display_seen_map = display_seen_map,
   marker_key = marker_key,
