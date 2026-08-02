@@ -53,6 +53,10 @@ file under it seen (or unmarks them all when the directory is already fully
 seen). Directories with a single changed child collapse into one row, so a lone
 chain renders as `a/b/c/` (or, if it holds a single file, as `a/b/c/file`).
 
+A collapsed row (file or directory) reports what it hides as `(n seen / m
+unseen)`, counted in hunks; a hunk with only some of its lines marked counts as
+unseen.
+
 ## Comments
 
 Comments are content-addressed records attached per path and re-anchored to

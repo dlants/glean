@@ -1225,6 +1225,14 @@ function Session:build()
     end
   end
 
+  -- Collapsed rows hide their hunks, so they carry the tally instead. Only
+  -- computed for collapsed rows: the traversal walks every changed line beneath
+  -- the target.
+  local function summary(target)
+    local seen, total = self:hunk_summary(target)
+    if total == 0 then return "" end
+    return ("  (%d seen / %d unseen)"):format(seen, total - seen)
+  end
   local mode_label = self.scope == "combined" and "combined" or "commit-by-commit"
   section("header", function()
     emit("── " .. mode_label .. " ──", {}, "GleanModeHeader")
@@ -1250,17 +1258,19 @@ function Session:build()
             for _, i in ipairs(node.files) do
               if not self:file_seen(commit, commit.files[i]) then seen = false break end
             end
-            emit(("%s%s %s %s/"):format(indent, collapsed and CHEVRON_CLOSED or CHEVRON_OPEN,
-              seen and "✓" or " ", node.name),
-              { commit = ci, dir = node.prefix, dirfiles = node.files }, "GleanFileHeader")
+            local dtarget = { commit = ci, dir = node.prefix, dirfiles = node.files }
+            emit(("%s%s %s %s/%s"):format(indent, collapsed and CHEVRON_CLOSED or CHEVRON_OPEN,
+              seen and "✓" or " ", node.name, collapsed and summary(dtarget) or ""),
+              dtarget, "GleanFileHeader")
             if collapsed then skip = node.depth end
           else
             local fi, file = node.index, commit.files[node.index]
             local fchev = file.collapsed and CHEVRON_CLOSED or CHEVRON_OPEN
             local fmark = self:file_seen(commit, file) and "✓" or " "
             local kind = file.kind and (" [" .. file.kind .. "]") or ""
-            emit(("%s%s %s %s%s"):format(indent, fchev, fmark, node.name, kind),
-              { commit = ci, file = fi }, "GleanFileHeader")
+            local ftarget = { commit = ci, file = fi }
+            emit(("%s%s %s %s%s%s"):format(indent, fchev, fmark, node.name, kind,
+              file.collapsed and summary(ftarget) or ""), ftarget, "GleanFileHeader")
             if not file.collapsed then
               emit_file_body(file, { commit = ci, file = fi },
                 self:commit_owner(commit),
@@ -1283,9 +1293,10 @@ function Session:build()
         section("dir:" .. ni .. ":" .. node.prefix, function()
           local key = cdir_key(node.prefix)
           local collapsed = self.collapse[key] or false
-          emit(("%s%s %s/"):format(("  "):rep(node.depth),
-            collapsed and CHEVRON_CLOSED or CHEVRON_OPEN, node.name),
-            { dir = node.prefix, dirfiles = node.files }, "GleanFileHeader")
+          local dtarget = { dir = node.prefix, dirfiles = node.files }
+          emit(("%s%s %s/%s"):format(("  "):rep(node.depth),
+            collapsed and CHEVRON_CLOSED or CHEVRON_OPEN, node.name,
+            collapsed and summary(dtarget) or ""), dtarget, "GleanFileHeader")
           if collapsed then cskip = node.depth end
         end)
       elseif not cskip then
@@ -1305,7 +1316,8 @@ function Session:build()
       -- restream it into its seen placement once the loader lands. Withholding
       -- the body until "loaded" makes the transition go loading -> settled.
       local badge = pending and "  ⟳ loading…" or ""
-      emit(("  "):rep(node.depth) .. chevron .. " " .. node.name .. kind .. badge,
+      local tally = (cf.raw.collapsed and not pending) and summary(tb) or ""
+      emit(("  "):rep(node.depth) .. chevron .. " " .. node.name .. kind .. badge .. tally,
         tb, "GleanFileHeader")
       if not cf.raw.collapsed then
         if pending then
@@ -2260,19 +2272,19 @@ end
 -- the commit (commit header), file (file header), or hunk it covers. Context
 -- and unowned lines carry no identity and are excluded, so marking a unit is
 -- defined purely as add/remove over these identities.
-function Session:target_identities(target)
-  local out = {}
+-- Walk the hunks a target addresses, handing each one's changed-line identities
+-- to `fn`. Both the flat identity list (marking) and the hunk-level seen tally
+-- (collapsed-row summaries) are folds over this one traversal.
+function Session:each_target_hunk(target, fn)
   local function gather(file, hunks, path, owner)
     local bases = hunk_base_ords(file)
     for _, h in ipairs(hunks) do
-      for _, id in ipairs(self:changed_lines(h, path, owner, bases[h])) do
-        out[#out + 1] = id
-      end
+      fn(self:changed_lines(h, path, owner, bases[h]))
     end
   end
   if self.scope == "commits" then
     local commit = self.commits[target.commit]
-    if not commit then return out end
+    if not commit then return end
     local owner = self:commit_owner(commit)
     local files = target.file and { commit.files[target.file] } or commit.files
     if target.dirfiles then
@@ -2293,16 +2305,37 @@ function Session:target_identities(target)
     end
   else
     local cf = self.combined_files and self.combined_files[target.cfile]
-    if not cf then return out end
+    if not cf then return end
     -- Backstop: ownership must be resolved before a file's identities are read.
     -- Pending hunks are inert at the UI layer, so reaching here for a non-loaded
     -- file means an invariant was violated -- fail loudly rather than degrade.
     assert(self:owner_status(cf.path) == "loaded",
-      "target_identities on non-loaded file: " .. cf.path)
+      "each_target_hunk on non-loaded file: " .. cf.path)
     local owner = self:combined_owner(cf.path)
     gather(cf, target.hunk and { cf.hunks[target.hunk] } or cf.hunks, cf.path, owner)
   end
+end
+
+function Session:target_identities(target)
+  local out = {}
+  self:each_target_hunk(target, function(ids)
+    for _, id in ipairs(ids) do out[#out + 1] = id end
+  end)
   return out
+end
+
+-- Hunk-level seen tally for a collapsed row's summary. A hunk counts as seen
+-- only when every one of its changed lines is; a partially marked hunk reads as
+-- unseen. Hunks with no markable lines are skipped so they can't inflate either
+-- side of the ratio.
+function Session:hunk_summary(target)
+  local seen, total = 0, 0
+  self:each_target_hunk(target, function(ids)
+    if #ids == 0 then return end
+    total = total + 1
+    if self:ids_all_seen(ids) then seen = seen + 1 end
+  end)
+  return seen, total
 end
 
 -- The seen collapse-section key an identity lands in: per (commit, path) in

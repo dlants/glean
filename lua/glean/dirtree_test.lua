@@ -64,13 +64,13 @@ end
 local repo = testutil.make_repo({
   { msg = "base", files = {
     ["root.txt"] = "r\n",
-    ["src/a.txt"] = "a\n",
+    ["src/a.txt"] = "a1\na2\n",
     ["src/deep/b.txt"] = "b\n",
     ["src/deep/c.txt"] = "c\n",
   } },
   { msg = "edit all", files = {
     ["root.txt"] = "R\n",
-    ["src/a.txt"] = "A\n",
+    ["src/a.txt"] = "A1\nA2\n",
     ["src/deep/b.txt"] = "B\n",
     ["src/deep/c.txt"] = "C\n",
   } },
@@ -165,6 +165,64 @@ for _, scope in ipairs({ "combined", "commits" }) do
     s:toggle_seen(dir_row(s, "src/deep"))
     s:toggle_seen(dir_row(s, "src"))
     h.assert_true(label .. "mark: partial directory marks the rest", seen_state(s, "src").all)
+  end
+end
+
+-- Collapsed-row summaries ---------------------------------------------------
+for _, scope in ipairs({ "combined", "commits" }) do
+  local label = "[" .. scope .. "] "
+  local function line_at(s, row)
+    return api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
+  end
+
+  do
+    local s = open(scope)
+    h.assert_true(label .. "summary: expanded directory shows no tally",
+      not line_at(s, dir_row(s, "src")):find("unseen"))
+    s:toggle_collapse(dir_row(s, "src"))
+    h.assert_true(label .. "summary: collapsed directory tallies every hunk under it",
+      line_at(s, dir_row(s, "src")):find("(0 seen / 3 unseen)", 1, true) ~= nil)
+    -- Collapse overrides live in process memory keyed by the review, so a test
+    -- that leaves src/ folded would leak into the next session.
+    s:toggle_collapse(dir_row(s, "src"))
+  end
+
+  do
+    local s = open(scope)
+    s:toggle_seen(dir_row(s, "src/deep"))
+    s:toggle_collapse(dir_row(s, "src"))
+    h.assert_true(label .. "summary: seen hunks move to the seen side",
+      line_at(s, dir_row(s, "src")):find("(2 seen / 1 unseen)", 1, true) ~= nil)
+    s:toggle_collapse(dir_row(s, "src"))
+  end
+
+  do
+    -- A collapsed file header carries the same tally.
+    local s = open(scope)
+    local frow
+    for r, t in pairs(s.row_map) do
+      if (t.file or t.cfile) and not t.hunk and not t.line
+        and line_at(s, r):find("root%.txt") then frow = r end
+    end
+    s:toggle_collapse(frow)
+    h.assert_true(label .. "summary: collapsed file tallies its own hunks",
+      line_at(s, frow):find("(0 seen / 1 unseen)", 1, true) ~= nil)
+    s:toggle_collapse(frow)
+  end
+
+  do
+    -- A hunk with only some of its lines marked still reads as unseen.
+    local s = open(scope)
+    -- src/a.txt's single hunk changes two lines; mark just the first.
+    local hrow
+    for r, t in pairs(s.row_map) do
+      if t.line and line_at(s, r):find("A1", 1, true) then hrow = r end
+    end
+    s:mark_visual_range(hrow, hrow)
+    s:toggle_collapse(dir_row(s, "src"))
+    h.assert_true(label .. "summary: a partially marked hunk counts as unseen",
+      line_at(s, dir_row(s, "src")):find("(0 seen / 3 unseen)", 1, true) ~= nil)
+    s:toggle_collapse(dir_row(s, "src"))
   end
 end
 
