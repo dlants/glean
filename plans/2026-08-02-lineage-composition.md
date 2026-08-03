@@ -327,7 +327,27 @@ branch from the previous commit and commits on it. Shape assertions live in the 
 - [x] Tests: a spec exercising each new key produces the expected `git log --graph`-level shape —
   asserted via `rev-parse`/`rev-list --parents` and `git show --name-status`, not by eyeballing.
 
-## Pure lineage module
+## Pure lineage module — DONE
+
+Decisions:
+- `lineage.compose` returns `{ [path] = { prov, del_attr } }`; state per path is
+  `{ segs, del_attr }`, seeded with `{ { base = 1 } }` (the open-ended tail) or `{}` for a file
+  added inside the range. `M.base_state()` exposes the seed.
+- `blocks_of(hunk)` splits a hunk into contiguous change blocks, so the walk tolerates context
+  lines even though `-U0` never emits them. Within a commit, hunk positions are pre-image
+  coordinates, translated by a running offset.
+- A `kind == "delete"` entry resets the path's state after attribution, so a re-add starts from
+  nothing (the open base tail would otherwise survive the delete).
+- A rename moves the state to the new path key before applying, so `del_attr` for a renamed file is
+  keyed by base line numbers under the *new* path (which is how the net diff reports them).
+- Segments are not coalesced when a splice leaves two adjacent base runs; count stays O(hunks)
+  either way.
+- The blob-content checker tries both the new and old path when looking up an owning commit's blob
+  (a rename means the owner may know the file by its old name).
+- The real-history tests use a local `log_patches` helper (the log walk + NUL split + `diff.parse`)
+  rather than `Git:log_patches`, which is the next stage's work.
+- Randomized generated commits pass `empty = true` since a random edit pass can leave content
+  unchanged.
 
 - Goal: `lineage.compose(patches)` returns `{ [path] = { prov, del_attr } }` from an ordered list of
   `{ sha, files }` (files as produced by `diff.parse`). No git, no nvim API — headless-testable like
