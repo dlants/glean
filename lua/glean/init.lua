@@ -31,6 +31,7 @@
 local git_mod = require("glean.git")
 local state_mod = require("glean.state")
 local provenance = require("glean.provenance")
+local lineage = require("glean.lineage")
 local intraline = require("glean.intraline")
 local M = {}
 local api = vim.api
@@ -375,7 +376,7 @@ function Session:combined_owner(path)
     -- so its provenance map is empty) is uncommitted content in a work-tree
     -- review: route it to the content-addressed WORKTREE owner so it is markable.
     if not p then return self.worktree and M.WORKTREE or nil end
-    return p.sha, p.orig_lnum
+    return p.sha, p.lnum
   end
 end
 
@@ -404,15 +405,27 @@ end
 -- "loaded" entry is returned untouched. This is the on-demand sync loader used
 -- by the open/scope-switch lifecycle and the action layer; Stage 4 adds the
 -- background async loader that drives the same cache.
+-- Resolve combined-scope ownership for *every* path in one shot by composing
+-- the ordered first-parent patches already fetched by `build_model` (plus the
+-- floating work-tree layer last). Pure Lua, no subprocess: the single
+-- `log_patches` walk that produced `self.commits` is the only git call the
+-- combined view needs. Idempotent within a model generation.
+function Session:load_lineage()
+  if self._owner then return self._owner end
+  local owner = {}
+  for path, maps in pairs(lineage.compose(self.commits)) do
+    owner[path] = { status = "loaded", prov = maps.prov, del_attr = maps.del_attr }
+  end
+  -- A displayed file with no patch of its own (e.g. an untracked file whose
+  -- content we couldn't read) still counts as loaded, with no owned lines.
+  for _, cf in ipairs(self.combined_files or {}) do
+    owner[cf.path] = owner[cf.path] or { status = "loaded", prov = {}, del_attr = {} }
+  end
+  self._owner = owner
+  return owner
+end
 function Session:load_owner(path)
-  self._owner = self._owner or {}
-  local e = self._owner[path]
-  if e and e.status == "loaded" then return e end
-  self._owner[path] = { status = "loading" }
-  local prov = self:compute_provenance(path)
-  local del_attr = self:del_attribution(path)
-  self._owner[path] = { status = "loaded", prov = prov, del_attr = del_attr }
-  return self._owner[path]
+  return self:load_lineage()[path]
 end
 
 -- Load ownership for every displayed combined file (no-op outside combined
@@ -421,9 +434,7 @@ end
 function Session:load_combined_owners()
   if self.scope ~= "combined" then return end
   self.combined_files = self.combined_files or self:compute_combined()
-  for _, cf in ipairs(self.combined_files) do
-    self:load_owner(cf.path)
-  end
+  self:load_lineage()
 end
 
 -- ---------------------------------------------------------------------------
@@ -526,21 +537,7 @@ function Session:start_owner_loader()
   if self.scope ~= "combined" then return end
   if self._suspended then return end
   self.combined_files = self.combined_files or self:compute_combined()
-  local queue = {}
-  for _, cf in ipairs(self.combined_files) do
-    if self:owner_status(cf.path) ~= "loaded" then queue[#queue + 1] = cf.path end
-  end
-  self._load_queue = queue
-  self._load_idx = 0
-  if #queue == 0 then return end
-  -- Dispatch up to `max_blame_jobs` workers that drain the shared queue in
-  -- parallel, bounding concurrent `git blame` subprocesses. Under the injected
-  -- (synchronous) test runner each worker runs to completion before the next is
-  -- dispatched, so the queue still drains before this returns.
-  local workers = math.max(1, math.min(self.max_blame_jobs or 1, #queue))
-  for _ = 1, workers do
-    self:loader_pump(self._load_gen)
-  end
+  self:load_lineage()
 end
 
 -- Resolve combined-scope deletions to the immutable identity of the commit that
@@ -3117,8 +3114,8 @@ function Session:set_scope(scope)
   if scope == self.scope then return end
   self.scope = scope
   if scope == "commits" then self:apply_collapse() end
-  self:render()
   self:start_owner_loader()
+  self:render()
 end
 
 function Session:toggle_scope()
@@ -3162,41 +3159,16 @@ function Session:reload()
   self.commits = commits
   self.store = store
   self._wt_lines = nil
-  -- Del attribution (reverse blame base..HEAD) and its parent->child stack
-  -- depend only on the commit set, not on worktree content, so a content-only
-  -- reload (the common live-update case) keeps them; they are dropped only when
-  -- the commit set actually changes (new commit / amend / rebase).
-  local gen = table.concat(shas or {}, ",")
-  local commit_set_changed = gen ~= self._del_gen
-  -- Incrementally invalidate blame provenance per file. Blame is per-file, so a
-  -- content-only edit only invalidates the edited file(s); every unchanged file
-  -- keeps its cached forward provenance (and blame ranges), avoiding one
-  -- `git blame` subprocess per file on every save. A commit-set change (new
-  -- commit / amend / rebase) can shift every file's ownership, so drop it all.
-  local old_owner, old_ranges, old_sigs = self._owner, self._blame_ranges, self._file_sigs
-  local new_sigs = combined_file_sigs(files)
-  self._file_sigs = new_sigs
-  if commit_set_changed then
-    self._del_attr = nil
-    self._del_child = nil
-    self._del_gen = gen
-    self._owner = nil
-    self._blame_ranges = nil
-  else
-    local owner, ranges = {}, {}
-    for path, sig in pairs(new_sigs) do
-      if old_sigs and old_sigs[path] == sig then
-        if old_owner then owner[path] = old_owner[path] end
-        if old_ranges then ranges[path] = old_ranges[path] end
-      end
-    end
-    self._owner = owner
-    self._blame_ranges = ranges
-  end
+  -- Ownership is recomposed wholesale from the freshly walked patches: it is
+  -- pure Lua over data `build_model` already fetched, so there is nothing to
+  -- carry over. The per-file signatures survive as the input to incremental
+  -- rendering.
+  self._file_sigs = combined_file_sigs(files)
+  self._owner = nil
   self.combined_files = nil
   self:apply_collapse()
-  self:render()
   self:start_owner_loader()
+  self:render()
 end
 
 -- Start polling the repo on a timer; only the live work-tree review opts in.
@@ -3245,8 +3217,8 @@ function Session:resume()
     self._sig = sig
     self:reload()
   else
-    self:render()
     self:start_owner_loader()
+    self:render()
   end
   self:start_live()
 end
@@ -3533,8 +3505,8 @@ function M.open(opts)
     session:start_live()
   end
 
-  session:render()
   session:start_owner_loader()
+  session:render()
   return session
 end
 

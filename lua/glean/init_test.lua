@@ -865,7 +865,10 @@ do
     open_window = false, state_dir = vim.fn.tempname(), -- combined scope
   })
   h.assert_eq("stage2-C: untracked new.txt loaded", s:owner_status("new.txt"), "loaded")
-  h.assert_true("stage2-C: untracked provenance map empty", next(s:provenance("new.txt")) == nil)
+  -- The untracked layer is composed like any other patch, so its lines are
+  -- owned by the floating WORKTREE id rather than left unattributed.
+  h.assert_eq("stage2-C: untracked line owned by WORKTREE",
+    s:provenance("new.txt")[1].sha, glean.WORKTREE)
   local nrow = find_row(s, function(_, line, t)
     return t and t.cfile and t.line and line == "+hi"
   end)
@@ -946,19 +949,16 @@ do
   end)
   s0:toggle_seen(frow0)
 
-  -- Fresh session with a per-path forward-blame spy (reverse blame excluded).
-  local fwd, fwd_count = {}, {}
+  -- Fresh session with a spy counting blame and log-patch subprocesses.
+  local blames, logs = 0, 0
   local function spy(args)
-    local is_blame, is_reverse, path = false, false, nil
+    local is_blame, is_log = false, false
     for _, a in ipairs(args) do
       if a == "blame" then is_blame = true end
-      if a == "--reverse" then is_reverse = true end
-      path = a
+      if a == "log" then is_log = true end
     end
-    if is_blame and not is_reverse then
-      fwd[#fwd + 1] = path
-      fwd_count[path] = (fwd_count[path] or 0) + 1
-    end
+    if is_blame then blames = blames + 1 end
+    if is_log then logs = logs + 1 end
     return inject_run(args)
   end
   local s = glean.open({
@@ -967,10 +967,11 @@ do
   })
   local order = {}
   for _, cf in ipairs(s.combined_files) do order[#order + 1] = cf.path end
-  h.assert_eq("stage4-A: one forward blame per displayed file", #fwd, #order)
+  -- Composition replaces per-file blame entirely: one first-parent log walk
+  -- answers every path, so the git cost does not grow with the file count.
+  h.assert_eq("stage4-A: combined open issues zero blames", blames, 0)
+  h.assert_eq("stage4-A: combined open issues exactly one log walk", logs, 1)
   for i, p in ipairs(order) do
-    h.assert_eq("stage4-A: blame in document order [" .. i .. "]", fwd[i], p)
-    h.assert_eq("stage4-A: blamed exactly once " .. p, fwd_count[p], 1)
     h.assert_eq("stage4-A: file loaded " .. p, s:owner_status(p), "loaded")
   end
   local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
@@ -2762,5 +2763,129 @@ do
   local ok = pcall(s.apply_intraline, s, blocks)
   vim.schedule = sched
   h.assert_true("intra: stale rows/cols do not raise", ok)
+end
+-- Stage 5 — lineage composition wired into the Session.
+-- The combined view's git cost is one first-parent log walk, independent of the
+-- number of displayed files (blame was O(files)).
+do
+  local files = {}
+  for i = 1, 8 do files["p" .. i .. ".txt"] = "a\nb\nc\n" end
+  local edited = {}
+  for i = 1, 8 do edited["p" .. i .. ".txt"] = "a\nB\nc\n" end
+  local many = testutil.make_repo({
+    { msg = "base", files = files },
+    { msg = "edit all", files = edited },
+  })
+  local blames, logs = 0, 0
+  local function spy(args)
+    local cmd = args[1]
+    if cmd == "blame" then blames = blames + 1 end
+    if cmd == "log" then logs = logs + 1 end
+    local c = { "git" }
+    for _, a in ipairs(args) do c[#c + 1] = a end
+    local res = vim.system(c, { cwd = many.root, env = many.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local s = glean.open({
+    base = many.shas[1], target = many.shas[2], repo_root = many.root, run = spy,
+    open_window = false, state_dir = vim.fn.tempname(),
+  })
+  h.assert_eq("stage5: 8 files displayed", #s.combined_files, 8)
+  h.assert_eq("stage5: zero blames for 8 files", blames, 0)
+  h.assert_eq("stage5: one log walk for 8 files", logs, 1)
+  -- A scope toggle reuses the same patches: no further subprocesses.
+  local before = blames + logs
+  s:set_scope("commits")
+  s:set_scope("combined")
+  h.assert_eq("stage5: scope toggle issues no git calls", blames + logs, before)
+end
+-- Cross-scope round trip: an identity minted in commit scope is the same one
+-- combined scope asks about, for a committed line and for a work-tree line.
+do
+  local xr = testutil.make_repo({
+    { msg = "base", files = { ["x.txt"] = "a\nb\nc\n" } },
+    { msg = "c1: b->B", files = { ["x.txt"] = "a\nB\nc\n" } },
+  })
+  local f = assert(io.open(xr.root .. "/x.txt", "w"))
+  f:write("a\nB\nC\n"); f:close()
+  local function runx(args)
+    local c = { "git" }
+    for _, a in ipairs(args) do c[#c + 1] = a end
+    local res = vim.system(c, { cwd = xr.root, env = xr.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local dir = vim.fn.tempname()
+  local function xopen(scope)
+    return glean.open({
+      base = xr.shas[1], target = glean.WORKTREE, repo_root = xr.root, run = runx,
+      open_window = false, state_dir = dir, scope = scope,
+    })
+  end
+  local function row_for(s, text)
+    return find_row(s, function(_, line, t) return t and t.line and line == text end)
+  end
+  -- Mark the committed +B line in commit scope; combined scope sees it seen.
+  local sc = xopen("commits")
+  sc:toggle_seen(row_for(sc, "+B"))
+  local sb = xopen("combined")
+  local cf = sb.combined_files[1]
+  h.assert_true("stage5: committed mark visible in combined",
+    sb:id_seen(state.add_identity(xr.shas[2], "x.txt", 2)))
+  h.assert_true("stage5: combined owner agrees with commit owner",
+    sb:hunk_seen(cf.hunks[1], cf.path, sb:combined_owner(cf.path)) ~= nil)
+  -- The uncommitted +C line is owned by the floating WORKTREE id in combined
+  -- scope (it has no in-range commit), so it is markable there.
+  local crow = row_for(sb, "+C")
+  h.assert_true("stage5: found uncommitted +C row in combined", crow ~= nil)
+  local cid = sb:row_identity(sb.row_map[crow])
+  h.assert_eq("stage5: uncommitted line is WORKTREE-owned", cid and cid.kind, "wt")
+  -- Reverse direction: a mark authored in combined scope on a committed line is
+  -- the same identity commit scope resolves.
+  local dir2 = vim.fn.tempname()
+  local sb2 = glean.open({
+    base = xr.shas[1], target = xr.shas[2], repo_root = xr.root, run = runx,
+    open_window = false, state_dir = dir2,
+  })
+  sb2:toggle_seen(row_for(sb2, "+B"))
+  local sc3 = glean.open({
+    base = xr.shas[1], target = xr.shas[2], repo_root = xr.root, run = runx,
+    open_window = false, state_dir = dir2, scope = "commits",
+  })
+  h.assert_true("stage5: combined mark visible in commit scope",
+    sc3:id_seen(state.add_identity(xr.shas[2], "x.txt", 2)))
+end
+-- Merge fixture: composition walks --first-parent, so the merge commit owns the
+-- side branch's lines and the side-branch commits do not appear at all.
+do
+  local mr = testutil.make_repo({
+    { msg = "base", files = { ["m.txt"] = "a\nb\nc\n" } },
+    { msg = "side: b->SIDE", branch = "side", files = { ["m.txt"] = "a\nSIDE\nc\n" } },
+    { msg = "merge side", merge = "side" },
+  })
+  local function runm(args)
+    local c = { "git" }
+    for _, a in ipairs(args) do c[#c + 1] = a end
+    local res = vim.system(c, { cwd = mr.root, env = mr.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local dir = vim.fn.tempname()
+  local function mopen(scope)
+    return glean.open({
+      base = mr.shas[1], target = mr.shas[3], repo_root = mr.root, run = runm,
+      open_window = false, state_dir = dir, scope = scope,
+    })
+  end
+  local sc = mopen("commits")
+  h.assert_eq("stage5: only the merge commit is listed", #sc.commits, 1)
+  h.assert_eq("stage5: listed commit is the merge", sc.commits[1].sha, mr.shas[3])
+  local srow = find_row(sc, function(_, line, t) return t and t.line and line == "+SIDE" end)
+  h.assert_true("stage5: merge carries the side branch's change", srow ~= nil)
+  sc:toggle_seen(srow)
+  local sb = mopen("combined")
+  h.assert_true("stage5: merge mark is seen in combined scope",
+    sb:id_seen(state.add_identity(mr.shas[3], "m.txt", 2)))
+  local joined = table.concat(api.nvim_buf_get_lines(sb.buf, 0, -1, false), "\n")
+  h.assert_true("stage5: combined shows the merged line as seen",
+    joined:find(" seen (", 1, true) ~= nil)
 end
 h.finish()

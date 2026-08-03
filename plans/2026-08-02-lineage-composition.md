@@ -554,7 +554,34 @@ independent authority on which commit, so both checks are needed and neither sub
     and composition credits the in-range mover) is asserted explicitly as the *composition* answer,
     with a comment naming it as the intended correctness fix.
 
-## Wire into Session
+## Wire into Session — DONE
+
+Decisions:
+- Composition consumes the patches `build_model` *already* fetched (`self.commits`), rather than
+  issuing a separate `log_patches_async` job — that would duplicate the walk. So the combined view
+  costs **zero** git calls beyond the one `log_patches` call `build_model` already makes, which is
+  the property the stage's tests assert. Making that call async is stage 6's job.
+- `Session:load_lineage()` composes once per model generation into `_owner`; `load_owner`,
+  `load_combined_owners` and `start_owner_loader` all route through it. The pending/`"loading"`
+  presentation and the `_load_gen` guard are untouched, so the pending-render tests (which drop
+  `_owner` by hand) still hold.
+- Ownership is now resolved *before* the first paint, so `start_owner_loader()` moved ahead of
+  `render()` in `open` / `reload` / `set_scope` / `resume`; there is one repaint per refresh and the
+  streaming re-render no longer fires on the open path.
+- `combined_owner` reads `p.lnum` (lineage's field) instead of blame's `p.orig_lnum`.
+- `reload` drops `_owner` wholesale — recomposition is pure Lua over data already fetched, so the
+  per-file blame carry-over (`_blame_ranges`, `_del_attr`, `_del_child`, `_del_gen`) is gone.
+  `_file_sigs` / `combined_file_sigs` survive for incremental rendering.
+- Dead blame code (`load_owner_async`, `loader_pump`, `compute_provenance`, `del_attribution*`,
+  `Git:blame*`, `provenance.lua`) is left in place for the retire-dead-code stage.
+- Test updates: `stage2-C` now asserts the untracked line is WORKTREE-*owned* (composition
+  attributes it) rather than having an empty prov map; `stage4-A`'s per-file blame-order assertions
+  became "zero blames, exactly one log walk".
+- The commit↔combined round trip is asserted on committed identities in both directions. A
+  *work-tree* line's identity is positional (`ord`) and the two scopes flatten different diffs
+  (`base..worktree` vs `git diff HEAD`), so it does not round-trip — pre-existing behaviour,
+  unrelated to composition; the test asserts only that the line is WORKTREE-owned and markable in
+  combined scope.
 
 - Goal: combined-scope open runs one `log_patches_async` job instead of 2N blames. `_owner` is
   populated for all paths in one shot; `combined_owner`, `line_identity` and the renderer are
