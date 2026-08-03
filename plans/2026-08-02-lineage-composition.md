@@ -513,7 +513,23 @@ Decisions:
   - A commit touching no files (empty commit) yields an entry with an empty `files` list rather
     than swallowing the following commit's patch — the NUL split must be robust to that.
 
-## Blame-oracle equivalence
+## Blame-oracle equivalence — DONE
+
+Decisions:
+- The oracle lives in `lineage_test.lua` as a fourth group; `parse_blame` and `build_del_map` are
+  copied in as local helpers (production still has its own copies until the retire-dead-code stage).
+- `oracle(name, repo, base, target, expect)` walks every add/del line of the net diff, comparing
+  `prov[new_lnum]` against `git blame -p target` and `del_attr[old_lnum]` against
+  `build_del_map(git blame -p --reverse base..target)` with the first-parent child map. `expect`
+  names per-path/per-lnum deliberate divergences, asserted against the composition answer.
+- Fixtures: linear edits, rename+edit, delete-then-re-add, additions-only, moved line. The rename
+  fixture needed a 10-line file — with a 5-line file the edit dropped similarity below git's rename
+  threshold and `-M` reported delete+add instead.
+- Moved-line divergence verified by hand: blame's `-M` credits the *base* commit (out of range) for
+  the moved line and reverse blame reports no deleter, so composition's in-range mover is the only
+  usable identity. Asserted via `expect`, plus the content checker.
+- Merges are excluded by construction (no merge fixture is passed to `oracle`); the merge case stays
+  asserted against composition in group 3.
 
 The content check of the previous stage proves the *coordinates* are real, but it cannot prove the
 *attribution* is right: crediting the wrong commit would still pass if that commit happens to have

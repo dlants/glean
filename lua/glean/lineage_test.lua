@@ -529,4 +529,170 @@ for seed = 1, 8 do
   check("randomized history seed " .. seed, repo, repo.shas[1], repo.shas[#repo.shas])
 end
 
+-- --------------------------------------------------- 4. blame-oracle equivalence
+--
+-- The content check above proves the *coordinates* are real but not that the
+-- *attribution* is right: crediting the wrong commit still passes whenever that
+-- commit happens to carry the same text at the same line. Blame is the
+-- independent authority on which commit, so both checks are needed and neither
+-- subsumes the other.
+--
+-- The oracle applies to merge-free ranges only. On a merge, blame reaches into
+-- the side branch while composition credits the merge commit, so the two are
+-- *intended* to disagree; that case is asserted against composition directly
+-- (see the merge fixture above).
+
+-- `git blame -p` porcelain -> final_lnum -> { sha, orig_lnum }. Lifted from
+-- glean.provenance, which this plan deletes once nothing in production blames.
+local function parse_blame(text)
+  local map = {}
+  for line in (text .. "\n"):gmatch("(.-)\n") do
+    local sha, orig, final = line:match("^(%x+) (%d+) (%d+)")
+    if sha and #sha >= 7 then
+      map[tonumber(final)] = { sha = sha, orig_lnum = tonumber(orig) }
+    end
+  end
+  return map
+end
+
+-- Reverse blame reports, per base line, the *last* revision in which the line
+-- still existed; the deleter is that revision's first-parent child. Mirrors
+-- init.lua's build_del_map.
+local function build_del_map(text, child)
+  local map = {}
+  for final, p in pairs(parse_blame(text or "")) do
+    local deleter = child[p.sha]
+    if deleter then map[final] = { sha = deleter, lnum = p.orig_lnum } end
+  end
+  return map
+end
+
+local function child_map(repo, base, target)
+  local child, prev = {}, repo.run({ "rev-parse", base })
+  for _, p in ipairs(log_patches(repo, base, target)) do
+    child[prev] = p.sha
+    prev = p.sha
+  end
+  return child
+end
+
+local function fmt(o)
+  return o and (o.sha:sub(1, 7) .. ":" .. (o.lnum or o.orig_lnum)) or "nil"
+end
+
+-- Assert composition reproduces blame for every add/del line of the net diff.
+-- `expect` optionally names deliberate divergences:
+--   expect[path]["add"|"del"][lnum] = { sha = <sha>, lnum = <n> }
+-- which are asserted against the *composition* answer instead of blame.
+local function oracle(name, repo, base, target, expect)
+  local composed = lineage.compose(log_patches(repo, base, target))
+  local net = diff.parse(repo.run({ "diff", "-M", "--no-color", base, target }))
+  local child = child_map(repo, base, target)
+  local bad = nil
+  local function fail(msg) bad = bad or msg end
+
+  for _, file in ipairs(net) do
+    local maps = composed[file.path] or { prov = {}, del_attr = {} }
+    local exp = (expect or {})[file.path] or {}
+    local blame, rev_blame
+    local old_path = file.old_path ~= "/dev/null" and file.old_path or file.path
+
+    for _, hunk in ipairs(file.hunks) do
+      for _, dl in ipairs(hunk.lines) do
+        if dl.kind == "add" then
+          local want = (exp.add or {})[dl.new_lnum]
+          local got = maps.prov[dl.new_lnum]
+          if not want then
+            blame = blame or parse_blame(repo.run({ "blame", "-p", target, "--", file.path }))
+            local b = blame[dl.new_lnum]
+            want = b and { sha = b.sha, lnum = b.orig_lnum }
+          end
+          if not got or not want or got.sha ~= want.sha or got.lnum ~= want.lnum then
+            fail(("add %s:%d composed %s, oracle %s")
+              :format(file.path, dl.new_lnum, fmt(got), fmt(want)))
+          end
+        elseif dl.kind == "del" then
+          local want = (exp.del or {})[dl.old_lnum]
+          local got = maps.del_attr[dl.old_lnum]
+          if not want then
+            rev_blame = rev_blame or build_del_map(
+              repo.run({ "blame", "-p", "--reverse", base .. ".." .. target, "--", old_path }),
+              child)
+            want = rev_blame[dl.old_lnum]
+          end
+          if not got or not want or got.sha ~= want.sha or got.lnum ~= want.lnum then
+            fail(("del %s:%d composed %s, oracle %s")
+              :format(old_path, dl.old_lnum, fmt(got), fmt(want)))
+          end
+        end
+      end
+    end
+  end
+
+  h.assert_true(name, bad == nil, bad)
+  return composed
+end
+
+do
+  local repo = testutil.make_repo({
+    { msg = "base", files = { ["f.txt"] = BASE } },
+    { msg = "c1", files = { ["f.txt"] = "zero\none\ntwo\nTHREE\nfour\nfive\n" } },
+    { msg = "c2", files = { ["f.txt"] = "zero\none\nTHREE\nfour\nfive\nsix\n" } },
+    { msg = "c3", files = { ["f.txt"] = "zero\nONE\nTHREE\nfour\nfive\nsix\n" } },
+  })
+  oracle("oracle: linear edits", repo, repo.shas[1], repo.shas[4])
+end
+
+do
+  local repo = testutil.make_repo({
+    { msg = "base", files = { ["f.txt"] = BASE .. "six\nseven\neight\nnine\nten\n" } },
+    { msg = "c1", files = { ["f.txt"] = "one\nTWO\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n" } },
+    {
+      msg = "rename+edit",
+      rename = { ["f.txt"] = "g.txt" },
+      files = { ["g.txt"] = "one\nTWO\nthree\nFOUR\nfive\nsix\nseven\nnine\nten\n" },
+    },
+  })
+  oracle("oracle: rename", repo, repo.shas[1], repo.shas[3])
+end
+
+do
+  local repo = testutil.make_repo({
+    { msg = "base", files = { ["f.txt"] = BASE, ["k.txt"] = "k\n" } },
+    { msg = "delete", delete = { "f.txt" } },
+    { msg = "re-add", files = { ["f.txt"] = "alpha\nbeta\n" } },
+  })
+  oracle("oracle: delete then re-add", repo, repo.shas[1], repo.shas[3])
+end
+
+do
+  local repo = testutil.make_repo({
+    { msg = "base", files = { ["f.txt"] = BASE } },
+    { msg = "add only", files = { ["f.txt"] = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n" } },
+  })
+  oracle("oracle: additions only", repo, repo.shas[1], repo.shas[2])
+end
+
+do
+  -- A line moved within the file. Blame's -M/-C follows the move and credits
+  -- the commit that originally wrote the line — here the base commit, i.e.
+  -- outside the range, so it is useless as a review identity, and reverse blame
+  -- likewise reports no deleter. Composition credits the in-range commit that
+  -- moved it, which is the coordinate commit scope renders. That divergence is
+  -- the intended correctness fix, so this fixture asserts composition.
+  local repo = testutil.make_repo({
+    { msg = "base", files = { ["f.txt"] = BASE } },
+    { msg = "move five to the top", files = { ["f.txt"] = "five\none\ntwo\nthree\nfour\n" } },
+  })
+  local mover = repo.shas[2]
+  oracle("oracle: moved line", repo, repo.shas[1], mover, {
+    ["f.txt"] = {
+      add = { [1] = { sha = mover, lnum = 1 } },
+      del = { [5] = { sha = mover, lnum = 5 } },
+    },
+  })
+  local c = check("moved line content check", repo, repo.shas[1], mover)
+  h.assert_eq("mover owns the moved line", c["f.txt"].prov[1].sha, mover)
+end
+
 h.finish()
