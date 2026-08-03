@@ -47,10 +47,19 @@ function M.new()
 end
 
 -- Build a hermetic throwaway git repo in a tempname() dir. `spec` is a list of
--- commits; each commit is { msg = <string>, files = { [path] = content } }.
--- Files listed in a commit are written (overwriting) and committed together.
--- Returns { root, run, shas } where `shas[i]` is the sha of commit i and `run`
--- runs git in the repo and returns trimmed stdout (asserting success).
+-- commits; each entry produces exactly one commit, so `shas[i]` indexes spec
+-- entries. Supported keys:
+--   msg    = <string>              commit message
+--   files  = { [path] = content }  written (overwriting) and added
+--   delete = { path, ... }         `git rm`
+--   rename = { [from] = to }       `git mv`, so the commit records a rename
+--   empty  = true                  `commit --allow-empty`
+--   branch = <name>                cut a new branch from the previous commit
+--                                  and commit on it
+--   merge  = <name>                check out "main" and `git merge --no-ff`
+--                                  <name>; the merge itself is the commit
+-- Returns { root, run, shas, env } where `run` runs git in the repo and returns
+-- trimmed stdout (asserting success).
 function M.make_repo(spec)
   local root = vim.fn.tempname()
   vim.fn.mkdir(root, "p")
@@ -83,16 +92,34 @@ function M.make_repo(spec)
 
   local shas = {}
   for _, commit in ipairs(spec) do
-    for path, content in pairs(commit.files or {}) do
-      local full = root .. "/" .. path
-      local dir = vim.fs.dirname(full)
-      if dir and dir ~= "" then vim.fn.mkdir(dir, "p") end
-      local f = assert(io.open(full, "w"))
-      f:write(content)
-      f:close()
-      run({ "add", "--", path })
+    if commit.branch then
+      run({ "checkout", "-q", "-b", commit.branch })
     end
-    run({ "commit", "-q", "-m", commit.msg or "commit" })
+    if commit.merge then
+      run({ "checkout", "-q", "main" })
+      run({ "merge", "-q", "--no-ff", "-m", commit.msg or "merge", commit.merge })
+    else
+      for from, to in pairs(commit.rename or {}) do
+        local dir = vim.fs.dirname(root .. "/" .. to)
+        if dir and dir ~= "" then vim.fn.mkdir(dir, "p") end
+        run({ "mv", "--", from, to })
+      end
+      for _, path in ipairs(commit.delete or {}) do
+        run({ "rm", "-q", "--", path })
+      end
+      for path, content in pairs(commit.files or {}) do
+        local full = root .. "/" .. path
+        local dir = vim.fs.dirname(full)
+        if dir and dir ~= "" then vim.fn.mkdir(dir, "p") end
+        local f = assert(io.open(full, "w"))
+        f:write(content)
+        f:close()
+        run({ "add", "--", path })
+      end
+      local args = { "commit", "-q", "-m", commit.msg or "commit" }
+      if commit.empty then args[#args + 1] = "--allow-empty" end
+      run(args)
+    end
     shas[#shas + 1] = run({ "rev-parse", "HEAD" })
   end
 
