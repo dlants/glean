@@ -132,33 +132,52 @@ function Git:default_trunk()
   return out
 end
 
--- List commits on `base..target` in chronological order (oldest first).
--- Returns a list of { sha, summary }.
-function Git:commits(base, target)
-  local range = base .. ".." .. target
-  local out, err = self:run({
-    "log", "--reverse", "--no-color", "--format=%H%x09%s", range,
-  })
-  if not out then return nil, err end
-  local commits = {}
-  for line in out:gmatch("([^\n]+)") do
-    local sha, summary = line:match("^(%x+)\t(.*)$")
-    if sha then
-      commits[#commits + 1] = { sha = sha, summary = summary }
-    end
-  end
-  return commits
+-- The first-parent commits of `base..target`, oldest first, each with its own
+-- patch against its first parent. One `git log -p` process answers three
+-- questions at once: the commit list, every commit's diff, and the input to
+-- lineage composition.
+--
+-- `-U0` makes every hunk a single contiguous change block; `-M` reports renames
+-- as one entry; `--format=%x00%H%x09%s` prefixes each commit with a NUL
+-- sentinel we split on (git never emits binary content in a text diff, so NUL
+-- cannot occur inside a patch). Returns a list of { sha, summary, files }.
+local LOG_PATCH_ARGS = {
+  "log", "--first-parent", "--reverse", "-p", "-U0", "-M", "--no-color",
+  "--format=%x00%H%x09%s",
+}
+
+local function log_patch_args(base, target)
+  local args = {}
+  for _, a in ipairs(LOG_PATCH_ARGS) do args[#args + 1] = a end
+  args[#args + 1] = base .. ".." .. target
+  return args
 end
 
--- Parsed diff of a single commit against its first parent (`C^..C`), i.e. the
--- changes that commit introduced. Returns a list of FileEntries.
-function Git:commit_diff(sha, path)
-  local args = { "diff", "--no-color", sha .. "^", sha }
-  if path then args[#args + 1] = "--"; args[#args + 1] = path end
-  local out, err = self:run(args)
-  if not out then return nil, err end
-  return diff.parse(out)
+local function parse_log_patches(out)
+  local patches = {}
+  for chunk in out:gmatch("%z([^%z]*)") do
+    local sha, summary, rest = chunk:match("^(%x+)\t([^\n]*)\n?(.*)$")
+    if sha then
+      patches[#patches + 1] = { sha = sha, summary = summary, files = diff.parse(rest or "") }
+    end
+  end
+  return patches
 end
+
+function Git:log_patches(base, target)
+  local out, err = self:run(log_patch_args(base, target))
+  if not out then return nil, err end
+  return parse_log_patches(out)
+end
+
+-- Async counterpart to `log_patches`: `cb(patches_or_nil, err)`.
+function Git:log_patches_async(base, target, cb)
+  self:run_async(log_patch_args(base, target), function(out, err)
+    if not out then return cb(nil, err) end
+    cb(parse_log_patches(out))
+  end)
+end
+
 
 -- Parsed diff of the working tree against HEAD (`git diff HEAD`: staged +
 -- unstaged tracked changes). This is the floating commit's tracked-file content.

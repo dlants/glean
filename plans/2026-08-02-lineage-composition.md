@@ -486,13 +486,24 @@ line is work-tree-removed.
     content checker must pass in full. This is where the off-by-one and segment-splicing bugs that
     hand-picked fixtures miss will actually surface.
 
-## Git plumbing
+## Git plumbing — DONE
+
+Decisions:
+- `Git:log_patches` / `log_patches_async` share `log_patch_args` + `parse_log_patches`; the async
+  form parses in the callback so it stays synchronous under the injected test runner.
+- Removing `Git:commits` / `Git:commit_diff` forced a minimal `build_model` rewire now (it sources
+  both the commit list and per-commit `files` from one `log_patches` call), so `lazy_commit_files`,
+  the `commit_files` cache param and `Session._commit_files` are already gone — a slice of the
+  "Wire into Session" stage pulled forward because the removal cannot be split from it.
+- Commit-scope diffs are now `-U0 -M` (no context lines, renames detected). The full suite is green
+  with that change; commit-scope rendering shows changed lines only.
 
 - Goal: `Git:log_patches(base, target)` returns an ordered (oldest-first) list of
   `{ sha, summary, files }` from one
   `git log --first-parent --reverse -p -U0 -M --no-color --format=%x00%H%x09%s` process, splitting
   on NUL and feeding each chunk to `diff.parse`. `Git:log_patches_async` is its `run_async`
   counterpart. `Git:commits` and `Git:commit_diff` are removed.
+- [x] Implemented and tested.
 - Tests (`git_test.lua`, against a `testutil.make_repo` fixture through the injected runner):
   - On a linear fixture, the shas/summaries and their order match what `git log --reverse` reports,
     and each entry's `files` matches a direct `git diff sha^ sha` in path set and in per-hunk

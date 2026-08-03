@@ -32,27 +32,25 @@ local git = git_mod.new({
   end,
 })
 
--- commits(): the two commits beyond base, chronological.
+-- log_patches(): the two commits beyond base, chronological, each with its own
+-- first-parent patch. c1 only touched f.txt's "two" -> "TWO".
 do
-  local commits = git:commits(base, target)
-  h.assert_eq("commits: count", #commits, 2)
-  h.assert_eq("commits: first sha", commits[1].sha, repo.shas[2])
-  h.assert_eq("commits: first summary", commits[1].summary, "c1: edit two")
-  h.assert_eq("commits: second sha", commits[2].sha, repo.shas[3])
-end
-
--- commit_diff(): c1 only touched f.txt's "two" -> "TWO".
-do
-  local files = git:commit_diff(repo.shas[2])
-  h.assert_eq("commit_diff: one file", #files, 1)
-  h.assert_eq("commit_diff: path", files[1].path, "f.txt")
+  local commits = git:log_patches(base, target)
+  h.assert_eq("log_patches: count", #commits, 2)
+  h.assert_eq("log_patches: first sha", commits[1].sha, repo.shas[2])
+  h.assert_eq("log_patches: first summary", commits[1].summary, "c1: edit two")
+  h.assert_eq("log_patches: second sha", commits[2].sha, repo.shas[3])
+  h.assert_eq("log_patches: second summary", commits[2].summary, "c2: edit three + add g")
+  local files = commits[1].files
+  h.assert_eq("log_patches: one file", #files, 1)
+  h.assert_eq("log_patches: path", files[1].path, "f.txt")
   local adds = {}
   for _, l in ipairs(files[1].hunks[1].lines) do
     if l.kind == "add" then adds[#adds + 1] = l end
   end
-  h.assert_eq("commit_diff: one add", #adds, 1)
-  h.assert_eq("commit_diff: add text", adds[1].text, "TWO")
-  h.assert_eq("commit_diff: add new_lnum", adds[1].new_lnum, 2)
+  h.assert_eq("log_patches: one add", #adds, 1)
+  h.assert_eq("log_patches: add text", adds[1].text, "TWO")
+  h.assert_eq("log_patches: add new_lnum", adds[1].new_lnum, 2)
 end
 
 -- combined_diff(): net of c1+c2 over base -> two files (f.txt, g.txt).
@@ -260,6 +258,67 @@ do
     end,
   })
   h.assert_true("common_dir: distinct repos diverge", other_git:common_dir() ~= cd)
+end
+
+-- Per-commit patches match a direct `git diff C^ C`: -U0 changes grouping, not
+-- line numbering.
+do
+  for _, c in ipairs(git:log_patches(base, target)) do
+    local direct = git:range_diff(c.sha .. "^", c.sha)
+    local function coords(files)
+      local out = {}
+      for _, f in ipairs(files) do
+        for _, hunk in ipairs(f.hunks) do
+          for _, l in ipairs(hunk.lines) do
+            if l.kind ~= "context" then
+              out[#out + 1] = ("%s|%s|%s|%s|%s")
+                :format(f.path, l.kind, l.old_lnum or "", l.new_lnum or "", l.text)
+            end
+          end
+        end
+      end
+      table.sort(out)
+      return table.concat(out, "\n")
+    end
+    h.assert_eq("log_patches: patch matches diff C^ C for " .. c.summary,
+      coords(c.files), coords(direct))
+  end
+end
+
+-- A merge fixture: first-parent walk keeps the merge and the main line but not
+-- the side branch's own commits, and the merge's patch is against its first
+-- parent (so the side branch's change shows up as the merge's own).
+do
+  local mrepo = testutil.make_repo({
+    { msg = "base", files = { ["f.txt"] = "one\ntwo\n" } },
+    { msg = "main edit", files = { ["f.txt"] = "ONE\ntwo\n" } },
+    { msg = "side", branch = "side", files = { ["s.txt"] = "side\n" } },
+    { msg = "merge side", merge = "side" },
+    { msg = "empty tail", empty = true },
+  })
+  local mgit = git_mod.new({
+    repo_root = mrepo.root,
+    run = function(args)
+      local cmd = { "git" }
+      for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+      local res = vim.system(cmd, { cwd = mrepo.root, env = mrepo.env, text = true }):wait()
+      return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+    end,
+  })
+  local patches = mgit:log_patches(mrepo.shas[1], mrepo.shas[5])
+  local shas, summaries = {}, {}
+  for _, p in ipairs(patches) do shas[p.sha] = p; summaries[#summaries + 1] = p.summary end
+  h.assert_eq("merge: first-parent commit count", #patches, 3)
+  h.assert_true("merge: side branch commit absent", shas[mrepo.shas[3]] == nil)
+  h.assert_true("merge: main-line commit present", shas[mrepo.shas[2]] ~= nil)
+  h.assert_true("merge: merge commit present", shas[mrepo.shas[4]] ~= nil)
+  local mfiles = shas[mrepo.shas[4]].files
+  h.assert_eq("merge: merge diff vs first parent has one file", #mfiles, 1)
+  h.assert_eq("merge: merge brings in s.txt", mfiles[1].path, "s.txt")
+  -- An empty commit yields an entry with no files and does not swallow anything.
+  local tail = patches[#patches]
+  h.assert_eq("empty: last summary", tail.summary, "empty tail")
+  h.assert_eq("empty: no files", #tail.files, 0)
 end
 
 h.finish()

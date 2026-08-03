@@ -226,26 +226,13 @@ local function cmarker_key(path, texts)
 end
 
 -- Build the review model for `base..target`: the net diff `files`, the ordered
--- `commits` (each with its own `commit_diff` files), and the `shas` to load from
+-- `commits` (each with its own first-parent patch), and the `shas` to load from
 -- the store. For a work-tree target the diff runs base->work tree and the
 -- floating commit (tracked dirty edits + untracked files) is appended last.
--- Commit diffs are immutable per sha and only consulted in the commits scope, so
--- each commit's `files` is computed lazily on first access and memoized in a
--- session-lived, sha-keyed `cache`. A combined-scope review (the default) and
--- every live work-tree poll thus skip the per-commit `commit_diff` subprocess
--- entirely, and a scope toggle pays for it exactly once per sha.
-local function lazy_commit_files(git, commit, cache)
-  setmetatable(commit, { __index = function(t, k)
-    if k ~= "files" then return nil end
-    local f = cache[t.sha]
-    if not f then f = git:commit_diff(t.sha) or {}; cache[t.sha] = f end
-    rawset(t, "files", f)
-    return f
-  end })
-end
+-- The commit list and every commit's own diff come from a single
+-- `log_patches` walk, so the commits scope costs no extra subprocess.
 
-local function build_model(git, base, target, commit_files)
-  commit_files = commit_files or {}
+local function build_model(git, base, target)
   local worktree = target == M.WORKTREE
   local files, err
   if worktree then
@@ -257,11 +244,10 @@ local function build_model(git, base, target, commit_files)
   for _, f in ipairs(files) do f.collapsed = false end
 
   local commit_target = worktree and "HEAD" or target
-  local commits, cerr = git:commits(base, commit_target)
+  local commits, cerr = git:log_patches(base, commit_target)
   if not commits then return nil, cerr end
   local shas = {}
   for _, c in ipairs(commits) do
-    lazy_commit_files(git, c, commit_files)
     shas[#shas + 1] = c.sha
   end
 
@@ -3168,8 +3154,7 @@ end
 
 function Session:reload()
   if not api.nvim_buf_is_valid(self.buf) then return end
-  self._commit_files = self._commit_files or {}
-  local files, commits, shas = build_model(self.git, self.base, self.target, self._commit_files)
+  local files, commits, shas = build_model(self.git, self.base, self.target)
   if not files then return end
   local store = state_mod.new({ dir = self.state_dir, wt_shard = self.wt_shard })
   store:load(shas)
@@ -3420,8 +3405,7 @@ function M.open(opts)
   local git = git_mod.new({ repo_root = repo_root, run = opts.run })
 
   local worktree = opts.target == M.WORKTREE
-  local commit_files = {}
-  local files, commit_list, shas = build_model(git, opts.base, opts.target, commit_files)
+  local files, commit_list, shas = build_model(git, opts.base, opts.target)
   if not files then error("glean: build_model failed: " .. tostring(commit_list)) end
 
   local state_dir = opts.state_dir or M.repo_state_dir(git)
@@ -3501,7 +3485,6 @@ function M.open(opts)
     wt_shard = wt_shard,
     files = files,
     commits = commit_list,
-    _commit_files = commit_files,
     -- Baselines so the first content-only reload after open is already
     -- incremental (keeps per-file blame for unchanged files) rather than
     -- re-blaming everything once before the incremental path can engage.
