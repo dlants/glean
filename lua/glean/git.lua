@@ -125,6 +125,33 @@ function Git:current_branch()
   return (out:gsub("%s+$", ""))
 end
 
+-- First-parent history from HEAD, newest first. Parent ids are included so a
+-- selected log row can be opened as the exact commit range against its oldest
+-- commit's first parent. Returns { sha, short_sha, summary, parents } entries.
+function Git:log_commits()
+  local out, err = self:run({
+    "log", "--first-parent", "--no-color", "--abbrev=8",
+    "--format=%x00%H%x09%h%x09%P%x09%s",
+  })
+  if not out then return nil, err end
+  local commits = {}
+  for chunk in out:gmatch("%z([^%z]*)") do
+    chunk = chunk:gsub("\n$", "")
+    local sha, short_sha, parents, summary = chunk:match("^(%x+)\t(%x+)\t([^\t]*)\t(.*)$")
+    if sha then
+      local parsed_parents = {}
+      for parent in parents:gmatch("%x+") do parsed_parents[#parsed_parents + 1] = parent end
+      commits[#commits + 1] = {
+        sha = sha,
+        short_sha = short_sha,
+        summary = summary,
+        parents = parsed_parents,
+      }
+    end
+  end
+  return commits
+end
+
 -- The repository's shared git directory (`git rev-parse --git-common-dir`),
 -- resolved to an absolute path. Every linked worktree of a repo points at the
 -- same common dir, so this is a stable per-repo identity (whereas `--git-dir`
@@ -178,6 +205,14 @@ local LOG_PATCH_ARGS = {
   "--format=%x00%H%x09%s",
 }
 
+local function log_patch_root_args(target)
+  local args = {}
+  for _, a in ipairs(LOG_PATCH_ARGS) do args[#args + 1] = a end
+  args[#args + 1] = "--root"
+  args[#args + 1] = target
+  return args
+end
+
 local function log_patch_args(base, target)
   local args = {}
   for _, a in ipairs(LOG_PATCH_ARGS) do args[#args + 1] = a end
@@ -208,6 +243,25 @@ function Git:log_patches_async(base, target, cb)
     if not out then return cb(nil, err) end
     cb(parse_log_patches(out))
   end)
+end
+
+-- First-parent patches from the root commit through `target`, oldest first.
+function Git:log_patches_from_root_async(target, cb)
+  self:run_async(log_patch_root_args(target), function(out, err)
+    if not out then return cb(nil, err) end
+    cb(parse_log_patches(out))
+  end)
+end
+
+-- The repository's object-format-specific empty tree id. Used as the pre-image
+-- when a log selection includes the root commit.
+function Git:empty_tree()
+  local path = vim.fn.tempname()
+  vim.fn.writefile({}, path)
+  local out, err = self:run({ "hash-object", "-t", "tree", path })
+  vim.fn.delete(path)
+  if not out then return nil, err end
+  return (out:gsub("%s+$", ""))
 end
 
 
@@ -250,6 +304,10 @@ end
 
 function Git:diff_to_worktree_async(base, cb)
   self:run_async({ "diff", "--no-color", base }, parse_cb(cb))
+end
+
+function Git:diff_async(base, target, cb)
+  self:run_async({ "diff", "--no-color", base, target }, parse_cb(cb))
 end
 
 function Git:combined_diff_async(base, target, cb)

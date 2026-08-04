@@ -66,6 +66,8 @@ local buffers = {}
 -- process memory so a reload-from-disk never loses expand/collapse state.
 local sessions = {}
 local views = {}
+local log_buffers = {}
+local log_views = {}
 
 -- How often the live work-tree review polls the repo for changes (ms).
 -- Safety-net interval for the live work-tree review (ms). Refreshes are driven
@@ -286,13 +288,19 @@ local function build_model_async(git, base, target, hints, cb)
     net = function(done)
       if worktree then
         git:diff_to_worktree_async(base, done)
+      elseif hints.from_root then
+        git:diff_async(base, target, done)
       else
         git:combined_diff_async(base, target, done)
       end
     end,
   }
   if not reuse then
-    jobs.commits = function(done) git:log_patches_async(base, commit_target, done) end
+    if hints.from_root then
+      jobs.commits = function(done) git:log_patches_from_root_async(commit_target, done) end
+    else
+      jobs.commits = function(done) git:log_patches_async(base, commit_target, done) end
+    end
   end
   if worktree then
     if not hints.wt_diff_text then
@@ -3058,6 +3066,7 @@ function Session:refresh_model(hints)
     wt_diff_text = hints and hints.wt_diff_text,
     patches = self._commit_patches,
     patches_head = self._commit_head,
+    from_root = self.from_root,
   }, function(files, commits, shas, meta)
     if gen ~= self._refresh_gen then return end
     if not api.nvim_buf_is_valid(self.buf) then return end
@@ -3197,6 +3206,25 @@ end
 -- Keymaps / open.
 -- ---------------------------------------------------------------------------
 
+local function show_buffer_in_window(buf)
+  for _, win in ipairs(api.nvim_tabpage_list_wins(0)) do
+    if api.nvim_win_get_buf(win) == buf then
+      api.nvim_set_current_win(win)
+      return win
+    end
+  end
+  local is_floating = api.nvim_win_get_config(0).relative ~= ""
+  if is_floating
+    or vim.fn.winnr("k") ~= vim.fn.winnr()
+    or vim.fn.winnr("j") ~= vim.fn.winnr()
+  then
+    vim.cmd("botright vsplit")
+  end
+  local win = api.nvim_get_current_win()
+  api.nvim_win_set_buf(win, buf)
+  return win
+end
+
 local function setup_keymaps(buf, session)
   local function map(mode, lhs, fn)
     vim.keymap.set(mode, lhs, fn, { buffer = buf, nowait = true, silent = true })
@@ -3330,6 +3358,137 @@ local function setup_keymaps(buf, session)
   end)
 end
 
+local LogView = {}
+LogView.__index = LogView
+
+function LogView:render()
+  local repo = vim.fn.fnamemodify(self.git.repo_root, ":t")
+  local lines = { "Glean log — " .. repo }
+  local row_map = { [0] = false }
+  for i, commit in ipairs(self.commits) do
+    lines[#lines + 1] = commit.short_sha .. "  " .. commit.summary
+    row_map[i] = i
+  end
+  api.nvim_set_option_value("modifiable", true, { buf = self.buf })
+  api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
+  api.nvim_buf_clear_namespace(self.buf, NS, 0, -1)
+  api.nvim_buf_set_extmark(self.buf, NS, 0, 0, {
+    end_row = 1, hl_group = "GleanModeHeader", hl_eol = true,
+  })
+  for row = 1, #self.commits do
+    api.nvim_buf_set_extmark(self.buf, NS, row, 0, {
+      end_col = #self.commits[row].short_sha, hl_group = "GleanCommitHeader",
+    })
+  end
+  api.nvim_set_option_value("modifiable", false, { buf = self.buf })
+  self.row_map = row_map
+end
+
+function LogView:open_selected(srow, erow)
+  if srow > erow then srow, erow = erow, srow end
+  local first, last
+  for row = srow, erow do
+    local index = self.row_map[row]
+    if index then
+      first = math.min(first or index, index)
+      last = math.max(last or index, index)
+    end
+  end
+  if not first then return end
+  local newest = self.commits[first]
+  local oldest = self.commits[last]
+  local base = oldest.parents[1]
+  local from_root = base == nil
+  if from_root then
+    local err
+    base, err = self.git:empty_tree()
+    if not base then
+      vim.notify("glean: resolving the empty tree failed: " .. tostring(err), vim.log.levels.ERROR)
+      return
+    end
+  end
+  local identifier = newest.short_sha
+  if first ~= last then identifier = oldest.short_sha .. ".." .. newest.short_sha end
+  return M.open({
+    repo_root = self.git.repo_root,
+    run = self.run,
+    state_dir = self.state_dir,
+    open_window = self.open_window,
+    base = base,
+    target = newest.sha,
+    identifier = identifier,
+    from_root = from_root,
+  })
+end
+
+local function setup_log_keymaps(buf, view)
+  local function map(mode, lhs, fn)
+    vim.keymap.set(mode, lhs, fn, { buffer = buf, nowait = true, silent = true })
+  end
+  map("n", "<CR>", function()
+    local row = api.nvim_win_get_cursor(0)[1] - 1
+    view:open_selected(row, row)
+  end)
+  map("x", "<CR>", function()
+    local srow = vim.fn.getpos("v")[2] - 1
+    local erow = vim.fn.getpos(".")[2] - 1
+    api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    view:open_selected(srow, erow)
+  end)
+  map("n", "q", function()
+    local win = api.nvim_get_current_win()
+    if api.nvim_win_get_buf(win) == buf then api.nvim_win_close(win, true) end
+  end)
+end
+
+-- Open the current repository's first-parent log as a persistent, listed Glean
+-- entry buffer. Reopening it refreshes the history and reuses the same buffer.
+function M.open_log(opts)
+  opts = opts or {}
+  local repo_root = opts.repo_root or resolve_repo_root(api.nvim_buf_get_name(0))
+  assert(repo_root, "glean: could not find a git repo root")
+  local git = git_mod.new({ repo_root = repo_root, run = opts.run })
+  local commits, err = git:log_commits()
+  if not commits then error("glean: git log failed: " .. tostring(err)) end
+
+  local buf = log_buffers[repo_root]
+  if not (buf and api.nvim_buf_is_valid(buf)) then
+    buf = api.nvim_create_buf(true, false)
+    api.nvim_set_option_value("buftype", "nofile", { buf = buf })
+    api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
+    api.nvim_set_option_value("swapfile", false, { buf = buf })
+    api.nvim_set_option_value("filetype", "glean", { buf = buf })
+    log_buffers[repo_root] = buf
+    api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
+      buffer = buf,
+      callback = function()
+        log_buffers[repo_root] = nil
+        log_views[repo_root] = nil
+      end,
+    })
+  end
+  api.nvim_set_option_value("buflisted", true, { buf = buf })
+  local repo = vim.fn.fnamemodify(repo_root, ":t")
+  pcall(api.nvim_buf_set_name, buf, "Glean:" .. repo .. " log")
+
+  local view = setmetatable({
+    git = git,
+    run = opts.run,
+    state_dir = opts.state_dir,
+    open_window = opts.open_window,
+    commits = commits,
+    buf = buf,
+    row_map = {},
+  }, LogView)
+  log_views[repo_root] = view
+  view:render()
+  if opts.open_window ~= false then
+    view.win = show_buffer_in_window(buf)
+    setup_log_keymaps(buf, view)
+  end
+  return view
+end
+
 -- Open a review of `base...target`. `opts`:
 --   - base, target (required): refs to diff.
 --   - repo_root, run (optional): injected for tests.
@@ -3337,6 +3496,7 @@ end
 --   - state_dir (optional): override the ReviewStore directory (tests).
 --   - storage_branch (optional): branch owning content-addressed review data.
 --   - identifier (optional): invocation identifier shown in the buffer title.
+--   - from_root (internal): base is the empty tree and history includes root.
 --   - open_window (optional, default true).
 
 function M.open(opts)
@@ -3423,6 +3583,7 @@ function M.open(opts)
     base = opts.base,
     target = opts.target,
     worktree = worktree,
+    from_root = opts.from_root == true,
     state_dir = state_dir,
     wt_shard = wt_shard,
     files = {},
@@ -3445,30 +3606,7 @@ function M.open(opts)
 
   local open_window = opts.open_window ~= false
   if open_window then
-    -- Reuse a window already showing this buffer in the current tabpage,
-    -- otherwise open a fresh tab.
-    local shown
-    for _, w in ipairs(api.nvim_tabpage_list_wins(0)) do
-      if api.nvim_win_get_buf(w) == buf then shown = w break end
-    end
-    if shown then
-      session.win = shown
-      api.nvim_set_current_win(shown)
-    else
-      -- Take over the current window, unless it isn't full height (something
-      -- above or below it) or is a floating window. In that case add a new
-      -- full-height column on the right so the review doesn't squash into a
-      -- partial pane.
-      local is_floating = api.nvim_win_get_config(0).relative ~= ""
-      if is_floating
-        or vim.fn.winnr("k") ~= vim.fn.winnr()
-        or vim.fn.winnr("j") ~= vim.fn.winnr()
-      then
-        vim.cmd("botright vsplit")
-      end
-      session.win = api.nvim_get_current_win()
-      api.nvim_win_set_buf(session.win, buf)
-    end
+    session.win = show_buffer_in_window(buf)
     setup_keymaps(buf, session)
     session:start_live()
   end
@@ -3678,6 +3816,10 @@ function M.setup(opts)
   })
   api.nvim_create_user_command("Glean", function(o)
     local args = o.fargs
+    if args[1] == "log" then
+      M.open_log()
+      return
+    end
     if args[1] == "pr" then
       open_pr_notified(args[2])
       return

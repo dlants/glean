@@ -53,6 +53,19 @@ do
   h.assert_eq("log_patches: add new_lnum", adds[1].new_lnum, 2)
 end
 
+-- log_commits(): first-parent history is newest first and carries the parent
+-- needed to turn any selected row into an exact review range.
+do
+  local commits = git:log_commits()
+  h.assert_eq("log_commits: count", #commits, 3)
+  h.assert_eq("log_commits: newest sha", commits[1].sha, repo.shas[3])
+  h.assert_eq("log_commits: newest summary", commits[1].summary,
+    "c2: edit three + add g")
+  h.assert_eq("log_commits: short sha", commits[1].short_sha, repo.shas[3]:sub(1, 8))
+  h.assert_eq("log_commits: first parent", commits[1].parents[1], repo.shas[2])
+  h.assert_eq("log_commits: root has no parent", #commits[3].parents, 0)
+end
+
 -- combined_diff(): net of c1+c2 over base -> two files (f.txt, g.txt).
 do
   local files = git:combined_diff(base, target)

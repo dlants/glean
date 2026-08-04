@@ -9,6 +9,7 @@ review store, so seen-marks and comments survive across sessions.
 
 ```vim
 :Glean                  " review current branch + dirty work tree
+:Glean log              " browse commits, then open one or a selected range
 :Glean <base>           " review <base> + dirty work tree
 :Glean <base> <target>  " review <base>..<target> (no dirty work tree)
 :Glean <pr-number>      " fetch and review a GitHub pull request
@@ -34,6 +35,11 @@ files change, preserving the cursor and your collapse state.
 Reopening the same `base..target` reuses the existing listed buffer rather than
 spawning a duplicate, so you can jump to a source file and return via the buffer
 list / `<C-^>`.
+
+`:Glean log` opens the current repository's first-parent history, newest first.
+Press `<CR>` on a commit to review it, or visually select a contiguous set of
+commits and press `<CR>` to review that range. The log and resulting reviews use
+the same persistent listed-buffer and window-reuse behavior as other Glean views.
 
 ## Two scopes
 
