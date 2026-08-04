@@ -117,13 +117,19 @@ function M.wt_shard(git, branch)
   return state_mod.COMMENTS_ID .. "/" .. (branch or git:current_branch() or "HEAD")
 end
 
--- A short, human-readable label for a diff: `<repo>/<branch> <base>..<target>`,
--- with the floating commit shown as `dirty`. Used for the listed buffer name.
-local function diff_label(git, base, target, branch)
+local function range_identifier(base, target)
+  local display_target = target == M.WORKTREE and "dirty" or target
+  return ("%s..%s"):format(base, display_target)
+end
+
+local function review_title(git, identifier, base, target)
   local repo = vim.fn.fnamemodify(git.repo_root, ":t")
-  branch = branch or git:current_branch() or "?"
-  local t = target == M.WORKTREE and "dirty" or target
-  return ("%s/%s %s..%s"):format(repo, branch, base, t)
+  local range = range_identifier(base, target)
+  -- Keep branch names intact in filename-tail displays instead of letting
+  -- Neovim interpret their slashes as path separators.
+  local function display(ref) return ref:gsub("/", "∕") end
+  if identifier == range then return ("Glean:%s %s"):format(repo, display(identifier)) end
+  return ("Glean:%s %s [%s]"):format(repo, display(identifier), display(range))
 end
 
 local Session = {}
@@ -3281,6 +3287,7 @@ end
 --   - scope (optional, default "combined").
 --   - state_dir (optional): override the ReviewStore directory (tests).
 --   - storage_branch (optional): branch owning content-addressed review data.
+--   - identifier (optional): invocation identifier shown in the buffer title.
 --   - open_window (optional, default true).
 
 function M.open(opts)
@@ -3312,8 +3319,6 @@ function M.open(opts)
     api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
     api.nvim_set_option_value("swapfile", false, { buf = buf })
     api.nvim_set_option_value("filetype", "glean", { buf = buf })
-    pcall(api.nvim_buf_set_name, buf,
-      "Glean:" .. diff_label(git, opts.base, opts.target, opts.storage_branch))
     buffers[key] = buf
     -- Background work is attached to *visibility*, not to the session's
     -- lifetime: a buffer sitting in no window must not poll the work tree or
@@ -3351,6 +3356,8 @@ function M.open(opts)
     })
   end
   api.nvim_set_option_value("buflisted", true, { buf = buf })
+  pcall(api.nvim_buf_set_name, buf, review_title(git,
+    opts.identifier or range_identifier(opts.base, opts.target), opts.base, opts.target))
 
   -- Collapse overrides are content-addressed and kept in process memory keyed by
   -- the buffer, so neither a live reload-from-disk nor a reopen loses the user's
@@ -3450,8 +3457,12 @@ function M.open_dirty(opts)
   assert(repo_root, "glean: could not find a git repo root")
   local git = git_mod.new({ repo_root = repo_root, run = opts.run })
   local base, target = M.resolve_dirty(git)
+  local review_base = opts.base or base
+  local identifier = opts.identifier
+    or (opts.base and opts.base or git:current_branch() or range_identifier(review_base, target))
   return M.open(vim.tbl_extend("force", opts, {
-    repo_root = repo_root, base = opts.base or base, target = target,
+    repo_root = repo_root, base = review_base, target = target,
+    identifier = identifier,
   }))
 end
 local function github_pr_repo(url)
@@ -3477,7 +3488,7 @@ end
 -- use the PR associated with the current branch. `gh_run` is an injectable
 -- command runner (for tests). Returns base, target as concrete oids, suitable
 -- for the three-dot `base...target` review combined diff, plus the PR head
--- branch used to associate content-addressed review storage.
+-- branch used to associate content-addressed review storage and the PR number.
 function M.resolve_pr(git, pr, gh_run)
   local pr_repo = github_pr_repo(pr)
   if pr_repo then
@@ -3505,7 +3516,7 @@ function M.resolve_pr(git, pr, gh_run)
   if not ok then error("glean: fetching PR head failed: " .. tostring(err)) end
   local base_ok, base_err = git:fetch("origin", info.baseRefName)
   if not base_ok then error("glean: fetching PR base failed: " .. tostring(base_err)) end
-  return info.baseRefOid, info.headRefOid, info.headRefName
+  return info.baseRefOid, info.headRefOid, info.headRefName, info.number
 end
 
 -- Open a glean review of a GitHub PR. `opts.pr` is the PR number (defaults to
@@ -3517,10 +3528,11 @@ function M.open_pr(opts)
     or resolve_repo_root(api.nvim_buf_get_name(0))
   assert(repo_root, "glean: could not find a git repo root")
   local git = git_mod.new({ repo_root = repo_root, run = opts.run })
-  local base, target, branch = M.resolve_pr(git, opts.pr, opts.gh_run)
+  local base, target, branch, number = M.resolve_pr(git, opts.pr, opts.gh_run)
   return M.open(vim.tbl_extend("force", opts, {
     repo_root = repo_root, base = base, target = target,
     storage_branch = branch,
+    identifier = opts.identifier or "PR #" .. number,
   }))
 end
 
@@ -3558,6 +3570,7 @@ function M.open_branch(opts)
   return M.open(vim.tbl_extend("force", opts, {
     repo_root = repo_root, base = base, target = target,
     storage_branch = opts.branch,
+    identifier = opts.identifier or opts.branch,
   }))
 end
 

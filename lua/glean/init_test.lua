@@ -42,6 +42,7 @@ local function open(o)
     open_window = false,
     state_dir = o.state_dir or state_dir,
     scope = o.scope,
+    identifier = o.identifier,
   })
 end
 
@@ -1823,15 +1824,20 @@ do
   h.assert_eq("collapse: persists across reload", collapsed_of(s2), after)
 end
 
--- Persistent, listed buffer: reused across opens of the same diff, named Glean:.
+-- Persistent, listed buffer: reused across opens of the same diff and named for
+-- the invocation that opened it most recently.
 do
   local dir = vim.fn.tempname()
+  local repo_name = vim.fn.fnamemodify(repo.root, ":t")
   local s = open({ state_dir = dir })
   h.assert_true("buffer: listed", api.nvim_get_option_value("buflisted", { buf = s.buf }))
-  local name = api.nvim_buf_get_name(s.buf)
-  h.assert_true("buffer: Glean name", name:find("Glean:", 1, true) ~= nil)
-  local s2 = open({ state_dir = dir })
+  h.assert_eq("buffer: range title", vim.fn.fnamemodify(api.nvim_buf_get_name(s.buf), ":t"),
+    ("Glean:%s %s..%s"):format(repo_name, base, target))
+  local s2 = open({ state_dir = dir, identifier = "feature/review-ui" })
   h.assert_eq("buffer: reused on reopen", s2.buf, s.buf)
+  h.assert_eq("buffer: title follows latest invocation",
+    vim.fn.fnamemodify(api.nvim_buf_get_name(s2.buf), ":t"),
+    ("Glean:%s feature∕review-ui [%s..%s]"):format(repo_name, base, target))
 end
 
 -- Multi-hunk navigation: a file with three well-separated hunks (the third very
@@ -2647,13 +2653,41 @@ do
       }),
     }
   end
-  local base, target, branch = glean.resolve_pr(pgit, url, gh_run)
+  local base, target, branch, number = glean.resolve_pr(pgit, url, gh_run)
   h.assert_eq("resolve_pr: URL passed to gh", gh_args[4], url)
   h.assert_eq("resolve_pr: head fetched", fetches[1], "origin:pull/42/head")
   h.assert_eq("resolve_pr: base fetched", fetches[2], "origin:main")
   h.assert_eq("resolve_pr: base oid", base, "base-oid")
   h.assert_eq("resolve_pr: head oid", target, "head-oid")
   h.assert_eq("resolve_pr: storage branch", branch, "feature/pr-review")
+  h.assert_eq("resolve_pr: number", number, 42)
+end
+
+-- Initialization helpers preserve the user-facing branch, PR, and single-ref
+-- identifiers instead of replacing them with the resolved commit range.
+do
+  local old_open = glean.open
+  local captured
+  glean.open = function(opts) captured = opts; return opts end
+
+  glean.open_branch({
+    branch = "feature/review-ui", repo_root = repo.root, run = inject_run,
+  })
+  h.assert_eq("title identifier: branch", captured.identifier, "feature/review-ui")
+
+  local old_resolve_pr = glean.resolve_pr
+  glean.resolve_pr = function() return "base", "head", "feature/pr", 42 end
+  glean.open_pr({ pr = "https://github.com/acme/widgets/pull/42", repo_root = repo.root,
+    run = inject_run })
+  h.assert_eq("title identifier: PR", captured.identifier, "PR #42")
+  glean.resolve_pr = old_resolve_pr
+
+  glean.open_dirty({ base = "abc123", repo_root = repo.root, run = inject_run })
+  h.assert_eq("title identifier: single ref", captured.identifier, "abc123")
+
+  glean.open_dirty({ repo_root = repo.root, run = inject_run })
+  h.assert_eq("title identifier: checkout branch", captured.identifier, "main")
+  glean.open = old_open
 end
 
 -- A PR URL for another repository is rejected before gh or git fetch runs.
