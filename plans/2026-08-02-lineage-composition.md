@@ -601,21 +601,49 @@ Decisions:
     as its own diff, the side-branch commits do not appear, and marking the merge's hunk makes those
     lines seen in combined scope. Each line has exactly one identity across the two scopes.
 
-## Async refresh pipeline
+## Async refresh pipeline — DONE
+
+Decisions:
+- The join helper is `git.join(jobs, cb)` (module-level, no git knowledge): `jobs` maps a name to a
+  function taking `done(...)`, results map the same names to the packed callback args. Every job is
+  started before any completion is processed and the pending count is fixed up front, so a runner
+  that completes synchronously (tests) drains inside the call. LuaJIT has no `table.pack`, so the
+  packing is `{ n = select("#", ...), ... }`.
+- New async query wrappers in `git.lua`: `worktree_diff_async`, `diff_to_worktree_async`,
+  `combined_diff_async`, `untracked_async` (`untracked` split into args + `parse_untracked`), and
+  `dirty_sig_async` (its three queries fanned out through `join`).
+- `build_model` became `build_model_async` + a pure `assemble_model`; the fan-out is net diff + log
+  walk (+ work-tree diff + untracked for a work-tree target). `untracked` is now called **once**
+  (the combined list gets a deep copy so the two scopes' collapse state stays independent) — the
+  stage-7 sub-goal fell out of the rewrite.
+- `M.open` still returns the session synchronously: the session is constructed with an empty model
+  and `refresh_model()` fills it and paints when the queries land. Under the injected runner that
+  happens before `open` returns, which the new suite asserts explicitly. `reload` is now an alias
+  for `refresh_model`.
+- Generation guard: a new `_refresh_gen` (bumped by `Session:bump_refresh`, also on `suspend`)
+  covers the whole model pipeline; `_load_gen` keeps guarding everything downstream of the model
+  landing. A superseded or buffer-gone pipeline drops itself in its continuation.
+- `Git:run` survives for the resolution entrypoints (`resolve_dirty`/`resolve_pr`/`resolve_branch`,
+  `repo_state_dir`, `diff_label`) which run before a buffer exists.
+- The streaming-render throttle is untouched here (it is already unreachable on the open path since
+  stage 5); its removal belongs to the retire-dead-code stage.
+- Tests live in the new `lua/glean/async_test.lua`. Mid-flight cases are driven by swapping a
+  session's `git.run_async` for one that queues calls, then draining them — the injected sync `run`
+  cannot itself defer.
 
 - Goal: the whole open/refresh path is non-blocking. Add a small join helper over `Git:run_async`
   (fan out N queries, invoke a continuation once all land, preserving the injected runner's
   synchronous behaviour), convert `build_model` and `dirty_sig` to it, and reduce the pipeline to a
   single terminal repaint under the existing generation guard.
-- Tests:
-  - With a runner that records call order, a refresh issues its independent queries before any of
+- [x] Tests (`async_test.lua`), all green:
+  - [x] With a runner that records call order, a refresh issues its independent queries before any of
     them completes (fan-out, not a chain).
-  - The buffer is written exactly once per refresh — instrument the render entry point and assert a
+  - [x] The buffer is written exactly once per refresh — instrument the render entry point and assert a
     single call, including when several queries land in the same tick.
-  - A refresh superseded mid-flight (generation bumped by a scope switch or a second refresh) never
+  - [x] A refresh superseded mid-flight (generation bumped by a scope switch or a second refresh) never
     writes to the buffer; the winning refresh's content is what lands.
-  - Closing the buffer mid-flight aborts cleanly with no error from a late callback.
-  - Under the injected runner the whole pipeline still completes synchronously within `open`, so the
+  - [x] Closing the buffer mid-flight aborts cleanly with no error from a late callback.
+  - [x] Under the injected runner the whole pipeline still completes synchronously within `open`, so the
     existing tests' `open()`-then-assert style keeps working. This constraint shapes the join
     helper; verify it explicitly.
 

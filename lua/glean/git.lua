@@ -79,6 +79,29 @@ function Git:run_async(args, cb)
   end)
 end
 
+-- Fan out independent async queries and invoke `cb(results)` once every one has
+-- landed. `jobs` maps a name to a function taking a `done(...)` callback; the
+-- results table maps the same names to the packed callback arguments. Every job
+-- is started before any completion is processed (that is the point: the queries
+-- are independent, so they go out together rather than chaining), and the
+-- pending count is fixed up front so a runner that completes synchronously
+-- (tests) drains deterministically inside this call.
+function M.join(jobs, cb)
+  local names = {}
+  for name in pairs(jobs) do names[#names + 1] = name end
+  table.sort(names)
+  local results = {}
+  local pending = #names
+  if pending == 0 then return cb(results) end
+  for _, name in ipairs(names) do
+    jobs[name](function(...)
+      results[name] = { n = select("#", ...), ... }
+      pending = pending - 1
+      if pending == 0 then cb(results) end
+    end)
+  end
+end
+
 -- Resolve a ref to a concrete 40-char sha. Returns nil on failure.
 function Git:rev_parse(ref)
   local out, err = self:run({ "rev-parse", ref })
@@ -202,6 +225,28 @@ function Git:diff_to_worktree(base, path)
   return diff.parse(out)
 end
 
+-- Async counterparts to the parsed-diff queries. Each mirrors its sync form's
+-- signature with a trailing `cb(files_or_nil, err)`, so the refresh pipeline can
+-- fan them out through `M.join` instead of blocking the UI thread.
+local function parse_cb(cb)
+  return function(out, err)
+    if not out then return cb(nil, err) end
+    cb(diff.parse(out))
+  end
+end
+
+function Git:worktree_diff_async(cb)
+  self:run_async({ "diff", "--no-color", "HEAD" }, parse_cb(cb))
+end
+
+function Git:diff_to_worktree_async(base, cb)
+  self:run_async({ "diff", "--no-color", base }, parse_cb(cb))
+end
+
+function Git:combined_diff_async(base, target, cb)
+  self:run_async({ "diff", "--no-color", base .. "..." .. target }, parse_cb(cb))
+end
+
 -- Resolve the merge base (fork point) of two refs (`git merge-base a b`).
 -- Returns the sha, or nil + stderr on failure.
 function Git:merge_base(a, b)
@@ -215,11 +260,13 @@ end
 -- never `git add -N`. Each entry has kind "add" and a single hunk whose lines
 -- are the working file's lines, each an `add` with new_lnum = 1..N (no old_lnum,
 -- no deletions). Binary or unreadable files are skipped.
-function Git:untracked(path)
+local function untracked_args(path)
   local args = { "ls-files", "--others", "--exclude-standard", "-z" }
   if path then args[#args + 1] = "--"; args[#args + 1] = path end
-  local out, err = self:run(args)
-  if not out then return nil, err end
+  return args
+end
+
+function Git:parse_untracked(out)
   local files = {}
   for p in out:gmatch("([^%z]+)") do
     local full = self.repo_root .. "/" .. p
@@ -252,6 +299,20 @@ function Git:untracked(path)
     end
   end
   return files
+end
+
+function Git:untracked(path)
+  local out, err = self:run(untracked_args(path))
+  if not out then return nil, err end
+  return self:parse_untracked(out)
+end
+
+-- Async counterpart to `untracked`: `cb(files_or_nil, err)`.
+function Git:untracked_async(path, cb)
+  self:run_async(untracked_args(path), function(out, err)
+    if not out then return cb(nil, err) end
+    cb(self:parse_untracked(out))
+  end)
 end
 
 -- Parsed net diff `base...target` (three-dot: changes on target since it
@@ -330,11 +391,29 @@ end
 -- skip a rebuild when nothing changed. Combines HEAD, the tracked diff against
 -- HEAD (catches in-file content edits), and the porcelain status (catches
 -- staging/untracked changes). Returns a short hash, or nil on failure.
+local function dirty_hash(head, diff_out, status)
+  return vim.fn.sha256(head .. "\0" .. diff_out .. "\0" .. status)
+end
+
 function Git:dirty_sig()
   local head = self:run({ "rev-parse", "HEAD" }) or ""
   local diff_out = self:run({ "diff", "--no-color", "HEAD" }) or ""
   local status = self:run({ "status", "--porcelain=v1", "-uall" }) or ""
-  return vim.fn.sha256(head .. "\0" .. diff_out .. "\0" .. status)
+  return dirty_hash(head, diff_out, status)
+end
+
+-- Async counterpart to `dirty_sig`: the three queries are independent, so they
+-- are fanned out together and hashed when the last one lands. `cb(sig)`.
+function Git:dirty_sig_async(cb)
+  M.join({
+    head = function(done) self:run_async({ "rev-parse", "HEAD" }, done) end,
+    diff = function(done) self:run_async({ "diff", "--no-color", "HEAD" }, done) end,
+    status = function(done)
+      self:run_async({ "status", "--porcelain=v1", "-uall" }, done)
+    end,
+  }, function(res)
+    cb(dirty_hash(res.head[1] or "", res.diff[1] or "", res.status[1] or ""))
+  end)
 end
 
 -- Fetch objects for a refspec from a remote into the object store, without

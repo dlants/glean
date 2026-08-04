@@ -233,32 +233,21 @@ end
 -- The commit list and every commit's own diff come from a single
 -- `log_patches` walk, so the commits scope costs no extra subprocess.
 
-local function build_model(git, base, target)
-  local worktree = target == M.WORKTREE
-  local files, err
-  if worktree then
-    files, err = git:diff_to_worktree(base)
-  else
-    files, err = git:combined_diff(base, target)
-  end
-  if not files then return nil, err end
-  for _, f in ipairs(files) do f.collapsed = false end
 
-  local commit_target = worktree and "HEAD" or target
-  local commits, cerr = git:log_patches(base, commit_target)
-  if not commits then return nil, cerr end
+-- Assemble the model from the fanned-out query results (pure: no git).
+local function assemble_model(worktree, files, commits, wt_files, untracked)
+  for _, f in ipairs(files) do f.collapsed = false end
   local shas = {}
   for _, c in ipairs(commits) do
     shas[#shas + 1] = c.sha
   end
-
   if worktree then
     local ffiles = {}
-    for _, f in ipairs(git:worktree_diff() or {}) do
+    for _, f in ipairs(wt_files or {}) do
       f.collapsed = false
       ffiles[#ffiles + 1] = f
     end
-    for _, f in ipairs(git:untracked() or {}) do
+    for _, f in ipairs(untracked or {}) do
       f.collapsed = false
       ffiles[#ffiles + 1] = f
     end
@@ -266,9 +255,10 @@ local function build_model(git, base, target)
     -- them to the combined file list too -- otherwise a brand-new file is visible
     -- (and markable) only in commit scope. Fresh entries keep the two scopes'
     -- ephemeral collapse state independent.
-    for _, f in ipairs(git:untracked() or {}) do
-      f.collapsed = false
-      files[#files + 1] = f
+    for _, f in ipairs(untracked or {}) do
+      local copy = vim.deepcopy(f)
+      copy.collapsed = false
+      files[#files + 1] = copy
     end
     commits[#commits + 1] = {
       sha = M.WORKTREE, summary = "uncommitted changes", files = ffiles, collapsed = false,
@@ -276,6 +266,39 @@ local function build_model(git, base, target)
     shas[#shas + 1] = M.WORKTREE
   end
   return files, commits, shas
+end
+
+-- Fan out every query the model needs and assemble it when the last one lands:
+-- the net diff, the first-parent log walk, and (for a work-tree target) the
+-- tracked dirty diff plus the untracked listing. The queries are independent, so
+-- they go out together; nothing blocks the UI thread. `cb(files, commits, shas)`
+-- on success, `cb(nil, err)` on failure. Under an injected (test) runner every
+-- callback fires synchronously, so `cb` runs before this returns.
+local function build_model_async(git, base, target, cb)
+  local worktree = target == M.WORKTREE
+  local commit_target = worktree and "HEAD" or target
+  local jobs = {
+    net = function(done)
+      if worktree then
+        git:diff_to_worktree_async(base, done)
+      else
+        git:combined_diff_async(base, target, done)
+      end
+    end,
+    commits = function(done) git:log_patches_async(base, commit_target, done) end,
+  }
+  if worktree then
+    jobs.wt = function(done) git:worktree_diff_async(done) end
+    jobs.untracked = function(done) git:untracked_async(nil, done) end
+  end
+  git_mod.join(jobs, function(res)
+    local files, ferr = res.net[1], res.net[2]
+    if not files then return cb(nil, ferr) end
+    local commits, cerr = res.commits[1], res.commits[2]
+    if not commits then return cb(nil, cerr) end
+    cb(assemble_model(worktree, files, commits,
+      res.wt and res.wt[1] or nil, res.untracked and res.untracked[1] or nil))
+  end)
 end
 
 local CHEVRON_OPEN = "▼"
@@ -3149,44 +3172,67 @@ local function combined_file_sigs(files)
   return sigs
 end
 
-function Session:reload()
-  if not api.nvim_buf_is_valid(self.buf) then return end
-  local files, commits, shas = build_model(self.git, self.base, self.target)
-  if not files then return end
-  local store = state_mod.new({ dir = self.state_dir, wt_shard = self.wt_shard })
-  store:load(shas)
-  self.files = files
-  self.commits = commits
-  self.store = store
-  self._wt_lines = nil
-  -- Ownership is recomposed wholesale from the freshly walked patches: it is
-  -- pure Lua over data `build_model` already fetched, so there is nothing to
-  -- carry over. The per-file signatures survive as the input to incremental
-  -- rendering.
-  self._file_sigs = combined_file_sigs(files)
-  self._owner = nil
-  self.combined_files = nil
-  self:apply_collapse()
-  self:start_owner_loader()
-  self:render()
+-- Refresh generation: bumped whenever a refresh (reload / scope change /
+-- suspend) starts, so an in-flight pipeline that has been superseded drops
+-- itself in its continuation instead of painting stale data over newer. The
+-- ownership loader's `_load_gen` still guards everything downstream of the
+-- model landing.
+function Session:bump_refresh()
+  self._refresh_gen = (self._refresh_gen or 0) + 1
+  return self._refresh_gen
 end
+
+-- Rebuild the model asynchronously and repaint exactly once when it lands.
+-- Nothing is written to the buffer in between: the buffer shows either the
+-- previous complete state or the next one, never a half-built model.
+function Session:refresh_model()
+  if not api.nvim_buf_is_valid(self.buf) then return end
+  local gen = self:bump_refresh()
+  build_model_async(self.git, self.base, self.target, function(files, commits, shas)
+    if gen ~= self._refresh_gen then return end
+    if not api.nvim_buf_is_valid(self.buf) then return end
+    if not files then return end
+    local store = state_mod.new({ dir = self.state_dir, wt_shard = self.wt_shard })
+    store:load(shas)
+    self.files = files
+    self.commits = commits
+    self.store = store
+    self._wt_lines = nil
+    -- Ownership is recomposed wholesale from the freshly walked patches: it is
+    -- pure Lua over data the model fetch already produced, so there is nothing
+    -- to carry over. The per-file signatures survive as the input to incremental
+    -- rendering.
+    self._file_sigs = combined_file_sigs(files)
+    self._owner = nil
+    self.combined_files = nil
+    self:apply_collapse()
+    self:start_owner_loader()
+    self:render()
+  end)
+end
+
+-- A reload *is* a model refresh; the name survives for the call sites (live
+-- poll, resume, tests) that mean "the repo moved, rebuild".
+Session.reload = Session.refresh_model
 
 -- Start polling the repo on a timer; only the live work-tree review opts in.
 -- Each tick compares a cheap dirty signature and reloads only when it changed,
 -- so an idle buffer does no rebuild work and the cursor never jumps.
 function Session:start_live()
   if not self.worktree or self._timer or self._suspended then return end
-  self._sig = self.git:dirty_sig()
+  self.git:dirty_sig_async(function(sig) self._sig = sig end)
   local timer = vim.uv.new_timer()
   self._timer = timer
   timer:start(LIVE_INTERVAL_MS, LIVE_INTERVAL_MS, function()
     vim.schedule(function()
       if not api.nvim_buf_is_valid(self.buf) then self:stop_live() return end
-      local sig = self.git:dirty_sig()
-      if sig ~= self._sig then
-        self._sig = sig
-        self:reload()
-      end
+      self.git:dirty_sig_async(function(sig)
+        if not api.nvim_buf_is_valid(self.buf) then return end
+        if sig ~= self._sig then
+          self._sig = sig
+          self:reload()
+        end
+      end)
     end)
   end)
 end
@@ -3200,6 +3246,7 @@ function Session:suspend()
   if self._suspended then return end
   self._suspended = true
   self:stop_live()
+  self:bump_refresh()
   self._load_gen = (self._load_gen or 0) + 1
   self._render_dirty = false
   self._render_armed = false
@@ -3212,10 +3259,17 @@ end
 function Session:resume()
   if not self._suspended then return end
   self._suspended = false
-  local sig = self.worktree and self.git:dirty_sig() or nil
-  if sig and sig ~= self._sig then
-    self._sig = sig
-    self:reload()
+  if self.worktree then
+    self.git:dirty_sig_async(function(sig)
+      if self._suspended or not api.nvim_buf_is_valid(self.buf) then return end
+      if sig ~= self._sig then
+        self._sig = sig
+        self:reload()
+      else
+        self:start_owner_loader()
+        self:render()
+      end
+    end)
   else
     self:start_owner_loader()
     self:render()
@@ -3377,13 +3431,12 @@ function M.open(opts)
   local git = git_mod.new({ repo_root = repo_root, run = opts.run })
 
   local worktree = opts.target == M.WORKTREE
-  local files, commit_list, shas = build_model(git, opts.base, opts.target)
-  if not files then error("glean: build_model failed: " .. tostring(commit_list)) end
-
+  -- The model is fetched asynchronously (see the refresh pipeline below), so the
+  -- session starts empty and paints once, when the model lands. Under an
+  -- injected (test) runner that happens before `open` returns.
   local state_dir = opts.state_dir or M.repo_state_dir(git)
   local wt_shard = M.wt_shard(git)
   local store = state_mod.new({ dir = state_dir, wt_shard = wt_shard })
-  store:load(shas)
 
   -- One buffer per (repo, base, target); reuse it on reopen. The live work-tree
   -- review is a "special" unlisted buffer (it tracks the current repo state and
@@ -3455,13 +3508,12 @@ function M.open(opts)
     worktree = worktree,
     state_dir = state_dir,
     wt_shard = wt_shard,
-    files = files,
-    commits = commit_list,
+    files = {},
+    commits = {},
     -- Baselines so the first content-only reload after open is already
     -- incremental (keeps per-file blame for unchanged files) rather than
     -- re-blaming everything once before the incremental path can engage.
-    _file_sigs = combined_file_sigs(files),
-    _del_gen = table.concat(shas or {}, ","),
+    _file_sigs = {},
     scope = opts.scope or "combined",
     min_seen_run = opts.min_seen_run or M.config.min_seen_run,
     max_blame_jobs = opts.max_blame_jobs or M.config.max_blame_jobs,
@@ -3505,8 +3557,7 @@ function M.open(opts)
     session:start_live()
   end
 
-  session:start_owner_loader()
-  session:render()
+  session:refresh_model()
   return session
 end
 
