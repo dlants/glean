@@ -913,10 +913,10 @@ function Session:build()
   -- (path + record) so `dd`/`i`/`dc` anywhere on it acts on the whole comment.
   local function emit_comment(c, htarget)
     local ctarget = vim.tbl_extend("force", htarget or {}, { comment = c })
-    local lead = c.outdated and "    💬 (outdated) " or "    💬 "
+    local lead = c.outdated and "> (outdated) " or "> "
     local hl = c.outdated and "GleanSeen" or "GleanComment"
-    for i, part in ipairs(vim.split(c.text, "\n", { plain = true })) do
-      emit((i == 1 and lead or "       ") .. part, ctarget, hl)
+    for _, part in ipairs(vim.split(c.text, "\n", { plain = true })) do
+      emit(lead .. part, ctarget, hl)
     end
   end
 
@@ -1176,8 +1176,8 @@ function Session:build()
         local c = { path = path, anchor = e.anchor, content = e.content, text = e.text }
         local ctarget = { comment = c, summary_comment = { path = path } }
         emit(("  %s  %s"):format(loc, e.line), ctarget, e.outdated and "GleanSeen" or "GleanContext")
-        for i, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
-          emit((i == 1 and "    💬 " or "       ") .. part, ctarget, "GleanComment")
+        for _, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
+          emit("> " .. part, ctarget, "GleanComment")
         end
       end
     end
