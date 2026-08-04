@@ -79,7 +79,8 @@ or by writing the buffer (`:w`); abort with `q` or `<C-c>`. Submitting an
 empty/whitespace-only buffer is treated as an abort.
 
 Every comment is also listed in a summary section at the bottom of the buffer.
-The summary rows are live: `i`/`dd` edit or delete the comment from there, and
+The summary rows are live: `i`/`dd` edit or delete the comment from there,
+visual `d` deletes all selected comments as one undoable action, and
 `<CR>` navigates back into the diff — on a comment row it expands that hunk and
 parks the cursor on the comment above; on a file row it jumps to that file's
 header.
@@ -94,6 +95,7 @@ header.
 - `c` (visual) — comment on the selected span
 - `i` — edit the comment under the cursor
 - `dd` — delete the comment under the cursor
+- `d` (visual) — delete all selected comments in the comment summary
 - `dc` — delete a comment attached to the current line
 - `u` / `<C-r>` — undo / redo (seen, comment, collapse actions)
 - `]c` / `[c` — next / previous hunk

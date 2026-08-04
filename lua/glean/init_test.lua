@@ -403,6 +403,41 @@ do
     #s.store:comments_for("f.txt"), 0)
 end
 
+-- Visual `d` removes every selected summary comment once, including selections
+-- spanning multiple rows of a comment, and the batch is one undoable action.
+do
+  local dir = vim.fn.tempname()
+  local s = open({ scope = "commits", state_dir = dir })
+  local twrow = find_row(s, function(_, line, t)
+    return t and t.commit == 1 and t.line and line == "+TWO"
+  end)
+  s:add_comment_at(twrow, "first note\ncontinued")
+  local threerow = find_row(s, function(_, line, t)
+    return t and t.commit == 2 and t.line and line == "+THREE"
+  end)
+  s:add_comment_at(threerow, "second note")
+
+  local first = find_row(s, function(_, line, t)
+    return t and t.summary_comment and t.comment.text == "first note\ncontinued"
+      and line:sub(1, 2) == "  "
+  end)
+  local last = find_row(s, function(_, line, t)
+    return t and t.summary_comment and t.comment.text == "second note"
+      and line == "> second note"
+  end)
+  h.assert_true("summary-visual-delete: selection endpoints present",
+    first ~= nil and last ~= nil)
+  s:delete_comments_visual_range(first, last)
+  h.assert_eq("summary-visual-delete: removed selected comments",
+    #s.store:comments_for("f.txt"), 0)
+  s:undo()
+  h.assert_eq("summary-visual-delete: one undo restores batch",
+    #s.store:comments_for("f.txt"), 2)
+  s:redo()
+  h.assert_eq("summary-visual-delete: redo removes batch",
+    #s.store:comments_for("f.txt"), 0)
+end
+
 -- Comment summary (out-of-range owner): a comment authored in combined scope on
 -- an unchanged context line is owned by a commit outside base..target, so it
 -- never appears in any in-range commit's diff. It must still surface in the

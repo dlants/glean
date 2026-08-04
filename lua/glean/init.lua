@@ -27,6 +27,7 @@
 --     on any other target it toggles the whole hunk/file/commit seen.
 --   - visual `m` marks the selected lines seen; a partial selection renders as a
 --     collapsed `✓ marked N lines` marker row (overlapping marks coalesce).
+--   - visual `d` deletes all selected comments in the bottom summary.
 --   - `=` toggles collapse, including expanding/collapsing a marker row.
 local git_mod = require("glean.git")
 local diff_mod = require("glean.diff")
@@ -1684,6 +1685,7 @@ end
 --
 --   seen:     { kind="seen", op="mark"|"unmark", groups={ {sha,path,lnums} } }
 --   comment:  { kind="comment", op, path, record={anchor,content,text}, old_record? }
+--   comments: { kind="comments", op="remove", records={ {path,record} } }
 --   collapse: { kind="collapse", key, value, prev, obj?, field? }
 -- ---------------------------------------------------------------------------
 
@@ -1803,6 +1805,17 @@ function Session:apply_comment(a, op)
   self.store:save_commit(self.store.wt_shard)
 end
 
+function Session:apply_comments(a, op)
+  for _, item in ipairs(a.records) do
+    if op == "remove" then
+      self.store:remove_comment_record(item.path, item.record)
+    else
+      self.store:add_comment_record(item.path, item.record)
+    end
+  end
+  self.store:save_commit(self.store.wt_shard)
+end
+
 -- Set a collapse key (nil clears it -> default) and mirror onto the model field
 -- (commit/file/cf.raw .collapsed) when the action carries one.
 function Session:apply_collapse_value(a, override, field_value)
@@ -1815,6 +1828,8 @@ function Session:apply_action(a)
     self:apply_seen(a, a.op)
   elseif a.kind == "comment" then
     self:apply_comment(a, a.op or "add")
+  elseif a.kind == "comments" then
+    self:apply_comments(a, a.op)
   elseif a.kind == "collapse" then
     self:apply_collapse_value(a, a.value, a.field_value)
   end
@@ -1826,6 +1841,8 @@ function Session:reverse_action(a)
   elseif a.kind == "comment" then
     local rev = { add = "remove", remove = "add", edit = "unedit" }
     self:apply_comment(a, rev[a.op or "add"])
+  elseif a.kind == "comments" then
+    self:apply_comments(a, a.op == "remove" and "add" or "remove")
   elseif a.kind == "collapse" then
     self:apply_collapse_value(a, a.prev, a.prev_field_value)
   end
@@ -2609,6 +2626,32 @@ function Session:delete_comment_under(row)
   self:render()
 end
 
+-- Delete each distinct summary comment touched by a visual selection as one
+-- undoable action. Summary location and body rows share an identity, so a
+-- multi-line comment is removed only once.
+function Session:delete_comments_visual_range(srow, erow)
+  if srow > erow then srow, erow = erow, srow end
+  local records, seen = {}, {}
+  for row = srow, erow do
+    local t = self.row_map[row]
+    local c = t and t.summary_comment and t.comment
+    if c then
+      local key = c.path .. "\0" .. tostring(c.anchor) .. "\0"
+        .. table.concat(c.content, "\n") .. "\0" .. c.text
+      if not seen[key] then
+        seen[key] = true
+        records[#records + 1] = {
+          path = c.path,
+          record = { anchor = c.anchor, content = c.content, text = c.text },
+        }
+      end
+    end
+  end
+  if #records == 0 then return end
+  self:perform({ kind = "comments", op = "remove", records = records })
+  self:render()
+end
+
 -- Edit the comment under the cursor in the ephemeral split, replacing its text
 -- (undoable). No-op off a comment row.
 function Session:edit_comment_under(row)
@@ -3262,6 +3305,12 @@ local function setup_keymaps(buf, session)
   end)
   map("n", "i", function() session:edit_comment_under() end)
   map("n", "e", function() session:edit_comment_under() end)
+  map("x", "d", function()
+    local srow = vim.fn.getpos("v")[2] - 1
+    local erow = vim.fn.getpos(".")[2] - 1
+    api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    session:delete_comments_visual_range(srow, erow)
+  end)
   map("n", "dd", function() session:delete_comment_under() end)
   map("n", "dc", function() session:delete_comment_at() end)
   map("n", "u", function() session:undo() end)
