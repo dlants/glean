@@ -2610,6 +2610,84 @@ do
   local after = ids_in(b.buf, g2.lo, g2.hi)
   h.assert_eq("stage3-B: untouched section keeps extmark ids", before, after)
 end
+-- GitHub PR arguments can be passed directly, while ordinary refs retain the
+-- one-argument dirty-review behavior.
+do
+  local is_pr_arg = glean._internal.is_pr_arg
+  h.assert_true("pr arg: number", is_pr_arg("123"))
+  h.assert_true("pr arg: URL", is_pr_arg("https://github.com/acme/widgets/pull/123"))
+  h.assert_true("pr arg: URL suffix", is_pr_arg("https://github.com/acme/widgets/pull/123/files"))
+  h.assert_true("pr arg: branch is not PR", not is_pr_arg("feature/123"))
+  h.assert_true("pr arg: SHA is not PR", not is_pr_arg("abc123"))
+end
+
+-- PR resolution delegates URL/number lookup to gh, fetches both sides without
+-- touching the checkout, and returns the head branch for storage association.
+do
+  local gh_args, fetches = nil, {}
+  local pgit = {
+    repo_root = "/tmp/repo",
+    remote_url = function() return "git@github.com:acme/widgets.git" end,
+    fetch = function(_, remote, refspec)
+      fetches[#fetches + 1] = remote .. ":" .. refspec
+      return true
+    end,
+  }
+  local url = "https://github.com/acme/widgets/pull/42"
+  local function gh_run(args)
+    gh_args = args
+    return {
+      code = 0,
+      stdout = vim.json.encode({
+        number = 42,
+        baseRefName = "main",
+        headRefName = "feature/pr-review",
+        baseRefOid = "base-oid",
+        headRefOid = "head-oid",
+      }),
+    }
+  end
+  local base, target, branch = glean.resolve_pr(pgit, url, gh_run)
+  h.assert_eq("resolve_pr: URL passed to gh", gh_args[4], url)
+  h.assert_eq("resolve_pr: head fetched", fetches[1], "origin:pull/42/head")
+  h.assert_eq("resolve_pr: base fetched", fetches[2], "origin:main")
+  h.assert_eq("resolve_pr: base oid", base, "base-oid")
+  h.assert_eq("resolve_pr: head oid", target, "head-oid")
+  h.assert_eq("resolve_pr: storage branch", branch, "feature/pr-review")
+end
+
+-- A PR URL for another repository is rejected before gh or git fetch runs.
+do
+  local gh_called, fetched = false, false
+  local pgit = {
+    remote_url = function() return "https://github.com/acme/widgets.git" end,
+    fetch = function() fetched = true; return true end,
+  }
+  local ok, err = pcall(glean.resolve_pr, pgit,
+    "https://github.com/other/project/pull/42", function()
+      gh_called = true
+      return { code = 0, stdout = "{}" }
+    end)
+  h.assert_true("resolve_pr mismatch: rejected", not ok)
+  h.assert_true("resolve_pr mismatch: useful error",
+    tostring(err):find("other/project does not match origin acme/widgets", 1, true) ~= nil)
+  h.assert_true("resolve_pr mismatch: gh not called", not gh_called)
+  h.assert_true("resolve_pr mismatch: fetch not called", not fetched)
+end
+
+-- Command-facing PR failures are reported as error notifications rather than
+-- escaping from the user command.
+do
+  local old_open_pr, old_notify = glean.open_pr, vim.notify
+  local message, level
+  glean.open_pr = function() error("glean: PR repository mismatch") end
+  vim.notify = function(msg, lvl) message, level = msg, lvl end
+  glean._internal.open_pr_notified("42")
+  glean.open_pr, vim.notify = old_open_pr, old_notify
+  h.assert_eq("PR failure notification: message", message, "glean: PR repository mismatch")
+  h.assert_eq("PR failure notification: error level", level, vim.log.levels.ERROR)
+end
+
 -- resolve_branch: the base is the merge-base of the repo trunk and the named
 -- branch, and the target is the branch tip, so a review shows exactly what the
 -- branch adds. With no origin remote the fetch is best-effort (must not fail)
@@ -2706,6 +2784,11 @@ do
   h.assert_true("repo_state_dir: under global base", a:find(base_dir, 1, true) == 1)
   -- Unresolvable common dir falls back to the global base.
   h.assert_eq("repo_state_dir: fallback", glean.repo_state_dir(stub(nil)), base_dir)
+  local branch_git = { current_branch = function() return "checked-out" end }
+  h.assert_eq("wt_shard: defaults to checkout", glean.wt_shard(branch_git),
+    "WORKTREE/checked-out")
+  h.assert_eq("wt_shard: explicit review branch", glean.wt_shard(branch_git, "remote/feature"),
+    "WORKTREE/remote/feature")
 end
 
 -- display_seen_map: the pure demotion pass. Runs are `{lo, hi_line, n}`

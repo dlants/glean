@@ -106,21 +106,22 @@ function M.repo_state_dir(git)
   return base .. "/" .. vim.fn.sha256(common):sub(1, 16)
 end
 
--- The worktree (content-addressed) shard id for `git`'s current branch. Splits
+-- The worktree (content-addressed) shard id for an explicit review branch, or
+-- `git`'s current branch when reviewing the checkout. Splits
 -- the dual role of M.WORKTREE: the sentinel constant still identifies the
 -- synthetic floating commit in control flow, while this branch-anchored id is
 -- the *storage* shard under which uncommitted seen-marks and comments persist,
 -- so switching branches no longer bleeds content-addressed state. A detached
 -- HEAD shares a single `WORKTREE/HEAD` shard.
-function M.wt_shard(git)
-  return state_mod.COMMENTS_ID .. "/" .. (git:current_branch() or "HEAD")
+function M.wt_shard(git, branch)
+  return state_mod.COMMENTS_ID .. "/" .. (branch or git:current_branch() or "HEAD")
 end
 
 -- A short, human-readable label for a diff: `<repo>/<branch> <base>..<target>`,
 -- with the floating commit shown as `dirty`. Used for the listed buffer name.
-local function diff_label(git, base, target)
+local function diff_label(git, base, target, branch)
   local repo = vim.fn.fnamemodify(git.repo_root, ":t")
-  local branch = git:current_branch() or "?"
+  branch = branch or git:current_branch() or "?"
   local t = target == M.WORKTREE and "dirty" or target
   return ("%s/%s %s..%s"):format(repo, branch, base, t)
 end
@@ -3279,6 +3280,7 @@ end
 --   - repo_root, run (optional): injected for tests.
 --   - scope (optional, default "combined").
 --   - state_dir (optional): override the ReviewStore directory (tests).
+--   - storage_branch (optional): branch owning content-addressed review data.
 --   - open_window (optional, default true).
 
 function M.open(opts)
@@ -3293,7 +3295,7 @@ function M.open(opts)
   -- session starts empty and paints once, when the model lands. Under an
   -- injected (test) runner that happens before `open` returns.
   local state_dir = opts.state_dir or M.repo_state_dir(git)
-  local wt_shard = M.wt_shard(git)
+  local wt_shard = M.wt_shard(git, opts.storage_branch)
   local store = state_mod.new({ dir = state_dir, wt_shard = wt_shard })
 
   -- One buffer per (repo, base, target); reuse it on reopen. The live work-tree
@@ -3310,7 +3312,8 @@ function M.open(opts)
     api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
     api.nvim_set_option_value("swapfile", false, { buf = buf })
     api.nvim_set_option_value("filetype", "glean", { buf = buf })
-    pcall(api.nvim_buf_set_name, buf, "Glean:" .. diff_label(git, opts.base, opts.target))
+    pcall(api.nvim_buf_set_name, buf,
+      "Glean:" .. diff_label(git, opts.base, opts.target, opts.storage_branch))
     buffers[key] = buf
     -- Background work is attached to *visibility*, not to the session's
     -- lifetime: a buffer sitting in no window must not poll the work tree or
@@ -3451,13 +3454,39 @@ function M.open_dirty(opts)
     repo_root = repo_root, base = opts.base or base, target = target,
   }))
 end
+local function github_pr_repo(url)
+  if type(url) ~= "string" then return nil end
+  local owner, repo = url:match("^https?://github%.com/([^/]+)/([^/]+)/pull/%d+")
+  if not owner then return nil end
+  return (owner .. "/" .. repo):lower()
+end
+
+local function github_remote_repo(url)
+  if not url then return nil end
+  local owner, repo = url:match("^https?://github%.com/([^/]+)/([^/]+)")
+  if not owner then owner, repo = url:match("^git@github%.com:([^/]+)/([^/]+)") end
+  if not owner then owner, repo = url:match("^ssh://git@github%.com/([^/]+)/([^/]+)") end
+  if not owner then return nil end
+  repo = repo:gsub("/+$", ""):gsub("%.git$", "")
+  return (owner .. "/" .. repo):lower()
+end
+
 -- Resolve the base/target refs for a GitHub PR via the `gh` CLI, fetching the
 -- PR's head (and base) commits into the local object store first so the range
 -- can be diffed without changing the checkout. `pr` is the PR number, or nil to
 -- use the PR associated with the current branch. `gh_run` is an injectable
 -- command runner (for tests). Returns base, target as concrete oids, suitable
--- for the three-dot `base...target` review combined diff.
+-- for the three-dot `base...target` review combined diff, plus the PR head
+-- branch used to associate content-addressed review storage.
 function M.resolve_pr(git, pr, gh_run)
+  local pr_repo = github_pr_repo(pr)
+  if pr_repo then
+    local origin_repo = github_remote_repo(git:remote_url("origin"))
+    if pr_repo ~= origin_repo then
+      error(("glean: PR repository %s does not match origin%s"):format(
+        pr_repo, origin_repo and (" " .. origin_repo) or ""))
+    end
+  end
   gh_run = gh_run or function(args)
     return vim.system(args, { cwd = git.repo_root, text = true }):wait()
   end
@@ -3474,8 +3503,9 @@ function M.resolve_pr(git, pr, gh_run)
   -- Pull the PR head (and base) into the object store. Nothing local is moved.
   local ok, err = git:fetch("origin", "pull/" .. info.number .. "/head")
   if not ok then error("glean: fetching PR head failed: " .. tostring(err)) end
-  git:fetch("origin", info.baseRefName)
-  return info.baseRefOid or info.headRefOid, info.headRefOid
+  local base_ok, base_err = git:fetch("origin", info.baseRefName)
+  if not base_ok then error("glean: fetching PR base failed: " .. tostring(base_err)) end
+  return info.baseRefOid, info.headRefOid, info.headRefName
 end
 
 -- Open a glean review of a GitHub PR. `opts.pr` is the PR number (defaults to
@@ -3487,9 +3517,10 @@ function M.open_pr(opts)
     or resolve_repo_root(api.nvim_buf_get_name(0))
   assert(repo_root, "glean: could not find a git repo root")
   local git = git_mod.new({ repo_root = repo_root, run = opts.run })
-  local base, target = M.resolve_pr(git, opts.pr, opts.gh_run)
+  local base, target, branch = M.resolve_pr(git, opts.pr, opts.gh_run)
   return M.open(vim.tbl_extend("force", opts, {
     repo_root = repo_root, base = base, target = target,
+    storage_branch = branch,
   }))
 end
 
@@ -3526,6 +3557,7 @@ function M.open_branch(opts)
   local base, target = M.resolve_branch(git, opts.branch)
   return M.open(vim.tbl_extend("force", opts, {
     repo_root = repo_root, base = base, target = target,
+    storage_branch = opts.branch,
   }))
 end
 
@@ -3561,6 +3593,20 @@ local function setup_highlights()
   api.nvim_set_hl(0, "GleanCurrentHunk", { link = "Identifier", default = true })
 end
 
+local function open_pr_notified(pr)
+  local ok, result = pcall(M.open_pr, { pr = pr })
+  if ok then return result end
+  local message = tostring(result)
+  message = message:match("(glean: .*)") or message
+  vim.notify(message, vim.log.levels.ERROR)
+end
+
+local function is_pr_arg(arg)
+  if not arg then return false end
+  return arg:match("^%d+$") ~= nil
+    or arg:match("^https?://github%.com/[^/]+/[^/]+/pull/%d+[/#?]?.*$") ~= nil
+end
+
 function M.setup(opts)
   M.config = vim.tbl_extend("force", M.config, opts or {})
   setup_highlights()
@@ -3571,7 +3617,7 @@ function M.setup(opts)
   api.nvim_create_user_command("Glean", function(o)
     local args = o.fargs
     if args[1] == "pr" then
-      M.open_pr({ pr = args[2] })
+      open_pr_notified(args[2])
       return
     end
     if args[1] == "branch" then
@@ -3583,7 +3629,11 @@ function M.setup(opts)
       return
     end
     if #args == 1 then
-      M.open_dirty({ base = args[1] })
+      if is_pr_arg(args[1]) then
+        open_pr_notified(args[1])
+      else
+        M.open_dirty({ base = args[1] })
+      end
       return
     end
     M.open({ base = args[1], target = args[2] })
@@ -3597,6 +3647,10 @@ M._internal = {
   display_seen_map = display_seen_map,
   marker_key = marker_key,
   cmarker_key = cmarker_key,
+  is_pr_arg = is_pr_arg,
+  github_pr_repo = github_pr_repo,
+  github_remote_repo = github_remote_repo,
+  open_pr_notified = open_pr_notified,
 }
 
 return M

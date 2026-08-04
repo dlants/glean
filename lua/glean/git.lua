@@ -109,6 +109,15 @@ function Git:rev_parse(ref)
   return (out:gsub("%s+$", ""))
 end
 
+-- The configured URL for a remote, or nil when the remote does not exist.
+function Git:remote_url(remote)
+  local out = self:run({ "remote", "get-url", remote })
+  if not out then return nil end
+  out = out:gsub("%s+$", "")
+  if out == "" then return nil end
+  return out
+end
+
 -- The current branch name (`HEAD` when detached). Used for buffer labels.
 function Git:current_branch()
   local out = self:run({ "rev-parse", "--abbrev-ref", "HEAD" })

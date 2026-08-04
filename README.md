@@ -11,7 +11,14 @@ review store, so seen-marks and comments survive across sessions.
 :Glean                  " review current branch + dirty work tree
 :Glean <base>           " review <base> + dirty work tree
 :Glean <base> <target>  " review <base>..<target> (no dirty work tree)
+:Glean <pr-number>      " fetch and review a GitHub pull request
+:Glean <pr-url>         " likewise, using https://github.com/.../pull/...
 ```
+
+GitHub pull requests are resolved with the `gh` CLI. Their head and base commits
+are fetched into the local object store without changing the checkout, and
+content-addressed review data is stored under the pull request's head branch.
+The existing `:Glean pr [number]` form remains available.
 
 `:Glean` with no args opens the "dirty" review: on a feature
 branch the base is the fork point (merge-base) from the default trunk, so you
