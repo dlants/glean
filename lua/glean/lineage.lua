@@ -156,11 +156,12 @@ function M.apply(state, sha, file)
   return state
 end
 
--- Compose an ordered (oldest-first) list of patches `{ sha, files }` into
---   { [path] = { prov = {...}, del_attr = {...} } }
-function M.compose(patches)
-  local states = {}
-
+-- Apply an ordered (oldest-first) list of patches `{ sha, files }` on top of
+-- `states` (the per-path segment/attribution state produced by earlier
+-- patches), mutating and returning it. Splitting this out of `compose` lets a
+-- refresh keep the committed layers' state and re-apply only the work-tree
+-- layer over a clone of it.
+function M.extend(states, patches)
   local function state_for(path, kind)
     local st = states[path]
     if not st then
@@ -189,6 +190,25 @@ function M.compose(patches)
     end
   end
 
+  return states
+end
+
+-- Deep-copy a states table, so a layer can be applied on top without
+-- destroying the state the copy was taken from.
+function M.clone(states)
+  local out = {}
+  for path, st in pairs(states) do
+    local segs, del_attr = {}, {}
+    for i, s in ipairs(st.segs) do segs[i] = { base = s.base, sha = s.sha, lnum = s.lnum, n = s.n } end
+    for k, v in pairs(st.del_attr) do del_attr[k] = v end
+    out[path] = { segs = segs, del_attr = del_attr }
+  end
+  return out
+end
+
+-- Project composed states into the two maps the review model addresses lines
+-- by: { [path] = { prov = {...}, del_attr = {...} } }.
+function M.finish(states)
   local out = {}
   for path, st in pairs(states) do
     local prov = {}
@@ -203,6 +223,11 @@ function M.compose(patches)
     out[path] = { prov = prov, del_attr = st.del_attr }
   end
   return out
+end
+
+-- Compose an ordered (oldest-first) list of patches into the per-path maps.
+function M.compose(patches)
+  return M.finish(M.extend({}, patches))
 end
 
 return M

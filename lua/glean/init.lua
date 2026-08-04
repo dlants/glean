@@ -29,6 +29,7 @@
 --     collapsed `✓ marked N lines` marker row (overlapping marks coalesce).
 --   - `=` toggles collapse, including expanding/collapsing a marker row.
 local git_mod = require("glean.git")
+local diff_mod = require("glean.diff")
 local state_mod = require("glean.state")
 local provenance = require("glean.provenance")
 local lineage = require("glean.lineage")
@@ -77,7 +78,9 @@ local sessions = {}
 local views = {}
 
 -- How often the live work-tree review polls the repo for changes (ms).
-local LIVE_INTERVAL_MS = 1500
+-- Safety-net interval for the live work-tree review (ms). Refreshes are driven
+-- by editor events; the timer only catches changes made outside the editor.
+local LIVE_INTERVAL_MS = 5000
 
 local function buffer_key(repo_root, base, target)
   return table.concat({ repo_root, base, target }, "\0")
@@ -274,9 +277,14 @@ end
 -- they go out together; nothing blocks the UI thread. `cb(files, commits, shas)`
 -- on success, `cb(nil, err)` on failure. Under an injected (test) runner every
 -- callback fires synchronously, so `cb` runs before this returns.
-local function build_model_async(git, base, target, cb)
+local function build_model_async(git, base, target, hints, cb)
+  hints = hints or {}
   local worktree = target == M.WORKTREE
   local commit_target = worktree and "HEAD" or target
+  -- The committed layers depend only on (base, HEAD). When the poll has already
+  -- resolved HEAD and it hasn't moved, the cached patch list is still exact, so
+  -- the log walk is skipped entirely -- the common case (a save).
+  local reuse = hints.patches and hints.head and hints.head == hints.patches_head
   local jobs = {
     net = function(done)
       if worktree then
@@ -285,19 +293,43 @@ local function build_model_async(git, base, target, cb)
         git:combined_diff_async(base, target, done)
       end
     end,
-    commits = function(done) git:log_patches_async(base, commit_target, done) end,
   }
+  if not reuse then
+    jobs.commits = function(done) git:log_patches_async(base, commit_target, done) end
+  end
   if worktree then
-    jobs.wt = function(done) git:worktree_diff_async(done) end
+    if not hints.wt_diff_text then
+      jobs.wt = function(done) git:worktree_diff_async(done) end
+    end
+    -- Resolve HEAD when the caller didn't (the open path), so the walked
+    -- patches can be cached against it and the *next* refresh can reuse them.
+    if not hints.head then
+      jobs.head = function(done) git:run_async({ "rev-parse", "HEAD" }, done) end
+    end
     jobs.untracked = function(done) git:untracked_async(nil, done) end
   end
   git_mod.join(jobs, function(res)
     local files, ferr = res.net[1], res.net[2]
     if not files then return cb(nil, ferr) end
-    local commits, cerr = res.commits[1], res.commits[2]
-    if not commits then return cb(nil, cerr) end
-    cb(assemble_model(worktree, files, commits,
-      res.wt and res.wt[1] or nil, res.untracked and res.untracked[1] or nil))
+    local patches = hints.patches
+    if not reuse then
+      local cerr
+      patches, cerr = res.commits[1], res.commits[2]
+      if not patches then return cb(nil, cerr) end
+    end
+    -- The cached list must survive assemble_model appending the floating
+    -- commit to it, so the walk's entries are copied into a fresh array.
+    local commits = {}
+    for i, c in ipairs(patches) do
+      commits[i] = { sha = c.sha, summary = c.summary, files = c.files }
+    end
+    local wt_files = hints.wt_diff_text and diff_mod.parse(hints.wt_diff_text)
+      or (res.wt and res.wt[1] or nil)
+    local f, c, s = assemble_model(worktree, files, commits, wt_files,
+      res.untracked and res.untracked[1] or nil)
+    local head = hints.head
+      or (res.head and res.head[1] and (res.head[1]:gsub("%s+$", ""))) or nil
+    cb(f, c, s, { patches = patches, head = reuse and hints.patches_head or head, reused = reuse })
   end)
 end
 
@@ -435,8 +467,21 @@ end
 -- combined view needs. Idempotent within a model generation.
 function Session:load_lineage()
   if self._owner then return self._owner end
+  -- The committed layers depend only on (base, HEAD), so their composed state
+  -- is cached across refreshes: a content-only reload re-applies just the
+  -- work-tree layer over a clone of it (O(hunks) of pure Lua).
+  local committed, wt = {}, nil
+  for _, c in ipairs(self.commits) do
+    if c.sha == M.WORKTREE then wt = c else committed[#committed + 1] = c end
+  end
+  local states = self._committed_states
+  if not states then
+    states = lineage.extend({}, committed)
+    self._committed_states = states
+  end
+  if wt then states = lineage.extend(lineage.clone(states), { wt }) end
   local owner = {}
-  for path, maps in pairs(lineage.compose(self.commits)) do
+  for path, maps in pairs(lineage.finish(states)) do
     owner[path] = { status = "loaded", prov = maps.prov, del_attr = maps.del_attr }
   end
   -- A displayed file with no patch of its own (e.g. an untracked file whose
@@ -3185,10 +3230,15 @@ end
 -- Rebuild the model asynchronously and repaint exactly once when it lands.
 -- Nothing is written to the buffer in between: the buffer shows either the
 -- previous complete state or the next one, never a half-built model.
-function Session:refresh_model()
+function Session:refresh_model(hints)
   if not api.nvim_buf_is_valid(self.buf) then return end
   local gen = self:bump_refresh()
-  build_model_async(self.git, self.base, self.target, function(files, commits, shas)
+  build_model_async(self.git, self.base, self.target, {
+    head = hints and hints.head,
+    wt_diff_text = hints and hints.wt_diff_text,
+    patches = self._commit_patches,
+    patches_head = self._commit_head,
+  }, function(files, commits, shas, meta)
     if gen ~= self._refresh_gen then return end
     if not api.nvim_buf_is_valid(self.buf) then return end
     if not files then return end
@@ -3198,11 +3248,14 @@ function Session:refresh_model()
     self.commits = commits
     self.store = store
     self._wt_lines = nil
-    -- Ownership is recomposed wholesale from the freshly walked patches: it is
-    -- pure Lua over data the model fetch already produced, so there is nothing
-    -- to carry over. The per-file signatures survive as the input to incremental
-    -- rendering.
+    -- Ownership is recomposed wholesale from the patches, but the committed
+    -- layers' composed state survives an unchanged commit set: only the
+    -- work-tree layer is re-applied. The per-file signatures survive as the
+    -- input to incremental rendering.
     self._file_sigs = combined_file_sigs(files)
+    self._commit_patches = meta.patches
+    self._commit_head = meta.head
+    if not meta.reused then self._committed_states = nil end
     self._owner = nil
     self.combined_files = nil
     self:apply_collapse()
@@ -3218,21 +3271,61 @@ Session.reload = Session.refresh_model
 -- Start polling the repo on a timer; only the live work-tree review opts in.
 -- Each tick compares a cheap dirty signature and reloads only when it changed,
 -- so an idle buffer does no rebuild work and the cursor never jumps.
+-- One repo check. Compares the poll signature (HEAD + the tracked diff against
+-- HEAD) and, when `opts.untracked` is set, the untracked listing too, and
+-- refreshes only when something moved -- an idle buffer never repaints, so the
+-- cursor never jumps. The diff text the poll already fetched is handed to the
+-- refresh, so the rebuild doesn't ask git for it a second time.
+--   opts.untracked — also hash the untracked listing (the slow safety net).
+--   opts.baseline  — capture the signatures without refreshing.
+--   opts.unchanged — called instead of a refresh when nothing moved.
+function Session:poll(opts)
+  opts = opts or {}
+  if not self.worktree then
+    if opts.unchanged then opts.unchanged() end
+    return
+  end
+  local jobs = { poll = function(done) self.git:poll_async(done) end }
+  if opts.untracked then
+    jobs.untracked = function(done) self.git:untracked_sig_async(done) end
+  end
+  git_mod.join(jobs, function(res)
+    if self._suspended or not api.nvim_buf_is_valid(self.buf) then return end
+    local sig, head, diff_text = res.poll[1], res.poll[2], res.poll[3]
+    local usig = res.untracked and res.untracked[1]
+    local changed = sig ~= self._sig or (usig ~= nil and usig ~= self._untracked_sig)
+    self._sig = sig
+    if usig then self._untracked_sig = usig end
+    if opts.baseline then return end
+    if changed then
+      self:refresh_model({ head = head, wt_diff_text = diff_text })
+    elseif opts.unchanged then
+      opts.unchanged()
+    end
+  end)
+end
+
+-- Attach the live work-tree monitoring. Refreshes are driven by editor events
+-- (a save, regaining focus); the timer is only a slow safety net for changes
+-- made outside the editor -- notably new untracked files, which `git diff HEAD`
+-- cannot see, so the timer tick is the one that pays for the tree walk.
 function Session:start_live()
   if not self.worktree or self._timer or self._suspended then return end
-  self.git:dirty_sig_async(function(sig) self._sig = sig end)
+  self:poll({ baseline = true, untracked = true })
+  self._live_group = api.nvim_create_augroup("glean_live_" .. self.buf, { clear = true })
+  api.nvim_create_autocmd({ "BufWritePost", "FocusGained" }, {
+    group = self._live_group,
+    callback = function()
+      if not api.nvim_buf_is_valid(self.buf) then return true end
+      self:poll()
+    end,
+  })
   local timer = vim.uv.new_timer()
   self._timer = timer
   timer:start(LIVE_INTERVAL_MS, LIVE_INTERVAL_MS, function()
     vim.schedule(function()
       if not api.nvim_buf_is_valid(self.buf) then self:stop_live() return end
-      self.git:dirty_sig_async(function(sig)
-        if not api.nvim_buf_is_valid(self.buf) then return end
-        if sig ~= self._sig then
-          self._sig = sig
-          self:reload()
-        end
-      end)
+      self:poll({ untracked = true })
     end)
   end)
 end
@@ -3259,26 +3352,22 @@ end
 function Session:resume()
   if not self._suspended then return end
   self._suspended = false
-  if self.worktree then
-    self.git:dirty_sig_async(function(sig)
-      if self._suspended or not api.nvim_buf_is_valid(self.buf) then return end
-      if sig ~= self._sig then
-        self._sig = sig
-        self:reload()
-      else
-        self:start_owner_loader()
-        self:render()
-      end
-    end)
-  else
-    self:start_owner_loader()
-    self:render()
-  end
+  self:poll({
+    untracked = true,
+    unchanged = function()
+      self:start_owner_loader()
+      self:render()
+    end,
+  })
   self:start_live()
 end
 
 function Session:stop_live()
   if self._timer then
+  if self._live_group then
+    pcall(api.nvim_del_augroup_by_id, self._live_group)
+    self._live_group = nil
+  end
     self._timer:stop()
     if not self._timer:is_closing() then self._timer:close() end
     self._timer = nil

@@ -647,24 +647,48 @@ Decisions:
     existing tests' `open()`-then-assert style keeps working. This constraint shapes the join
     helper; verify it explicitly.
 
-## Reload without subprocesses
+## Reload without subprocesses — DONE
+
+Decisions:
+- `lineage` gained `extend(states, patches)` / `clone(states)` / `finish(states)`; `compose` is now
+  `finish(extend({}, patches))`. `Session:load_lineage` caches the committed layers' composed state
+  in `_committed_states` and applies the work-tree layer over a `clone` of it, so a content-only
+  refresh recomposes only that layer.
+- `build_model_async` takes a `hints` table: `head` + `wt_diff_text` from the poll, and the cached
+  `patches` / `patches_head`. The log walk is skipped iff `head == patches_head`. When the caller
+  has no head (the open path, work-tree target) a `rev-parse HEAD` job joins the fan-out so the
+  walked patches can be cached against it and the *next* refresh already reuses them. The cached
+  patch list is copied into a fresh array before `assemble_model` appends the floating commit to it.
+  Caveat: reuse is keyed on HEAD only, so a *moving base ref* (e.g. `origin/main` advancing) is not
+  noticed until HEAD moves — the same trade the `dirty_sig` comparison already made.
+- Monitoring is now `Session:poll(opts)`: one signature = `sha256(HEAD .. git diff HEAD)`
+  (`Git:poll_async`, which also hands back the diff text the refresh then reuses — `status -uall`
+  is gone), plus an optional second signature over `ls-files --others` (`Git:untracked_sig_async`)
+  that only the safety-net tick pays for. `opts.baseline` captures without refreshing;
+  `opts.unchanged` is the resume path's "nothing moved, just repaint".
+- Refreshes are driven by `BufWritePost` / `FocusGained` autocmds (augroup `glean_live_<buf>`, torn
+  down in `stop_live`); the timer is demoted to 5s and is the only tick that checks untracked files.
+- `Git:dirty_sig` / `dirty_sig_async` are no longer used by `init.lua`; they are left for the
+  retire-dead-code stage.
+- `untracked` was already called once per build (stage 6), so that sub-goal needed no change.
+- New suite `lua/glean/reload_test.lua`; `suspend_test.lua` stays green on the new poll path.
 
 - Goal: a content-only refresh recomposes the work-tree layer over the cached committed state and
   issues no `log` walk; monitoring stops polling `status`.
 - Sub-goals: reuse the poll's work-tree diff text instead of re-fetching; call `untracked` once;
   refresh on `BufWritePost` / `FocusGained` with the timer demoted to a 5s safety net.
-- Tests:
-  - Edit a file in the fixture work tree, trigger a refresh, assert the runner saw no `log` call,
+- [x] Tests (`reload_test.lua`), all green:
+  - [x] Edit a file in the fixture work tree, trigger a refresh, assert the runner saw no `log` call,
     exactly one `diff HEAD`, one `ls-files --others`, and that the edited file's new lines are
     attributed to `M.WORKTREE` while an untouched file's committed ownership is preserved
     byte-identically.
-  - Commit that edit and refresh: the log walk re-runs exactly once, and the previously
-    WORKTREE-owned lines are now owned by the new commit — a mark made on them before the commit
-    migrates (the behaviour `commit-migrate-marks` already covers; keep it green).
-  - An idle refresh (nothing changed) performs no render and leaves the cursor where it was.
-  - Creating an untracked file outside the editor is picked up by the fallback timer; saving a
-    tracked file in the editor is picked up by the autocmd without waiting for it.
-  - Suspend/resume with a work-tree change while hidden still reconciles (`suspend_test.lua` green).
+  - [x] Commit that edit and refresh: the log walk re-runs exactly once, and the previously
+    WORKTREE-owned lines are now owned by the new commit (`commit-migrate-marks` still green).
+  - [x] An idle refresh (nothing changed) performs no render at all.
+  - [x] Creating an untracked file outside the editor is invisible to the event-driven check and is
+    picked up by the safety-net tick.
+  - [x] Suspend/resume with a work-tree change while hidden still reconciles (`suspend_test.lua`
+    green).
 
 ## Retire dead code
 

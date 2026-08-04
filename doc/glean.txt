@@ -25,7 +25,9 @@ the fork point (merge-base) from the default trunk, so you see the branch's own
 commits plus uncommitted edits; on the trunk itself the base is the upstream
 tracking ref, so you see unpushed commits plus uncommitted edits.
 
-A live work-tree review polls the repo (every 1.5s) and re-renders in place as
+A live work-tree review refreshes on save and on regaining focus (with a 5s
+safety-net poll for changes made outside the editor) and re-renders in place as
+
 files change, preserving the cursor and your collapse state.
 
 Reopening the same `base..target` reuses the existing listed buffer rather than

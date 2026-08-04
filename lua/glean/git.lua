@@ -416,6 +416,31 @@ function Git:dirty_sig_async(cb)
   end)
 end
 
+-- The poll signature: HEAD plus the tracked diff against HEAD. Cheap (no
+-- whole-tree stat) and it is the same text the refresh needs, so the poll hands
+-- it on rather than making the rebuild ask git for it again -- one subprocess
+-- less per tick and no TOCTOU window between the two calls.
+-- `cb(sig, head, diff_text)`.
+function Git:poll_async(cb)
+  M.join({
+    head = function(done) self:run_async({ "rev-parse", "HEAD" }, done) end,
+    diff = function(done) self:run_async({ "diff", "--no-color", "HEAD" }, done) end,
+  }, function(res)
+    local head = (res.head[1] or ""):gsub("%s+$", "")
+    local diff_out = res.diff[1] or ""
+    cb(vim.fn.sha256(head .. "\0" .. diff_out), head, diff_out)
+  end)
+end
+
+-- A signature over the untracked file listing. `git diff HEAD` cannot see
+-- untracked files, so this is the only thing the poll signature misses; it is a
+-- whole-tree walk, so only the slow safety-net tick pays for it.
+function Git:untracked_sig_async(cb)
+  self:run_async(untracked_args(), function(out)
+    cb(vim.fn.sha256(out or ""))
+  end)
+end
+
 -- Fetch objects for a refspec from a remote into the object store, without
 -- updating any local branch or touching the working tree / checkout. Used to
 -- make a PR's commits available locally before reviewing them. Returns true on
