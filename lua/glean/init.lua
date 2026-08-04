@@ -31,7 +31,6 @@
 local git_mod = require("glean.git")
 local diff_mod = require("glean.diff")
 local state_mod = require("glean.state")
-local provenance = require("glean.provenance")
 local lineage = require("glean.lineage")
 local intraline = require("glean.intraline")
 local M = {}
@@ -46,13 +45,6 @@ local NS_INTRA = api.nvim_create_namespace("glean_intra_hl")
 local NS_CURSOR = api.nvim_create_namespace("glean_cursor_hl")
 local NS_STICKY = api.nvim_create_namespace("glean_sticky_hl")
 
--- Half the machine's logical CPUs (at least 1): the default ceiling on how many
--- `git blame` subprocesses the background ownership loader runs concurrently.
-local function default_blame_jobs()
-  local ok, cpus = pcall(function() return vim.uv.cpu_info() end)
-  local n = (ok and cpus) and #cpus or 1
-  return math.max(1, math.floor(n / 2))
-end
 
 M.config = {
   default_base = "main",
@@ -60,9 +52,6 @@ M.config = {
   -- partially-seen hunk shorter than this collapses back to unseen rows rather
   -- than a `✓ marked` marker. 0 or 1 disables demotion entirely.
   min_seen_run = 5,
-  -- Max concurrent `git blame` subprocesses the background ownership loader
-  -- runs at once (combined scope). Defaults to half the logical CPU count.
-  max_blame_jobs = default_blame_jobs(),
 }
 
 -- Registry of live glean buffers, keyed by (repo_root, base, target), so a
@@ -406,10 +395,10 @@ function Session:commit_owner(commit)
   end
 end
 
--- The per-line owner closure for a combined-scope file: an add/context line's
--- owner is its blame provenance (sha + orig_lnum). A deletion is owned by the
--- commit that removed it (resolved via `del_attribution`, in that commit's
--- immutable pre-image coords), or WORKTREE when the removal is uncommitted.
+-- The per-line owner closure for a combined-scope file: an add line's owner is
+-- its composed provenance (sha + that commit's own line number). A deletion is
+-- owned by the commit that removed it (in that commit's immutable pre-image
+-- coords), or WORKTREE when the removal is uncommitted.
 function Session:combined_owner(path)
   local e = self._owner and self._owner[path]
   if not (e and e.status == "loaded") then
@@ -427,8 +416,8 @@ function Session:combined_owner(path)
     end
     if not dl.new_lnum then return nil end
     local p = prov[dl.new_lnum]
-    -- An add line blame can't attribute (an untracked file has no blame at all,
-    -- so its provenance map is empty) is uncommitted content in a work-tree
+    -- An add line composition can't attribute (an untracked file has no patch
+    -- at all, so its provenance map is empty) is uncommitted content in a work-tree
     -- review: route it to the content-addressed WORKTREE owner so it is markable.
     if not p then return self.worktree and M.WORKTREE or nil end
     return p.sha, p.lnum
@@ -436,9 +425,8 @@ function Session:combined_owner(path)
 end
 
 -- The explicit per-path ownership cache status, the single source of truth for
--- whether a combined file's blame-derived ownership is available:
+-- whether a combined file's composed ownership is available:
 --   nil       — never requested
---   "loading" — a blame job is in flight (Stage 4); maps not yet stored
 --   "loaded"  — forward provenance and del attribution are resolved & stored
 function Session:owner_status(path)
   local e = self._owner and self._owner[path]
@@ -446,7 +434,7 @@ function Session:owner_status(path)
 end
 
 -- Whether a render/action target's file has loaded ownership. A hunk's load
--- state is its file's load state (one blame resolves all of a file's hunks).
+-- state is its file's load state (one composition resolves every file's hunks).
 function Session:hunk_loaded(target)
   local path
   if self.scope == "commits" then return true end
@@ -455,11 +443,6 @@ function Session:hunk_loaded(target)
   return path ~= nil and self:owner_status(path) == "loaded"
 end
 
--- Synchronously resolve and cache a combined file's ownership: forward blame
--- provenance plus (per the commit-set rule) del attribution. Idempotent — a
--- "loaded" entry is returned untouched. This is the on-demand sync loader used
--- by the open/scope-switch lifecycle and the action layer; Stage 4 adds the
--- background async loader that drives the same cache.
 -- Resolve combined-scope ownership for *every* path in one shot by composing
 -- the ordered first-parent patches already fetched by `build_model` (plus the
 -- floating work-tree layer last). Pure Lua, no subprocess: the single
@@ -492,79 +475,20 @@ function Session:load_lineage()
   self._owner = owner
   return owner
 end
-function Session:load_owner(path)
-  return self:load_lineage()[path]
-end
 
--- Load ownership for every displayed combined file (no-op outside combined
--- scope). Synchronous for now; Stage 4 replaces the call sites with the async
--- background loader feeding the same cache.
-function Session:load_combined_owners()
+-- Resolve combined-scope ownership for the whole model. Bumps `_load_gen` so any
+-- render still in flight from a prior model (a reload / scope change) drops
+-- itself on its guard. No-op outside combined scope.
+function Session:start_owner_loader()
+  self._load_gen = (self._load_gen or 0) + 1
   if self.scope ~= "combined" then return end
+  if self._suspended then return end
   self.combined_files = self.combined_files or self:compute_combined()
   self:load_lineage()
 end
 
--- ---------------------------------------------------------------------------
--- Background ownership loader (combined scope).
---
--- Opening a large combined review paints immediately with every file "pending"
--- (unowned → unseen); a *serial* async queue then walks the displayed files in
--- document order, resolving each file's blame (forward provenance + reverse-blame
--- del attribution) off the UI thread and streaming the settled seen placement
--- back via a throttled re-render. Serial (one job in flight) bounds the number
--- of concurrent subprocesses and satisfies the "serial / async" request.
---
--- Generation guard: `self._load_gen` is bumped every time the loader (re)starts
--- (open / reload / scope switch). Each job and each throttled render captures the
--- generation it was scheduled under and drops itself if the session has since
--- moved on (a superseded model from a reload / scope change), and every async
--- callback re-checks buffer validity so a closed buffer aborts cleanly.
--- ---------------------------------------------------------------------------
-
--- ~60ms coalescing window for streaming re-renders: several files that finish in
--- quick succession collapse into a single repaint, bounding total render cost.
-local LOAD_RENDER_THROTTLE_MS = 60
-
--- Async counterpart to `load_owner`: resolve a combined file's forward
--- provenance (async blame) and del attribution (async reverse blame), store the
--- loaded entry, then invoke `cb`. Honors the captured generation at each step.
-function Session:load_owner_async(path, gen, cb)
-  self._owner = self._owner or {}
-  local e = self._owner[path]
-  if e and e.status == "loaded" then cb() return end
-  self._owner[path] = { status = "loading" }
-  local ref = self.target ~= M.WORKTREE and self.target or nil
-  self.git:blame_async(ref, path, self:blame_ranges(path), function(out)
-    if gen ~= self._load_gen then return end
-    local map = (out and provenance.parse_blame(out)) or {}
-    if self.target == M.WORKTREE then provenance.map_zero_sha(map, M.WORKTREE) end
-    self:del_attribution_async(path, function(del_attr)
-      -- `reload` nils `_owner` before `start_owner_loader` bumps the generation;
-      -- if a render error aborts reload in between, a stale in-flight callback
-      -- can pass the generation guard yet find `_owner` gone. Guard both.
-      if gen ~= self._load_gen or not self._owner then return end
-      self._owner[path] = { status = "loaded", prov = map, del_attr = del_attr }
-      cb()
-    end)
-  end)
-end
-
--- Coalesced streaming re-render: mark the buffer dirty and arm a single throttle
--- that repaints once the window elapses (idempotent — multiple `loaded`
--- transitions within the window collapse into one render).
-function Session:schedule_streaming_render(gen)
-  self._render_dirty = true
-  if self._render_armed then return end
-  self._render_armed = true
-  vim.defer_fn(function()
-    self._render_armed = false
-    self:streaming_render(gen)
-  end, LOAD_RENDER_THROTTLE_MS)
-end
-
--- A streaming/drain repaint, guarded by generation and buffer validity. Drops
--- itself when superseded (stale generation) or the buffer is gone.
+-- A deferred repaint, guarded by generation and buffer validity. Drops itself
+-- when superseded (stale generation) or the buffer is gone.
 function Session:streaming_render(gen)
   if gen ~= self._load_gen then return end
   if self._suspended then return end
@@ -574,123 +498,7 @@ function Session:streaming_render(gen)
   self:render()
 end
 
--- One worker of the bounded-parallel queue: claim the next pending file (the
--- shared `_load_idx` cursor is bumped synchronously, so concurrent workers never
--- grab the same path), load it, then schedule a streaming re-render and recurse
--- to claim the next. When the queue drains, force a final repaint so the last
--- file's placement settles even if no throttle is pending.
-function Session:loader_pump(gen)
-  if gen ~= self._load_gen then return end
-  if not api.nvim_buf_is_valid(self.buf) then return end
-  self._load_idx = self._load_idx + 1
-  local path = self._load_queue[self._load_idx]
-  if not path then
-    self._render_dirty = true
-    self:streaming_render(gen)
-    return
-  end
-  self:load_owner_async(path, gen, function()
-    if gen ~= self._load_gen then return end
-    self:schedule_streaming_render(gen)
-    self:loader_pump(gen)
-  end)
-end
 
--- Kick (or re-kick) the background loader over every not-yet-loaded combined
--- file. Bumps the generation so any in-flight jobs/renders from a prior model
--- are dropped. No-op outside combined scope. Under an injected (test) runner the
--- async callbacks fire synchronously, so the queue drains before this returns.
-function Session:start_owner_loader()
-  self._load_gen = (self._load_gen or 0) + 1
-  if self.scope ~= "combined" then return end
-  if self._suspended then return end
-  self.combined_files = self.combined_files or self:compute_combined()
-  self:load_lineage()
-end
-
--- Resolve combined-scope deletions to the immutable identity of the commit that
--- removed each line, numerically via `git blame --reverse` over base..target.
--- Reverse blame reports, for every base line, the *last* revision in which the
--- line still existed (`sha`) and its number there (`orig`); the line's deleter
--- is that revision's child in the ordered stack, and `orig` equals the deleter's
--- pre-image `old_lnum` -- the very `(sha, old_lnum)` commit scope records, so a
--- mark made in one view is seen in the other. The porcelain `final` field is the
--- base line number, i.e. the combined diff's del `old_lnum`, which keys the
--- returned map `old_lnum -> { sha, lnum }`. Lines that survive to the target, or
--- whose deleter is the floating work tree, are omitted -> content-hashed under
--- WORKTREE. Cached per path.
--- The parent->child map over the ordered commit stack (base first), used to name
--- the deleter of a line from the revision that last contained it. Depends only
--- on `self.base` and `self.commits`, so it is computed once per commit-set
--- generation (reset in `reload` only when the commit set changes), hoisting the
--- `rev_parse(base)` subprocess and stack walk out of the per-path loop.
-function Session:del_child()
-  if not self._del_child then
-    local child, prev = {}, self.git:rev_parse(self.base) or self.base
-    for _, c in ipairs(self.commits) do
-      if c.sha ~= M.WORKTREE then child[prev] = c.sha; prev = c.sha end
-    end
-    self._del_child = child
-  end
-  return self._del_child
-end
-
--- Build the `old_lnum -> {sha,lnum}` del-attribution map from reverse-blame
--- porcelain output and the parent->child stack. Shared by the sync and async
--- attribution loaders.
-local function build_del_map(out, child)
-  local map = {}
-  for final, p in pairs((out and provenance.parse_blame(out)) or {}) do
-    local deleter = child[p.sha]
-    if deleter then map[final] = { sha = deleter, lnum = p.orig_lnum } end
-  end
-  return map
-end
-
-function Session:del_attribution(path)
-  self._del_attr = self._del_attr or {}
-  if self._del_attr[path] == nil then
-    local end_rev = self.target ~= M.WORKTREE and self.target or "HEAD"
-    local out = self.git:reverse_blame(self.base, end_rev, path)
-    self._del_attr[path] = build_del_map(out, self:del_child())
-  end
-  return self._del_attr[path]
-end
-
--- Whether `path`'s combined diff has any deletion lines, so the loader can skip
--- the reverse-blame subprocess entirely for add-only files (their del map is {}).
-function Session:has_del_lines(path)
-  for _, raw in ipairs(self.files) do
-    if raw.path == path then
-      for _, h in ipairs(raw.hunks) do
-        for _, l in ipairs(h.lines) do
-          if l.kind == "del" then return true end
-        end
-      end
-      return false
-    end
-  end
-  return false
-end
-
--- Async counterpart to `del_attribution`: resolve the path's del-attribution map
--- via async reverse blame, caching it under the commit-set-keyed `_del_attr`.
--- Add-only files short-circuit to an empty map with no subprocess.
-function Session:del_attribution_async(path, cb)
-  self._del_attr = self._del_attr or {}
-  if self._del_attr[path] ~= nil then cb(self._del_attr[path]) return end
-  if not self:has_del_lines(path) then
-    self._del_attr[path] = {}
-    cb(self._del_attr[path])
-    return
-  end
-  local end_rev = self.target ~= M.WORKTREE and self.target or "HEAD"
-  local child = self:del_child()
-  self.git:reverse_blame_async(self.base, end_rev, path, function(out)
-    self._del_attr[path] = build_del_map(out, child)
-    cb(self._del_attr[path])
-  end)
-end
 
 -- The stable seen-identity of one changed diff line, or nil for a context line
 -- or a line with no in-range owner. A WORKTREE-owned line is content-addressed;
@@ -791,52 +599,14 @@ function Session:commit_seen(commit)
 end
 
 -- ---------------------------------------------------------------------------
--- Combined overlay (Stage 4): per-line ownership via blame + tighter re-diff.
+-- Combined overlay: per-line ownership by patch composition (glean.lineage).
 -- ---------------------------------------------------------------------------
 
--- The post-image line ranges actually present in `path`'s combined diff hunks,
--- so blame is restricted (multiple `-L`) to just the changed/context spans we
--- query instead of the whole (possibly huge) file. Returns nil when no hunks are
--- found, blaming the entire file as before.
-function Session:blame_ranges(path)
-  self._blame_ranges = self._blame_ranges or {}
-  if self._blame_ranges[path] == nil then
-    local ranges = {}
-    for _, raw in ipairs(self.files) do
-      if raw.path == path then
-        for _, h in ipairs(raw.hunks) do
-          local lo = h.new_start
-          local hi = h.new_start + math.max(h.new_count, 1) - 1
-          if lo and lo >= 1 and hi >= lo then ranges[#ranges + 1] = { lo, hi } end
-        end
-        break
-      end
-    end
-    self._blame_ranges[path] = ranges
-  end
-  local ranges = self._blame_ranges[path]
-  return #ranges > 0 and ranges or nil
-end
 
--- Compute (no caching) the `git blame -p` provenance for a path at target:
--- new_lnum -> {sha,orig}. The ownership cache (`load_owner`) memoizes the result.
-function Session:compute_provenance(path)
-  -- A WORKTREE target blames the live work tree (nil ref); blame attributes
-  -- uncommitted lines to the all-zero sha, which we remap to the floating id
-  -- so they route to the content-hash adapter.
-  local ref = self.target ~= M.WORKTREE and self.target or nil
-  local out = self.git:blame(ref, path, self:blame_ranges(path))
-  local map = (out and provenance.parse_blame(out)) or {}
-  if self.target == M.WORKTREE then
-    provenance.map_zero_sha(map, M.WORKTREE)
-  end
-  return map
-end
-
--- The forward provenance map for a path, loading ownership on demand. Depends
+-- The forward provenance map for a path, composing ownership on demand. Depends
 -- only on target, so it survives seen-mark changes between renders.
 function Session:provenance(path)
-  return self:load_owner(path).prov
+  return self:load_lineage()[path].prov
 end
 
 -- Project the raw combined diff into display files. Seen hunks are now rendered
@@ -3201,7 +2971,7 @@ end
 -- A per-file content signature of the combined diff (path -> hash of its hunk
 -- geometry + line text), used by `reload` to tell which files actually changed.
 -- A content-only worktree edit rewrites just the edited file's diff, so every
--- other file's forward blame provenance is still valid and can be kept.
+-- other file's rendering is still valid and can be kept.
 local function combined_file_sigs(files)
   local sigs = {}
   for _, f in ipairs(files or {}) do
@@ -3331,9 +3101,9 @@ function Session:start_live()
 end
 
 -- A buffer that is in no window is detached from all background work: the live
--- poll timer, the blame loader (its generation is bumped, so in-flight jobs and
--- pending streaming renders drop themselves on their existing guard) and the
--- throttled repaint. Nothing is persisted or discarded -- the model stays put,
+-- poll timer and any pending repaint (the ownership generation is bumped, so a
+-- render still in flight drops itself on its existing guard). Nothing is
+-- persisted or discarded -- the model stays put,
 -- only the machinery that keeps it fresh stops.
 function Session:suspend()
   if self._suspended then return end
@@ -3342,13 +3112,12 @@ function Session:suspend()
   self:bump_refresh()
   self._load_gen = (self._load_gen or 0) + 1
   self._render_dirty = false
-  self._render_armed = false
   self:close_sticky()
 end
 
 -- Re-attach. The work tree may have moved while we were hidden, so reconcile
 -- against the signature captured at suspend time: reload on change, otherwise
--- just repaint and finish the blame queue that suspending abandoned.
+-- just repaint.
 function Session:resume()
   if not self._suspended then return end
   self._suspended = false
@@ -3545,7 +3314,7 @@ function M.open(opts)
     buffers[key] = buf
     -- Background work is attached to *visibility*, not to the session's
     -- lifetime: a buffer sitting in no window must not poll the work tree or
-    -- spawn blame jobs. Visibility is re-derived from `win_findbuf` rather than
+    -- rebuild the model. Visibility is re-derived from `win_findbuf` rather than
     -- tracked per event, since BufWinLeave fires before the window is gone and
     -- one split of two closing must not detach the still-visible buffer.
     local function sync_active()
@@ -3600,12 +3369,11 @@ function M.open(opts)
     files = {},
     commits = {},
     -- Baselines so the first content-only reload after open is already
-    -- incremental (keeps per-file blame for unchanged files) rather than
-    -- re-blaming everything once before the incremental path can engage.
+    -- incremental (reuses the cached committed lineage) rather than re-walking
+    -- the log once before the incremental path can engage.
     _file_sigs = {},
     scope = opts.scope or "combined",
     min_seen_run = opts.min_seen_run or M.config.min_seen_run,
-    max_blame_jobs = opts.max_blame_jobs or M.config.max_blame_jobs,
     buf = buf,
     win = nil,
     row_map = {},

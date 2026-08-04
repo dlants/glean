@@ -838,7 +838,7 @@ do
     jp:find("resolving review state", 1, true) ~= nil)
 
   -- Behavior B: load ownership, re-render — the pre-seen hunk migrates up.
-  s:load_combined_owners()
+  s:load_lineage()
   h.assert_eq("stage2: owner_status loaded after load", s:owner_status("f.txt"), "loaded")
   s:render()
   local jl = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
@@ -918,7 +918,7 @@ do
   h.assert_true("stage3-C: target_identities asserts on non-loaded file", not ok)
 
   -- Behavior B: load that file's ownership; the same hunk now marks correctly.
-  s:load_owner(path)
+  s:load_lineage()
   s:render()
   local hrow2 = find_row(s, function(_, line, t)
     return t and t.cfile and t.hunk and not t.line and not t.pending
@@ -1004,8 +1004,6 @@ do
   s._render_dirty = true
   h.assert_true("stage4-C: streaming render aborts cleanly on a dead buffer",
     pcall(function() s:streaming_render(gen) end))
-  h.assert_true("stage4-C: loader pump aborts cleanly on a dead buffer",
-    pcall(function() s:loader_pump(gen) end))
 end
 
 -- Behavior D: a reload re-runs the loader (bumping the generation and reloading
@@ -1094,7 +1092,7 @@ do
 
   local sync = open({ state_dir = dir })
   sync._owner = nil
-  sync:load_combined_owners()
+  sync:load_lineage()
   sync._render_sig = nil
   sync:render()
   local clines = api.nvim_buf_get_lines(sync.buf, 0, -1, false)
@@ -1122,7 +1120,7 @@ do
   h.assert_true("stage5: mark-during-load is a hard error",
     not pcall(function() return s:row_identity(ptarget) end))
 
-  s:load_owner(path)
+  s:load_lineage()
   s:render()
   local lrow2 = find_row(s, function(_, line, t)
     return t and t.cfile and t.line and not t.pending
@@ -2127,7 +2125,7 @@ do
     base = mr.shas[1], target = mr.shas[4], repo_root = mr.root, run = runmr,
     open_window = false, state_dir = vim.fn.tempname(), -- combined scope
   })
-  local r = s:del_attribution("t.txt")[1]
+  local r = s:load_lineage()["t.txt"].del_attr[1]
   h.assert_true("del dup: resolves", r ~= nil)
   h.assert_eq("del dup: deleter of base line is c1", r.sha, mr.shas[2])
 end

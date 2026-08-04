@@ -32,9 +32,10 @@ list / `<C-^>`.
 
 Toggle with `S`:
 
-- **combined** (default) — the net `base..target` diff. Deletions are attributed
-  to the commit that removed them via reverse blame; additions to their blame
-  provenance.
+- **combined** (default) — the net `base..target` diff. Per-line ownership is
+  derived by composing the first-parent patches in the range: additions are
+  credited to the commit that introduced them, deletions to the commit that
+  removed them.
 - **commits** — every commit laid out flat. Seen-marks and comments are authored
   against a stable `(commit_sha, path, line)` identity here, and the same mark
   is reflected in the combined view.
@@ -113,7 +114,6 @@ glean has no external plugin dependencies — it shells out to `git`. Neovim
 require("glean.init").setup({
   default_base = "main",   -- trunk used for fork-point / upstream resolution
   min_seen_run = 5,        -- combined-scope: demote seen runs shorter than this to unseen
-  max_blame_jobs = 4,      -- max concurrent `git blame` jobs (default: half the CPU count)
 })
 ```
 
@@ -137,14 +137,11 @@ current context, that mark is recorded as a content-addressed sticky override
 that keeps the line seen across renders and reopens, and self-invalidates once
 the line's content changes again.
 
-### `max_blame_jobs`
+### Removed: `max_blame_jobs`
 
-In the combined scope, per-line commit ownership is resolved with `git blame`,
-one invocation per displayed file, run in the background so the buffer paints
-immediately and seen placement streams in as each file settles. `max_blame_jobs`
-caps how many of those blame subprocesses run concurrently (default: half the
-logical CPU count, at least 1). Raise it to load large reviews faster at the cost
-of more parallel git processes; set it to `1` for the old fully-serial behavior.
+Combined-scope ownership no longer runs `git blame` per file — it is composed
+from a single `git log -p` walk of the range — so the `max_blame_jobs` option is
+gone. Passing it to `setup` has no effect.
 
 ## Related plugins
 

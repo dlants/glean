@@ -60,8 +60,8 @@ local function inject_run(args)
   return { code = res.code, stdout = res.stdout, stderr = res.stderr }
 end
 
--- 2. dirty_sig_async fans its three independent queries out together rather
--- than chaining them.
+-- 2. poll_async fans its two independent queries out together rather than
+-- chaining them.
 do
   local git = git_mod.new({ repo_root = repo.root, run = inject_run })
   local issued, queue = {}, {}
@@ -70,16 +70,15 @@ do
     queue[#queue + 1] = { args = args, cb = cb }
   end
   local sig, calls = nil, 0
-  git:dirty_sig_async(function(s) calls = calls + 1; sig = s end)
-  h.assert_eq("dirty_sig_async: three queries issued", #issued, 3)
-  h.assert_eq("dirty_sig_async: none has completed yet", calls, 0)
+  git:poll_async(function(s) calls = calls + 1; sig = s end)
+  h.assert_eq("poll_async: two queries issued", #issued, 2)
+  h.assert_eq("poll_async: none has completed yet", calls, 0)
   for _, q in ipairs(queue) do
     local out, err = git_mod.new({ repo_root = repo.root, run = inject_run }):run(q.args)
     q.cb(out, err)
   end
-  h.assert_eq("dirty_sig_async: one continuation", calls, 1)
-  h.assert_eq("dirty_sig_async: matches the sync signature", sig,
-    git_mod.new({ repo_root = repo.root, run = inject_run }):dirty_sig())
+  h.assert_eq("poll_async: one continuation", calls, 1)
+  h.assert_true("poll_async: produced a signature", type(sig) == "string" and #sig > 0)
 end
 
 local state_dir = vim.fn.tempname()

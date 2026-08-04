@@ -690,7 +690,23 @@ Decisions:
   - [x] Suspend/resume with a work-tree change while hidden still reconciles (`suspend_test.lua`
     green).
 
-## Retire dead code
+## Retire dead code — DONE
+
+Decisions:
+- `Session:start_owner_loader` and `Session:streaming_render` are **kept** (they were not on the
+  removal list): the former is the model-generation ownership entry point (`_load_gen` bump +
+  `load_lineage`), the latter the guarded deferred repaint. `schedule_streaming_render`,
+  `_render_armed` and `LOAD_RENDER_THROTTLE_MS` are gone.
+- `Session:provenance(path)` survives as the forward-map accessor, now reading
+  `load_lineage()[path].prov`.
+- `Git:dirty_sig` / `dirty_sig_async` are removed too (stage 7 deferred them here). `async_test`'s
+  fan-out test now drives `poll_async` (two independent queries) instead.
+- Test updates were mechanical: `load_combined_owners`/`load_owner` call sites became
+  `load_lineage()`, the del-dup test reads `load_lineage()["t.txt"].del_attr`, and the two
+  blame-specific `git_test` cases plus the `loader_pump` dead-buffer assertion were dropped (the
+  `streaming_render` dead-buffer assertion stays).
+- `max_blame_jobs` removal is noted in the README; the stale blame wording in `README.md` and
+  `doc/glean.txt` was rewritten to describe patch composition.
 
 - Goal: delete everything composition obsoletes.
 - Removals: `Session:blame_ranges`, `_blame_ranges`, `has_del_lines`, `del_attribution` /

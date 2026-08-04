@@ -40,8 +40,9 @@ SCOPES							*glean-scopes*
 Toggle the scope with `S`:
 
 combined (default)	the net `base..target` diff. Deletions are attributed
-			to the commit that removed them via reverse blame;
-			additions to their blame provenance.
+			to the commit that removed them; additions to the
+			commit that introduced them (derived by composing the
+			range's first-parent patches).
 
 commits			every commit laid out flat. Seen-marks and comments
 			are authored against a stable (commit_sha, path, line)
