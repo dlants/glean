@@ -1,5 +1,1 @@
-- speed
-- ignore whitespace mode
-- when marking a line range, move the cursor to stay on the same line after the marked section is collapsed
 - submit comments to a pr via gh (into a pending review)
-- list glean buffer in buffers list
