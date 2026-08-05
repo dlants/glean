@@ -1156,7 +1156,7 @@ function Session:build()
   -- (path + record) so `dd`/`i`/`dc` anywhere on it acts on the whole comment.
   local function emit_comment(c, htarget)
     local ctarget = vim.tbl_extend("force", htarget or {}, { comment = c })
-    local lead = c.outdated and "> (outdated) " or "> "
+    local lead = c.outdated and "💬 (outdated) " or "💬 "
     local hl = c.outdated and "GleanSeen" or "GleanComment"
     for _, part in ipairs(vim.split(c.text, "\n", { plain = true })) do
       emit(lead .. part, ctarget, hl)
@@ -1427,10 +1427,11 @@ function Session:build()
   if #summary.order > 0 then
    section("comments", function()
     emit("", {})
-    emit("══ comments ══", {}, "GleanModeHeader")
+    emit("## comments", {}, "GleanModeHeader")
     for _, path in ipairs(summary.order) do
       -- `<CR>` on the file row jumps to that file's header in the diff above.
-      emit(path, { summary_file = path }, "GleanFileHeader")
+      emit("", {})
+      emit("### " .. path, { summary_file = path }, "GleanFileHeader")
       for _, e in ipairs(summary.by_path[path]) do
         local loc = e.outdated and "(Outdated)"
           or e.hidden and "(Hidden by whitespace mode)"
@@ -1442,10 +1443,12 @@ function Session:build()
           outdated = e.outdated, hidden = e.hidden,
         }
         local ctarget = { comment = c, summary_comment = { path = path } }
-        emit(("  %s  %s"):format(loc, e.line), ctarget,
+        emit("", {})
+        emit(("**%s** `%s`"):format(loc, (e.line:gsub("^%s+", ""):gsub("`", "'"))), ctarget,
           (e.outdated or e.hidden) and "GleanSeen" or "GleanContext")
+        emit("", {})
         for _, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
-          emit("> " .. part, ctarget, "GleanComment")
+          emit(part, ctarget, "GleanComment")
         end
       end
     end

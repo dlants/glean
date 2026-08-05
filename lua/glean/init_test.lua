@@ -321,10 +321,10 @@ do
   h.assert_eq("multiline: stored one comment", #got, 1)
   h.assert_eq("multiline: newline preserved", got[1].text, "first line\nsecond line")
   local r1 = find_row(s, function(_, line, t)
-    return t and t.comment and line == "> first line"
+    return t and t.comment and line == "💬 first line"
   end)
   local r2 = find_row(s, function(_, line, t)
-    return t and t.comment and line == "> second line"
+    return t and t.comment and line == "💬 second line"
   end)
   h.assert_true("multiline: first row present", r1 ~= nil)
   h.assert_true("multiline: continuation row present", r2 ~= nil)
@@ -381,7 +381,7 @@ do
   s:render()
   local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("reanchor: outdated in summary", joined:find("(Outdated)", 1, true) ~= nil)
-  h.assert_true("reanchor: outdated text present", joined:find("> gone note", 1, true) ~= nil)
+  h.assert_true("reanchor: outdated text present", joined:find("\ngone note", 1, true) ~= nil)
 end
 
 -- Deleting a comment from its inline row (the `dd` path) drops it from the
@@ -421,12 +421,12 @@ do
 
   local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("summary: section header present",
-    joined:find("══ comments ══", 1, true) ~= nil)
-  h.assert_true("summary: file path listed", joined:find("\nf.txt", 1, true) ~= nil)
-  h.assert_true("summary: live comment text", joined:find("\n> live note", 1, true) ~= nil)
-  h.assert_true("summary: stale comment text", joined:find("\n> stale note", 1, true) ~= nil)
+    joined:find("## comments", 1, true) ~= nil)
+  h.assert_true("summary: file path listed", joined:find("\n### f.txt", 1, true) ~= nil)
+  h.assert_true("summary: live comment text", joined:find("\nlive note", 1, true) ~= nil)
+  h.assert_true("summary: stale comment text", joined:find("\nstale note", 1, true) ~= nil)
   h.assert_true("summary: present comment not outdated",
-    joined:find("L2  TWO", 1, true) ~= nil)
+    joined:find("**L2** `TWO`", 1, true) ~= nil)
   h.assert_true("summary: outdated comment flagged",
     joined:find("(Outdated)", 1, true) ~= nil)
 end
@@ -507,11 +507,11 @@ do
 
   local first = find_row(s, function(_, line, t)
     return t and t.summary_comment and t.comment.text == "first note\ncontinued"
-      and line:sub(1, 2) == "  "
+      and line == "first note"
   end)
   local last = find_row(s, function(_, line, t)
     return t and t.summary_comment and t.comment.text == "second note"
-      and line == "> second note"
+      and line == "second note"
   end)
   h.assert_true("summary-visual-delete: selection endpoints present",
     first ~= nil and last ~= nil)
@@ -541,14 +541,14 @@ do
   s:add_comment_at(crow, "context note")
   local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("ctx-summary: section header present",
-    joined:find("══ comments ══", 1, true) ~= nil)
+    joined:find("## comments", 1, true) ~= nil)
   h.assert_true("ctx-summary: context comment listed",
-    joined:find("\n> context note", 1, true) ~= nil)
+    joined:find("\ncontext note", 1, true) ~= nil)
   -- survives reopen (owner shard loaded on demand).
   local s2 = open({ scope = "combined", state_dir = dir })
   local joined2 = table.concat(api.nvim_buf_get_lines(s2.buf, 0, -1, false), "\n")
   h.assert_true("ctx-summary: persists across reopen",
-    joined2:find("\n> context note", 1, true) ~= nil)
+    joined2:find("\ncontext note", 1, true) ~= nil)
 end
 -- Stage 2 — commits-scope seen section: marking an expanded file's only hunk
 -- seen tucks it under a default-collapsed " seen (N hunks)" header.
