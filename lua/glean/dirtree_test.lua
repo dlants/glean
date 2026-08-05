@@ -127,9 +127,8 @@ for _, scope in ipairs({ "combined", "commits" }) do
     local text = buftext(s)
     h.assert_true(label .. "render: src/ directory row", text:find("▼ .*src/") ~= nil)
     h.assert_true(label .. "render: nested deep/ row indented", text:find("\n  ▼ .*deep/") ~= nil)
-    h.assert_true(label .. "render: file shows basename only", text:find("a%.txt") ~= nil)
-    h.assert_true(label .. "render: file path not repeated in full",
-      text:find("src/a.txt", 1, true) == nil)
+    h.assert_true(label .. "render: file row shows its full path",
+      text:find("src/a.txt", 1, true) ~= nil)
     h.assert_true(label .. "render: root file stays at depth 0", text:find("\n▼ .*root%.txt") ~= nil)
   end
 
@@ -228,32 +227,65 @@ for _, scope in ipairs({ "combined", "commits" }) do
   end
 end
 
--- Sticky header ------------------------------------------------------------
-do
-  h.assert_eq("sticky: file header shows the full path, flush left",
-    glean.sticky_text("    ▼ b.txt [add]", "src/deep/b.txt"), "▼ src/deep/b.txt [add]")
-  h.assert_eq("sticky: root-level file is unchanged",
-    glean.sticky_text("▼ root.txt", "root.txt"), "▼ root.txt")
-  h.assert_eq("sticky: only the basename is rewritten",
-    glean.sticky_text("▼ a.txt (a.txt)", "src/a.txt"), "▼ src/a.txt (a.txt)")
-  h.assert_eq("sticky: a non-file row keeps its indentation",
-    glean.sticky_text("  ▶ seen (2)", nil), "  ▶ seen (2)")
+-- Full paths / sticky header ------------------------------------------------
+local function text_at(s, row)
+  return api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
+end
+
+local function file_row(s, name)
+  for r, t in pairs(s.row_map) do
+    if (t.file or t.cfile) and not t.hunk and not t.line then
+      local line = text_at(s, r)
+      if line:find(name, 1, true) then return r, line end
+    end
+  end
+end
+
+for _, scope in ipairs({ "combined", "commits" }) do
+  local s = open(scope)
+  local label = "[" .. scope .. "] "
+
+  local _, nested = file_row(s, "b.txt")
+  h.assert_true(label .. "file row shows the full path",
+    nested:find("src/deep/b.txt", 1, true) ~= nil)
+  h.assert_true(label .. "file row stays indented under its directory",
+    nested:find("^%s") ~= nil)
+
+  local _, root = file_row(s, "root.txt")
+  h.assert_true(label .. "root-level file is unchanged",
+    root:find("root.txt", 1, true) ~= nil and root:find("/") == nil)
+
+  h.assert_true(label .. "dir row shows its full prefix",
+    text_at(s, dir_row(s, "src/deep")):find("src/deep/", 1, true) ~= nil)
 end
 
 do
-  local s = open("combined")
-  local row
+  -- A single-child chain must not double up its prefix.
+  local chain = testutil.make_repo({
+    { msg = "base", files = { ["a/b/c/one.txt"] = "x\n" } },
+    { msg = "edit", files = { ["a/b/c/one.txt"] = "y\n" } },
+  })
+  local s = glean.open({
+    base = chain.shas[1],
+    target = chain.shas[2],
+    repo_root = chain.root,
+    scope = "combined",
+    state_dir = vim.fn.tempname(),
+    run = function(args)
+      local cmd = { "git" }
+      for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+      local res = vim.system(cmd, { cwd = chain.root, env = chain.env, text = true }):wait()
+      return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+    end,
+  })
+  local line
   for r, t in pairs(s.row_map) do
-    if t.cfile and not t.hunk and not t.line then
-      local line = api.nvim_buf_get_lines(s.buf, r, r + 1, false)[1]
-      if line:find("b%.txt") then row = r end
-    end
+    if t.cfile and not t.hunk and not t.line then line = text_at(s, r) end
   end
-  local line = api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
-  h.assert_true("sticky: nested header renders the basename in the buffer",
-    line:find("src/deep", 1, true) == nil)
-  h.assert_true("sticky: float text carries the full path",
-    glean.sticky_text(line, s:row_file(s.row_map[row]).path):find("src/deep/b.txt", 1, true) ~= nil)
+  h.assert_true("chain: lone file renders its path exactly once",
+    line:find("a/b/c/one.txt", 1, true) ~= nil
+    and line:find("a/b/c/a/b/c", 1, true) == nil)
 end
+
 
 h.finish()

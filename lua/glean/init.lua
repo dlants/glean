@@ -1100,24 +1100,6 @@ end
 -- Pinned-set selection (pure): once the top summary row scrolls away it is
 -- always pinned, followed by the enclosing [commit, file, sec, hunk] headers
 -- strictly above w0. An empty list means no float should be shown.
--- The float text for a pinned row (pure). A file header renders its basename
--- indented under directory rows, but the float has no enclosing directory rows
--- for context, so it shows the full path flush left instead.
-function M.sticky_text(line, path)
-  if not path then return line end
-  local rest = line:match("^%s*(.*)$")
-  -- The buffer shows some suffix of the path (a basename, or several components
-  -- when a single-child directory chain was collapsed into the file row); swap
-  -- the longest such suffix present for the full path.
-  local comps = vim.split(path, "/", { plain = true })
-  for k = 1, #comps do
-    local suffix = table.concat(comps, "/", k)
-    if rest:find(suffix, 1, true) then
-      return (rest:gsub(vim.pesc(suffix), function() return path end, 1))
-    end
-  end
-  return rest
-end
 
 function M.compute_pinned(ancestry, w0)
   local pinned = {}
@@ -1368,7 +1350,7 @@ function Session:build()
             end
             local dtarget = { commit = ci, dir = node.prefix, dirfiles = node.files }
             emit(("%s%s %s %s/%s"):format(indent, collapsed and CHEVRON_CLOSED or CHEVRON_OPEN,
-              seen and "✓" or " ", node.name, collapsed and summary(dtarget) or ""),
+              seen and "✓" or " ", node.prefix, collapsed and summary(dtarget) or ""),
               dtarget, "GleanFileHeader")
             if collapsed then skip = node.depth end
           else
@@ -1377,7 +1359,7 @@ function Session:build()
             local fmark = self:file_seen(commit, file) and "✓" or " "
             local kind = file.kind and (" [" .. file.kind .. "]") or ""
             local ftarget = { commit = ci, file = fi }
-            emit(("%s%s %s %s%s%s"):format(indent, fchev, fmark, node.name, kind,
+            emit(("%s%s %s %s%s%s"):format(indent, fchev, fmark, file.path, kind,
               file.collapsed and summary(ftarget) or ""), ftarget, "GleanFileHeader")
             if not file.collapsed then
               emit_file_body(file, { commit = ci, file = fi },
@@ -1404,7 +1386,7 @@ function Session:build()
           local collapsed = self.collapse[key] or false
           local dtarget = { dir = node.prefix, dirfiles = node.files }
           emit(("%s%s %s/%s"):format(("  "):rep(node.depth),
-            collapsed and CHEVRON_CLOSED or CHEVRON_OPEN, node.name,
+            collapsed and CHEVRON_CLOSED or CHEVRON_OPEN, node.prefix,
             collapsed and summary(dtarget) or ""), dtarget, "GleanFileHeader")
           if collapsed then cskip = node.depth end
         end)
@@ -1426,7 +1408,7 @@ function Session:build()
       -- the body until "loaded" makes the transition go loading -> settled.
       local badge = pending and "  ⟳ loading…" or ""
       local tally = (cf.raw.collapsed and not pending) and summary(tb) or ""
-      emit(("  "):rep(node.depth) .. chevron .. " " .. node.name .. kind .. badge .. tally,
+      emit(("  "):rep(node.depth) .. chevron .. " " .. cf.path .. kind .. badge .. tally,
         tb, "GleanFileHeader")
       if not cf.raw.collapsed then
         if pending then
@@ -1911,10 +1893,7 @@ function Session:update_sticky()
   end
   local texts = {}
   for _, row in ipairs(pinned) do
-    local line = api.nvim_buf_get_lines(self.buf, row, row + 1, false)[1] or ""
-    local t = self.row_map[row]
-    local f = t and not t.hunk and not t.line and self:row_file(t) or nil
-    texts[#texts + 1] = M.sticky_text(line, f and f.path)
+    texts[#texts + 1] = api.nvim_buf_get_lines(self.buf, row, row + 1, false)[1] or ""
   end
   api.nvim_buf_set_lines(sbuf, 0, -1, false, texts)
   api.nvim_buf_clear_namespace(sbuf, NS_STICKY, 0, -1)
