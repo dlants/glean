@@ -128,15 +128,19 @@ Alternatives considered:
   - Ignore-mode acquisition retains an exact net diff in addition to exact lineage patches. The exact net diff is the canonical resolution space for combined-scope comments and worktree marks; exact first-parent/worktree files serve the same role in commit scope.
   - A canonically resolved comment whose anchor has no active display row is labeled `Hidden by whitespace mode`, never `Outdated`. Summary navigation switches back to exact mode atomically, then expands and jumps to the original inline comment.
 
-## Live refresh and auxiliary views
+## Live refresh and auxiliary views — completed August 5, 2026
 
-- Goal: Exact polling, ignored display refreshes, ownership caches, intraline highlights, source jumps, and side-by-side diffs stay consistent during worktree edits.
-- Tests:
-  - A whitespace-only save in ignore mode should update exact signatures/coordinates without surfacing a changed row or corrupting ownership.
-  - A later semantic edit should appear on the next poll with one exact poll diff, one ignored display diff, and no unnecessary exact history walk when HEAD is unchanged.
-  - Committing while ignore mode is active should invalidate both relevant history caches and assign visible lines to the new commit.
-  - Source jump and `D` should land on the correct real line after ignored blank-line changes; the split should ignore whitespace visually only while the mode is active.
-  - Intraline byte highlights for mixed semantic/whitespace edits should remain within the exact displayed strings.
+- [x] Goal: Exact polling, ignored display refreshes, ownership caches, intraline highlights, source jumps, and side-by-side diffs stay consistent during worktree edits.
+- [x] Tests:
+  - A whitespace-only save in ignore mode updates the exact poll signature and canonical/lineage models without surfacing a changed row.
+  - A later semantic edit appears on the next poll with one exact `HEAD` poll diff, one ignored display `HEAD` diff, and no history walk while HEAD is unchanged.
+  - Committing while ignore mode is active rebuilds both exact and ignored history caches and assigns visible lines to the new commit.
+  - Source jump and `D` use the displayed patch's real line coordinate after a hidden whitespace change; the split ignores whitespace visually only while the ignored split is active.
+  - Intraline refinement caches and highlights the exact mixed semantic/whitespace strings rather than normalized text.
+- Decisions:
+  - Polling remains option-free and exact. Its `git diff HEAD` payload continues to feed the exact worktree lineage layer, while ignore mode independently fetches the ignored worktree display patch.
+  - An unchanged resolved HEAD reuses both committed patch caches; a changed HEAD causes both modes to walk history and replaces both cache entries before ownership is recomposed.
+  - Neovim's `diffopt` is global rather than window-local. Ignored side-by-side views therefore reference-count a transient `iwhiteall` addition, force `diffupdate`, and remove only glean's addition as soon as either window in each pair closes; normal-mode splits never add it.
 
 ## Documentation and full regression
 

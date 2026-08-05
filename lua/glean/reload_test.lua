@@ -130,4 +130,134 @@ do
     body:find("new.txt", 1, true) ~= nil)
 end
 
+-- 5. Ignore-whitespace live refreshes keep the poll and lineage exact. A
+-- whitespace-only save changes the exact signature/canonical model without
+-- surfacing a display row; a later semantic edit fetches one additional ignored
+-- HEAD patch, keeps real coordinates/intraline strings, and a commit invalidates
+-- both history-mode caches.
+do
+  local live_repo = testutil.make_repo({
+    { msg = "base", files = { ["mode.txt"] = "top\n\nvalue here\n" } },
+  })
+  local live_calls = {}
+  local function live_run(args)
+    live_calls[#live_calls + 1] = vim.deepcopy(args)
+    local cmd = { "git" }
+    for _, arg in ipairs(args) do cmd[#cmd + 1] = arg end
+    local res = vim.system(cmd, { cwd = live_repo.root, env = live_repo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local function live_count(pred)
+    local n = 0
+    for _, args in ipairs(live_calls) do if pred(args) then n = n + 1 end end
+    return n
+  end
+  local function has_flag(args, flag)
+    for _, arg in ipairs(args) do if arg == flag then return true end end
+    return false
+  end
+  local function head_diff(args, ignored)
+    return args[1] == "diff" and args[#args] == "HEAD"
+      and has_flag(args, "--ignore-all-space") == ignored
+  end
+  local function log_mode(args, ignored)
+    return args[1] == "log" and has_flag(args, "--ignore-all-space") == ignored
+  end
+  local function body(session)
+    return table.concat(api.nvim_buf_get_lines(session.buf, 0, -1, false), "\n")
+  end
+  local function row_with(session, text)
+    for row, target in pairs(session.row_map) do
+      local line = api.nvim_buf_get_lines(session.buf, row, row + 1, false)[1]
+      if target and target.line and line == text then return row end
+    end
+  end
+
+  local mode = glean.open({
+    base = live_repo.shas[1], target = glean.WORKTREE,
+    repo_root = live_repo.root, run = live_run, open_window = false,
+    state_dir = vim.fn.tempname(), ignore_whitespace = true,
+  })
+  mode:poll({ baseline = true })
+  local baseline_sig = mode._sig
+  local function live_write(text)
+    local f = assert(io.open(live_repo.root .. "/mode.txt", "w"))
+    f:write(text)
+    f:close()
+  end
+
+  live_write("top\n   \nvalue here\n")
+  live_calls = {}
+  mode:poll()
+  h.assert_true("ignore live: whitespace save updates exact signature", mode._sig ~= baseline_sig)
+  h.assert_true("ignore live: whitespace-only file remains hidden",
+    body(mode):find("mode.txt", 1, true) == nil)
+  h.assert_eq("ignore live: poll stays exact", live_count(function(a) return head_diff(a, false) end), 1)
+  h.assert_eq("ignore live: one ignored display HEAD patch",
+    live_count(function(a) return head_diff(a, true) end), 1)
+  local canonical_space
+  for _, file in ipairs(mode.canonical_files) do
+    for _, hunk in ipairs(file.hunks) do
+      for _, line in ipairs(hunk.lines) do
+        if line.kind == "add" and line.text == "   " then canonical_space = true end
+      end
+    end
+  end
+  h.assert_true("ignore live: canonical model retains whitespace row", canonical_space)
+  h.assert_true("ignore live: exact worktree lineage retains whitespace edit",
+    mode.lineage_worktree_files[1] ~= nil)
+
+  live_write("top\n   \n  VALUE here\n")
+  live_calls = {}
+  mode:poll()
+  local semantic_row = row_with(mode, "+  VALUE here")
+  h.assert_true("ignore live: later semantic edit appears", semantic_row ~= nil)
+  h.assert_eq("ignore live semantic: one exact poll diff",
+    live_count(function(a) return head_diff(a, false) end), 1)
+  h.assert_eq("ignore live semantic: one ignored display HEAD diff",
+    live_count(function(a) return head_diff(a, true) end), 1)
+  h.assert_eq("ignore live semantic: no unchanged-HEAD history walk",
+    live_count(function(a) return a[1] == "log" end), 0)
+  local owner = mode:row_identity(mode.row_map[semantic_row])
+  h.assert_eq("ignore live semantic: visible row is WORKTREE-owned", owner.kind, "wt")
+  local jump = mode:jump_target(semantic_row)
+  h.assert_eq("ignore live semantic: source coordinate is real line", jump.lnum, 3)
+  vim.wait(100, function()
+    return mode._intra_cache and mode._intra_cache["value here\0\0  VALUE here"] ~= nil
+  end, 5)
+  h.assert_true("ignore live semantic: intraline uses exact displayed strings",
+    mode._intra_cache and mode._intra_cache["value here\0\0  VALUE here"] ~= nil)
+
+  local original_win = api.nvim_get_current_win()
+  api.nvim_win_set_buf(original_win, mode.buf)
+  mode.win = original_win
+  local before_diffopt = api.nvim_get_option_value("diffopt", {})
+  local right_win, left_win = mode:diffsplit(semantic_row)
+  h.assert_eq("ignore diffsplit: target cursor uses real coordinate",
+    api.nvim_win_get_cursor(right_win)[1], 3)
+  h.assert_true("ignore diffsplit: presentation ignores all whitespace",
+    api.nvim_get_option_value("diffopt", {}):find("iwhiteall", 1, true) ~= nil)
+  api.nvim_win_close(left_win, true)
+  h.assert_eq("ignore diffsplit: transient diff option restored", api.nvim_get_option_value("diffopt", {}),
+    before_diffopt)
+  if api.nvim_win_is_valid(right_win) then api.nvim_win_close(right_win, true) end
+
+  live_repo.run({ "add", "-A" })
+  live_repo.run({ "commit", "-q", "-m", "semantic worktree edit" })
+  local new_head = live_repo.run({ "rev-parse", "HEAD" })
+  live_calls = {}
+  mode:poll()
+  h.assert_eq("ignore live commit: exact history cache rebuilt once",
+    live_count(function(a) return log_mode(a, false) end), 1)
+  h.assert_eq("ignore live commit: ignored history cache rebuilt once",
+    live_count(function(a) return log_mode(a, true) end), 1)
+  h.assert_eq("ignore live commit: exact cache keyed to new HEAD",
+    mode._commit_patch_cache.exact.head, new_head)
+  h.assert_eq("ignore live commit: ignored cache keyed to new HEAD",
+    mode._commit_patch_cache["ignore-all-space"].head, new_head)
+  local committed_row = row_with(mode, "+  VALUE here")
+  local committed_owner = mode:row_identity(mode.row_map[committed_row])
+  h.assert_eq("ignore live commit: visible row belongs to new commit", committed_owner.sha, new_head)
+end
+
 h.finish()

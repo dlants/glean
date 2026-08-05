@@ -47,6 +47,45 @@ local NS_CURSOR = api.nvim_create_namespace("glean_cursor_hl")
 local NS_CURSOR_INDENT = api.nvim_create_namespace("glean_cursor_indent")
 local NS_STICKY = api.nvim_create_namespace("glean_sticky_hl")
 
+-- `diffopt` is global in Neovim, even though `diff` itself is window-local.
+-- Keep the `iwhiteall` presentation flag alive only while a whitespace-ignored
+-- split pair exists, and reference-count overlapping pairs so closing one does
+-- not change another pair's comparison semantics.
+local diff_whitespace_views = { count = 0, inserted = false }
+
+local function diffopt_has(value, wanted)
+  for part in value:gmatch("[^,]+") do
+    if part == wanted then return true end
+  end
+  return false
+end
+
+local function acquire_diff_whitespace()
+  local current = api.nvim_get_option_value("diffopt", {})
+  if diff_whitespace_views.count == 0 then
+    diff_whitespace_views.inserted = not diffopt_has(current, "iwhiteall")
+    if diff_whitespace_views.inserted then
+      api.nvim_set_option_value("diffopt", current .. ",iwhiteall", {})
+    end
+  end
+  diff_whitespace_views.count = diff_whitespace_views.count + 1
+  local released = false
+  return function()
+    if released then return end
+    released = true
+    diff_whitespace_views.count = math.max(0, diff_whitespace_views.count - 1)
+    if diff_whitespace_views.count == 0 and diff_whitespace_views.inserted then
+      local value = api.nvim_get_option_value("diffopt", {})
+      local kept = {}
+      for part in value:gmatch("[^,]+") do
+        if part ~= "iwhiteall" then kept[#kept + 1] = part end
+      end
+      api.nvim_set_option_value("diffopt", table.concat(kept, ","), {})
+      diff_whitespace_views.inserted = false
+    end
+  end
+end
+
 
 M.config = {
   default_base = "main",
@@ -3300,6 +3339,21 @@ function Session:diffsplit(row)
   if ctx.pre_lnum then pcall(api.nvim_win_set_cursor, left_win, { ctx.pre_lnum, 0 }) end
   vim.cmd("diffthis")
   api.nvim_set_current_win(right_win)
+  if self.ignore_whitespace then
+    local release = acquire_diff_whitespace()
+    vim.cmd("diffupdate")
+    local group = api.nvim_create_augroup("glean_diff_whitespace_" .. left_win .. "_" .. right_win,
+      { clear = true })
+    api.nvim_create_autocmd("WinClosed", {
+      group = group,
+      callback = function(ev)
+        local closed = tonumber(ev.match)
+        if closed ~= left_win and closed ~= right_win then return end
+        release()
+        pcall(api.nvim_del_augroup_by_id, group)
+      end,
+    })
+  end
   return right_win, left_win
 end
 
