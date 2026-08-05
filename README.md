@@ -10,6 +10,7 @@ review store, so seen-marks and comments survive across sessions.
 ```vim
 :Glean                  " review current branch + dirty work tree
 :Glean log              " browse commits, then open one or a selected range
+:Glean prs              " browse currently open GitHub pull requests
 :Glean <base>           " review <base> + dirty work tree
 :Glean <base> <target>  " review <base>..<target> (no dirty work tree)
 :Glean <pr-number>      " fetch and review a GitHub pull request
@@ -40,6 +41,10 @@ list / `<C-^>`.
 Press `<CR>` on a commit to review it, or visually select a contiguous set of
 commits and press `<CR>` to review that range. The log and resulting reviews use
 the same persistent listed-buffer and window-reuse behavior as other Glean views.
+
+`:Glean prs` uses `gh pr list` to show currently open pull requests. Press `<CR>`
+to review the PR under the cursor. Use `]p` and `[p` to move between pages; PR
+selection is intentionally single-row only, with no visual-mode action.
 
 ## Two scopes
 

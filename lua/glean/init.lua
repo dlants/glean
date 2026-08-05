@@ -68,6 +68,8 @@ local sessions = {}
 local views = {}
 local log_buffers = {}
 local log_views = {}
+local pr_buffers = {}
+local pr_views = {}
 
 -- How often the live work-tree review polls the repo for changes (ms).
 -- Safety-net interval for the live work-tree review (ms). Refreshes are driven
@@ -1079,12 +1081,15 @@ function Session:build()
      section("commit:" .. commit.sha, function()
       local mark = self:commit_seen(commit) and "✓" or "●"
       local short = commit.sha:sub(1, 8)
-      emit(("%s %s %s"):format(mark, short, commit.summary),
-        { commit = ci }, "GleanCommitHeader")
-      local paths = {}
-      for fi, f in ipairs(commit.files) do paths[fi] = f.path end
-      local skip
-      for _, node in ipairs(dir_layout(paths)) do
+      local target = { commit = ci }
+      local chevron = commit.collapsed and CHEVRON_CLOSED or CHEVRON_OPEN
+      emit(("%s %s %s %s%s"):format(chevron, mark, short, commit.summary,
+        commit.collapsed and summary(target) or ""), target, "GleanCommitHeader")
+      if not commit.collapsed then
+        local paths = {}
+        for fi, f in ipairs(commit.files) do paths[fi] = f.path end
+        local skip
+        for _, node in ipairs(dir_layout(paths)) do
         if skip and node.depth <= skip then skip = nil end
         if not skip then
           local indent = ("  "):rep(node.depth)
@@ -1114,6 +1119,7 @@ function Session:build()
                 seen_key(commit.sha, file.path), self:resolve_comments(file))
             end
           end
+        end
         end
       end
      end)
@@ -1896,7 +1902,8 @@ end
 -- only unseen work is expanded. Overrides persist across reloads/reopens.
 function Session:apply_collapse()
   for _, commit in ipairs(self.commits) do
-    commit.collapsed = false
+    local cov = self.collapse[commit_key(commit.sha)]
+    commit.collapsed = cov ~= nil and cov or self:commit_seen(commit)
     for _, file in ipairs(commit.files) do
       local fov = self.collapse[file_key(commit.sha, file.path)]
       file.collapsed = fov ~= nil and fov or self:file_seen(commit, file)
@@ -2057,6 +2064,8 @@ function Session:collapse_action(target)
     elseif target.file then
       local file = commit.files[target.file]
       key, obj, field = file_key(commit.sha, file.path), file, "collapsed"
+    elseif target.commit then
+      key, obj, field = commit_key(commit.sha), commit, "collapsed"
     end
   else
     if target.seen then
@@ -2750,6 +2759,7 @@ function Session:expand_path(path)
     for _, commit in ipairs(self.commits) do
       for _, file in ipairs(commit.files) do
         if file.path == path then
+          self.collapse[commit_key(commit.sha)] = false
           self.collapse[file_key(commit.sha, path)] = false
           self.collapse[seen_key(commit.sha, path)] = false
         end
@@ -3489,6 +3499,145 @@ function M.open_log(opts)
   return view
 end
 
+local PrView = {}
+PrView.__index = PrView
+
+function PrView:page_count()
+  return math.max(1, math.ceil(#self.prs / self.page_size))
+end
+
+function PrView:render()
+  self.page = math.max(1, math.min(self.page, self:page_count()))
+  local repo = vim.fn.fnamemodify(self.git.repo_root, ":t")
+  local lines = { ("Glean prs — %s — page %d/%d"):format(repo, self.page, self:page_count()) }
+  local row_map = { [0] = false }
+  local first = (self.page - 1) * self.page_size + 1
+  local last = math.min(#self.prs, first + self.page_size - 1)
+  for i = first, last do
+    local pr = self.prs[i]
+    local draft = pr.isDraft and " [draft]" or ""
+    local author = pr.author and pr.author.login or "unknown"
+    lines[#lines + 1] = ("#%d  %s  %s ← %s  %s%s"):format(
+      pr.number, author, pr.baseRefName, pr.headRefName, pr.title, draft)
+    row_map[#lines - 1] = i
+  end
+  if #self.prs == 0 then lines[#lines + 1] = "No open pull requests" end
+  api.nvim_set_option_value("modifiable", true, { buf = self.buf })
+  api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
+  api.nvim_buf_clear_namespace(self.buf, NS, 0, -1)
+  api.nvim_buf_set_extmark(self.buf, NS, 0, 0, {
+    end_row = 1, hl_group = "GleanModeHeader", hl_eol = true,
+  })
+  for row = 1, last - first + 1 do
+    local pr = self.prs[row_map[row]]
+    api.nvim_buf_set_extmark(self.buf, NS, row, 0, {
+      end_col = #tostring(pr.number) + 1, hl_group = "GleanCommitHeader",
+    })
+  end
+  api.nvim_set_option_value("modifiable", false, { buf = self.buf })
+  self.row_map = row_map
+end
+
+function PrView:set_page(page)
+  local next_page = math.max(1, math.min(page, self:page_count()))
+  if next_page == self.page then return end
+  self.page = next_page
+  self:render()
+  if self.win and api.nvim_win_is_valid(self.win) then
+    pcall(api.nvim_win_set_cursor, self.win, { math.min(2, api.nvim_buf_line_count(self.buf)), 0 })
+  end
+end
+
+function PrView:open_selected(row)
+  local index = self.row_map[row]
+  if not index then return end
+  local ok, result = pcall(M.open_pr, {
+    pr = self.prs[index].number,
+    repo_root = self.git.repo_root,
+    run = self.run,
+    gh_run = self.gh_run,
+    state_dir = self.state_dir,
+    open_window = self.open_window,
+  })
+  if ok then return result end
+  local message = tostring(result)
+  message = message:match("(glean: .*)") or message
+  vim.notify(message, vim.log.levels.ERROR)
+end
+
+local function setup_pr_keymaps(buf, view)
+  local function map(lhs, fn)
+    vim.keymap.set("n", lhs, fn, { buffer = buf, nowait = true, silent = true })
+  end
+  map("<CR>", function()
+    view:open_selected(api.nvim_win_get_cursor(0)[1] - 1)
+  end)
+  map("]p", function() view:set_page(view.page + 1) end)
+  map("[p", function() view:set_page(view.page - 1) end)
+  map("q", function()
+    local win = api.nvim_get_current_win()
+    if api.nvim_win_get_buf(win) == buf then api.nvim_win_close(win, true) end
+  end)
+end
+
+function M.open_prs(opts)
+  opts = opts or {}
+  local repo_root = opts.repo_root or resolve_repo_root(api.nvim_buf_get_name(0))
+  assert(repo_root, "glean: could not find a git repo root")
+  local git = git_mod.new({ repo_root = repo_root, run = opts.run })
+  local gh_run = opts.gh_run or function(args)
+    return vim.system(args, { cwd = repo_root, text = true }):wait()
+  end
+  local res = gh_run({
+    "gh", "pr", "list", "--state", "open", "--limit", tostring(opts.limit or 1000),
+    "--json", "number,title,author,headRefName,baseRefName,isDraft",
+  })
+  if res.code ~= 0 then error("glean: `gh pr list` failed: " .. (res.stderr or "")) end
+  local ok, prs = pcall(vim.json.decode, res.stdout)
+  if not ok or type(prs) ~= "table" then error("glean: invalid `gh pr list` response") end
+
+  local buf = pr_buffers[repo_root]
+  if not (buf and api.nvim_buf_is_valid(buf)) then
+    buf = api.nvim_create_buf(true, false)
+    api.nvim_set_option_value("buftype", "nofile", { buf = buf })
+    api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
+    api.nvim_set_option_value("swapfile", false, { buf = buf })
+    api.nvim_set_option_value("filetype", "glean", { buf = buf })
+    pr_buffers[repo_root] = buf
+    api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
+      buffer = buf,
+      callback = function()
+        pr_buffers[repo_root] = nil
+        pr_views[repo_root] = nil
+      end,
+    })
+  end
+  api.nvim_set_option_value("buflisted", true, { buf = buf })
+  local repo = vim.fn.fnamemodify(repo_root, ":t")
+  pcall(api.nvim_buf_set_name, buf, "Glean:" .. repo .. " prs")
+
+  local previous = pr_views[repo_root]
+  local view = setmetatable({
+    git = git,
+    run = opts.run,
+    gh_run = gh_run,
+    state_dir = opts.state_dir,
+    open_window = opts.open_window,
+    prs = prs,
+    page_size = opts.page_size or 50,
+    page = previous and previous.page or 1,
+    buf = buf,
+    row_map = {},
+  }, PrView)
+  pr_views[repo_root] = view
+  view:render()
+  if opts.open_window ~= false then
+    view.win = show_buffer_in_window(buf)
+    setup_pr_keymaps(buf, view)
+  end
+  return view
+end
+
 -- Open a review of `base...target`. `opts`:
 --   - base, target (required): refs to diff.
 --   - repo_root, run (optional): injected for tests.
@@ -3818,6 +3967,10 @@ function M.setup(opts)
     local args = o.fargs
     if args[1] == "log" then
       M.open_log()
+      return
+    end
+    if args[1] == "prs" then
+      M.open_prs()
       return
     end
     if args[1] == "pr" then

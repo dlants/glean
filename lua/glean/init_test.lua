@@ -134,8 +134,8 @@ do
   h.assert_true("commits: has a body line row", lrow ~= nil)
 end
 
--- toggle_seen on a commit header marks all of its hunks seen, persists, and on
--- reopen the commit shows ✓ (commits never collapse; their files stay visible).
+-- A commit header toggles every changed line seen/unseen. Fully seen commits
+-- default to collapsed on reopen and can be expanded independently.
 do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
@@ -147,6 +147,13 @@ do
   -- the store now records c1's f.txt new range (the TWO line at new_lnum 2).
   h.assert_true("toggle: c1 seen covers lnum 2",
     require("glean.state").covers(s.store:seen_ranges(repo.shas[2], "f.txt"), 2))
+  local marked = find_row(s, function(_, _, t)
+    return t and t.commit == 1 and not t.file
+  end)
+  s:toggle_seen(marked)
+  h.assert_true("toggle: c1 can be made unseen again",
+    not require("glean.state").covers(s.store:seen_ranges(repo.shas[2], "f.txt"), 2))
+  s:toggle_seen(marked)
 
   -- reopen: persisted seen restored, commit collapsed via init_collapse.
   local s2 = open({ scope = "commits", state_dir = dir })
@@ -154,9 +161,23 @@ do
     return t and t.commit == 1 and not t.file
   end)
   h.assert_true("reopen: c1 header has check", cline2:find("✓", 1, true) ~= nil)
-  -- commits never collapse: the file paths within the commit stay visible.
+  h.assert_true("reopen: fully seen commit has closed chevron",
+    cline2:find("▶", 1, true) ~= nil)
   local c1file = find_row(s2, function(_, _, t) return t and t.commit == 1 and t.file end)
-  h.assert_true("reopen: c1 body still visible", c1file ~= nil)
+  h.assert_true("reopen: collapsed commit hides its files", c1file == nil)
+  s2:toggle_collapse(crow2)
+  local expanded = find_row(s2, function(_, _, t) return t and t.commit == 1 and t.file end)
+  h.assert_true("collapse: commit expands to show its files", expanded ~= nil)
+  local expanded_row = find_row(s2, function(_, _, t)
+    return t and t.commit == 1 and not t.file
+  end)
+  s2:toggle_collapse(expanded_row)
+  local hidden = find_row(s2, function(_, _, t) return t and t.commit == 1 and t.file end)
+  h.assert_true("collapse: commit collapses to hide its files", hidden == nil)
+  local collapsed_row = find_row(s2, function(_, _, t)
+    return t and t.commit == 1 and not t.file
+  end)
+  s2:toggle_collapse(collapsed_row)
 end
 
 -- Comments: multiple comments on distinct lines and several on one line all
@@ -362,7 +383,8 @@ do
     return t and t.commit == 1 and t.line and line == "+TWO"
   end)
   s:add_comment_at(twrow, "nav note")
-  -- Collapse every f.txt copy so the comment is only present in the summary.
+  -- Collapse every f.txt copy and its commits so the comment is only present in
+  -- the summary. Navigation must reopen the full enclosing hierarchy.
   while true do
     local fhrow = find_row(s, function(_, _, t)
       return t and t.file and not t.hunk and not t.line
@@ -371,6 +393,13 @@ do
     end)
     if not fhrow then break end
     s:toggle_collapse(fhrow)
+  end
+  while true do
+    local commit_row = find_row(s, function(_, _, t)
+      return t and t.commit and not t.file and not s.commits[t.commit].collapsed
+    end)
+    if not commit_row then break end
+    s:toggle_collapse(commit_row)
   end
   h.assert_true("summary-nav: comment hidden when collapsed",
     find_row(s, function(_, _, t)
@@ -1828,7 +1857,6 @@ do
 end
 
 -- Content-addressed collapse overrides survive both a reopen and a live reload.
--- (file-level: commits themselves never collapse in commit scope.)
 do
   local dir = vim.fn.tempname()
   local sha = repo.shas[2]
@@ -1915,6 +1943,62 @@ do
     state_dir = dir,
   })
   h.assert_eq("log view: buffer reused", reopened.buf, view.buf)
+end
+
+-- PR entry view lists open pull requests through gh, pages locally, and opens
+-- exactly the single PR under the cursor.
+do
+  local gh_args
+  local prs = {}
+  for i = 1, 5 do
+    prs[i] = {
+      number = 100 + i,
+      title = "PR title " .. i,
+      author = { login = "author" .. i },
+      baseRefName = "main",
+      headRefName = "feature-" .. i,
+      isDraft = i == 2,
+    }
+  end
+  local function gh_run(args)
+    gh_args = args
+    return { code = 0, stdout = vim.json.encode(prs) }
+  end
+  local view = glean.open_prs({
+    repo_root = repo.root,
+    run = inject_run,
+    gh_run = gh_run,
+    open_window = false,
+    state_dir = vim.fn.tempname(),
+    page_size = 2,
+  })
+  h.assert_eq("prs view: gh command", table.concat(gh_args, " "),
+    "gh pr list --state open --limit 1000 --json number,title,author,headRefName,baseRefName,isDraft")
+  h.assert_eq("prs view: page count", view:page_count(), 3)
+  local lines = api.nvim_buf_get_lines(view.buf, 0, -1, false)
+  h.assert_true("prs view: first page header", lines[1]:find("page 1/3", 1, true) ~= nil)
+  h.assert_true("prs view: first PR", lines[2]:find("#101", 1, true) ~= nil)
+  h.assert_true("prs view: draft badge", lines[3]:find("[draft]", 1, true) ~= nil)
+  h.assert_eq("prs view: row maps to global PR index", view.row_map[1], 1)
+
+  view:set_page(2)
+  lines = api.nvim_buf_get_lines(view.buf, 0, -1, false)
+  h.assert_true("prs view: second page header", lines[1]:find("page 2/3", 1, true) ~= nil)
+  h.assert_true("prs view: second page starts at PR 3", lines[2]:find("#103", 1, true) ~= nil)
+  h.assert_eq("prs view: paged row maps globally", view.row_map[1], 3)
+
+  local old_open_pr = glean.open_pr
+  local selected
+  glean.open_pr = function(opts) selected = opts; return opts end
+  local opened = view:open_selected(1)
+  glean.open_pr = old_open_pr
+  h.assert_eq("prs open: selected one PR", selected.pr, 103)
+  h.assert_eq("prs open: returns opened review", opened, selected)
+
+  view:set_page(99)
+  h.assert_eq("prs view: page clamps at end", view.page, 3)
+  view:set_page(0)
+  h.assert_eq("prs view: page clamps at start", view.page, 1)
 end
 
 -- Multi-hunk navigation: a file with three well-separated hunks (the third very
@@ -3080,16 +3164,19 @@ do
   h.assert_true("stage5: combined shows the merged line as seen",
     joined:find(" seen (", 1, true) ~= nil)
 end
--- Command dispatch: `:Glean log` enters the log view instead of treating
--- "log" as a dirty-review base.
+-- Command dispatch enters the list views instead of treating their names as
+-- dirty-review bases.
 do
-  local old_open_log = glean.open_log
-  local called = false
-  glean.open_log = function() called = true end
+  local old_open_log, old_open_prs = glean.open_log, glean.open_prs
+  local log_called, prs_called = false, false
+  glean.open_log = function() log_called = true end
+  glean.open_prs = function() prs_called = true end
   glean.setup()
   vim.cmd("Glean log")
-  glean.open_log = old_open_log
-  h.assert_true("command: Glean log dispatches to log view", called)
+  vim.cmd("Glean prs")
+  glean.open_log, glean.open_prs = old_open_log, old_open_prs
+  h.assert_true("command: Glean log dispatches to log view", log_called)
+  h.assert_true("command: Glean prs dispatches to PR view", prs_called)
 end
 
 h.finish()
