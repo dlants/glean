@@ -65,6 +65,9 @@ one of its changed lines is seen; files and commits roll up the same way. Seen
 units render in a collapsible per-file "seen" section, and a contiguous seen run
 inside an otherwise-unseen hunk collapses into a `✓ marked N lines` marker row.
 
+The top row reports the remaining unreviewed files, hunks, additions, and
+deletions. It stays pinned in the floating header while scrolling.
+
 Collapse state is ephemeral view-state (initialized from seen status, then
 evolves independently and is never persisted).
 

@@ -58,6 +58,23 @@ do
   h.assert_true("render: shows hunk header", joined:find("@@", 1, true) ~= nil)
 end
 
+-- The top row summarizes remaining review work and updates as lines are marked.
+do
+  local s = open({ state_dir = vim.fn.tempname() })
+  local top = api.nvim_buf_get_lines(s.buf, 0, 1, false)[1]
+  h.assert_eq("progress: initial counts", top,
+    "── combined ──  unreviewed: 2 files / 2 hunks / 3 added lines / 2 deleted lines")
+  local frow
+  for row, t in pairs(s.row_map) do
+    local line = api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
+    if t.cfile and not t.hunk and line:find("f.txt", 1, true) then frow = row break end
+  end
+  s:toggle_seen(frow)
+  top = api.nvim_buf_get_lines(s.buf, 0, 1, false)[1]
+  h.assert_eq("progress: updates after marking a file", top,
+    "── combined ──  unreviewed: 1 file / 1 hunk / 1 added line / 0 deleted lines")
+end
+
 -- row_map: every rendered row resolves, headers carry file, body carries line.
 do
   local s = open()
@@ -2458,12 +2475,12 @@ do
       vim.inspect(exp))
   end
   chk("pin: top-of-buffer mode header has no float", 0, {})
-  chk("pin: on commit header, nothing above it", 1, {})
-  chk("pin: on file header, commit pins above", 2, { 1 })
-  chk("pin: line under bare unseen hunk pins commit+file+hunk", 4, { 1, 2, 3 })
-  chk("pin: just below seen hunk header pins full chain", 7, { 1, 2, 5, 6 })
-  chk("pin: on a header row excludes itself (still visible)", 6, { 1, 2, 5 })
-  chk("pin: marker row pins through its hunk", 8, { 1, 2, 5, 6 })
+  chk("pin: on commit header, summary pins above", 1, { 0 })
+  chk("pin: on file header, summary+commit pin above", 2, { 0, 1 })
+  chk("pin: line under bare unseen hunk pins full chain", 4, { 0, 1, 2, 3 })
+  chk("pin: just below seen hunk header pins full chain", 7, { 0, 1, 2, 5, 6 })
+  chk("pin: on a header row excludes itself (still visible)", 6, { 0, 1, 2, 5 })
+  chk("pin: marker row pins through its hunk", 8, { 0, 1, 2, 5, 6 })
   chk("pin: w0 past end of buffer has no float", 99, {})
 
   -- combined scope: at most 3 pinned rows (no commit header).
@@ -2474,8 +2491,8 @@ do
     [3] = { cfile = 1, hunk = 1, line = 1 },
   }
   local canc = glean.compute_ancestry(cm, 4)
-  h.assert_eq("pin/combined: line under hunk pins file+hunk, no commit",
-    vim.inspect(glean.compute_pinned(canc, 3)), vim.inspect({ 1, 2 }))
+  h.assert_eq("pin/combined: line pins summary+file+hunk, no commit",
+    vim.inspect(glean.compute_pinned(canc, 3)), vim.inspect({ 0, 1, 2 }))
 end
 
 -- Stage 3 — sticky header float: scrolling past a tall hunk's headers pins the
@@ -2536,7 +2553,7 @@ do
   h.assert_true("sticky: float shown mid-hunk",
     s._sticky_win and api.nvim_win_is_valid(s._sticky_win))
   local pinned = glean.compute_pinned(s.ancestry, body_row)
-  h.assert_true("sticky: full chain pinned (commit/file/hunk)", #pinned == 3)
+  h.assert_true("sticky: summary plus full chain pinned", #pinned == 4)
   local fl = api.nvim_buf_get_lines(s._sticky_buf, 0, -1, false)
   h.assert_eq("sticky: one float line per pinned header", #fl, #pinned)
   for i, row in ipairs(pinned) do
@@ -2700,7 +2717,7 @@ do
   s.store:mark_seen(drepo.shas[2], "a.txt", { 1, 1 })
   s:render()
   h.assert_true("dirty: marked commit dirty", s._dirty[key_a] == true)
-  h.assert_true("dirty: header clean", not s._dirty["header"])
+  h.assert_true("dirty: progress header dirty", s._dirty["header"] == true)
   h.assert_true("dirty: other commit clean", not s._dirty[key_b])
 end
 

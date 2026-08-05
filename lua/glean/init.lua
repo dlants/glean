@@ -598,6 +598,46 @@ function Session:hunk_seen(hunk, path, owner, base_ord)
   return self:ids_all_seen(ids)
 end
 
+-- Overall unreviewed work in the current scope. Lines count individually, while
+-- a hunk/file remains unreviewed until all of its changed lines are seen.
+function Session:progress_counts()
+  local counts = { files = 0, hunks = 0, adds = 0, dels = 0 }
+  local function count_file(file, owner)
+    local file_unseen = false
+    local bases = hunk_base_ords(file)
+    for _, hunk in ipairs(file.hunks) do
+      local hunk_unseen = false
+      for i, dl in ipairs(hunk.lines) do
+        if dl.kind == "add" or dl.kind == "del" then
+          local id = self:line_identity(dl, file.path, owner, bases[hunk] + i)
+          if not id or not self:id_seen(id) then
+            hunk_unseen = true
+            local key = dl.kind == "add" and "adds" or "dels"
+            counts[key] = counts[key] + 1
+          end
+        end
+      end
+      if hunk_unseen then
+        file_unseen = true
+        counts.hunks = counts.hunks + 1
+      end
+    end
+    if file_unseen then counts.files = counts.files + 1 end
+  end
+  if self.scope == "commits" then
+    for _, commit in ipairs(self.commits) do
+      local owner = self:commit_owner(commit)
+      for _, file in ipairs(commit.files) do count_file(file, owner) end
+    end
+  else
+    self.combined_files = self.combined_files or self:compute_combined()
+    for _, file in ipairs(self.combined_files) do
+      count_file(file, self:combined_owner(file.path))
+    end
+  end
+  return counts
+end
+
 -- Is a file fully seen? (every hunk's changed lines seen)
 function Session:file_seen(commit, file)
   local owner = self:commit_owner(commit)
@@ -847,10 +887,9 @@ function M.compute_ancestry(row_map, n)
   return ancestry
 end
 
--- Pinned-set selection (pure): given an ancestry table and the top visible row
--- w0, return the ordered list of header rows to pin, [commit, file, sec, hunk],
--- filtered to rows strictly above w0 (a still-visible header isn't duplicated).
--- An empty list means no float should be shown.
+-- Pinned-set selection (pure): once the top summary row scrolls away it is
+-- always pinned, followed by the enclosing [commit, file, sec, hunk] headers
+-- strictly above w0. An empty list means no float should be shown.
 -- The float text for a pinned row (pure). A file header renders its basename
 -- indented under directory rows, but the float has no enclosing directory rows
 -- for context, so it shows the full path flush left instead.
@@ -876,6 +915,7 @@ function M.compute_pinned(ancestry, w0)
   if not a then
     return pinned
   end
+  if w0 > 0 then pinned[#pinned + 1] = 0 end
   for _, row in ipairs({ a.commit_row or false, a.file_row or false,
     a.sec_row or false, a.hunk_row or false }) do
     if row and row < w0 then
@@ -1073,8 +1113,17 @@ function Session:build()
     return ("  (%d seen / %d unseen)"):format(seen, total - seen)
   end
   local mode_label = self.scope == "combined" and "combined" or "commit-by-commit"
+  local progress = self:progress_counts()
+  local function count_label(n, singular, plural)
+    return ("%d %s"):format(n, n == 1 and singular or plural)
+  end
   section("header", function()
-    emit("── " .. mode_label .. " ──", {}, "GleanModeHeader")
+    emit(("── %s ──  unreviewed: %s / %s / %s / %s"):format(mode_label,
+      count_label(progress.files, "file", "files"),
+      count_label(progress.hunks, "hunk", "hunks"),
+      count_label(progress.adds, "added line", "added lines"),
+      count_label(progress.dels, "deleted line", "deleted lines")),
+      {}, "GleanModeHeader")
   end)
   if self.scope == "commits" then
     for ci, commit in ipairs(self.commits) do
