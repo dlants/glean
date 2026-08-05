@@ -191,6 +191,14 @@ function Git:default_trunk()
   return out
 end
 
+-- Diff-producing APIs take a boolean whitespace mode. Keep option assembly in
+-- one place so exact calls remain unchanged and optional flags always precede
+-- refs and pathspec separators.
+local function append_diff_options(args, ignore_whitespace)
+  if ignore_whitespace then args[#args + 1] = "--ignore-all-space" end
+  return args
+end
+
 -- The first-parent commits of `base..target`, oldest first, each with its own
 -- patch against its first parent. One `git log -p` process answers three
 -- questions at once: the commit list, every commit's diff, and the input to
@@ -205,17 +213,19 @@ local LOG_PATCH_ARGS = {
   "--format=%x00%H%x09%s",
 }
 
-local function log_patch_root_args(target)
+local function log_patch_root_args(target, ignore_whitespace)
   local args = {}
   for _, a in ipairs(LOG_PATCH_ARGS) do args[#args + 1] = a end
+  append_diff_options(args, ignore_whitespace)
   args[#args + 1] = "--root"
   args[#args + 1] = target
   return args
 end
 
-local function log_patch_args(base, target)
+local function log_patch_args(base, target, ignore_whitespace)
   local args = {}
   for _, a in ipairs(LOG_PATCH_ARGS) do args[#args + 1] = a end
+  append_diff_options(args, ignore_whitespace)
   args[#args + 1] = base .. ".." .. target
   return args
 end
@@ -231,23 +241,29 @@ local function parse_log_patches(out)
   return patches
 end
 
-function Git:log_patches(base, target)
-  local out, err = self:run(log_patch_args(base, target))
+function Git:log_patches(base, target, ignore_whitespace)
+  local out, err = self:run(log_patch_args(base, target, ignore_whitespace))
   if not out then return nil, err end
   return parse_log_patches(out)
 end
 
 -- Async counterpart to `log_patches`: `cb(patches_or_nil, err)`.
-function Git:log_patches_async(base, target, cb)
-  self:run_async(log_patch_args(base, target), function(out, err)
+function Git:log_patches_async(base, target, ignore_whitespace, cb)
+  if type(ignore_whitespace) == "function" then
+    cb, ignore_whitespace = ignore_whitespace, false
+  end
+  self:run_async(log_patch_args(base, target, ignore_whitespace), function(out, err)
     if not out then return cb(nil, err) end
     cb(parse_log_patches(out))
   end)
 end
 
 -- First-parent patches from the root commit through `target`, oldest first.
-function Git:log_patches_from_root_async(target, cb)
-  self:run_async(log_patch_root_args(target), function(out, err)
+function Git:log_patches_from_root_async(target, ignore_whitespace, cb)
+  if type(ignore_whitespace) == "function" then
+    cb, ignore_whitespace = ignore_whitespace, false
+  end
+  self:run_async(log_patch_root_args(target, ignore_whitespace), function(out, err)
     if not out then return cb(nil, err) end
     cb(parse_log_patches(out))
   end)
@@ -268,8 +284,9 @@ end
 -- Parsed diff of the working tree against HEAD (`git diff HEAD`: staged +
 -- unstaged tracked changes). This is the floating commit's tracked-file content.
 -- Returns a list of FileEntries.
-function Git:worktree_diff(path)
-  local args = { "diff", "--no-color", "HEAD" }
+function Git:worktree_diff(path, ignore_whitespace)
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = "HEAD"
   if path then args[#args + 1] = "--"; args[#args + 1] = path end
   local out, err = self:run(args)
   if not out then return nil, err end
@@ -280,8 +297,9 @@ end
 -- everything that changed since `base`, committed and uncommitted. Used as the
 -- combined-scope net diff when the review target is the work tree. Returns a
 -- list of FileEntries.
-function Git:diff_to_worktree(base, path)
-  local args = { "diff", "--no-color", base }
+function Git:diff_to_worktree(base, path, ignore_whitespace)
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = base
   if path then args[#args + 1] = "--"; args[#args + 1] = path end
   local out, err = self:run(args)
   if not out then return nil, err end
@@ -298,20 +316,41 @@ local function parse_cb(cb)
   end
 end
 
-function Git:worktree_diff_async(cb)
-  self:run_async({ "diff", "--no-color", "HEAD" }, parse_cb(cb))
+function Git:worktree_diff_async(ignore_whitespace, cb)
+  if type(ignore_whitespace) == "function" then
+    cb, ignore_whitespace = ignore_whitespace, false
+  end
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = "HEAD"
+  self:run_async(args, parse_cb(cb))
 end
 
-function Git:diff_to_worktree_async(base, cb)
-  self:run_async({ "diff", "--no-color", base }, parse_cb(cb))
+function Git:diff_to_worktree_async(base, ignore_whitespace, cb)
+  if type(ignore_whitespace) == "function" then
+    cb, ignore_whitespace = ignore_whitespace, false
+  end
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = base
+  self:run_async(args, parse_cb(cb))
 end
 
-function Git:diff_async(base, target, cb)
-  self:run_async({ "diff", "--no-color", base, target }, parse_cb(cb))
+function Git:diff_async(base, target, ignore_whitespace, cb)
+  if type(ignore_whitespace) == "function" then
+    cb, ignore_whitespace = ignore_whitespace, false
+  end
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = base
+  args[#args + 1] = target
+  self:run_async(args, parse_cb(cb))
 end
 
-function Git:combined_diff_async(base, target, cb)
-  self:run_async({ "diff", "--no-color", base .. "..." .. target }, parse_cb(cb))
+function Git:combined_diff_async(base, target, ignore_whitespace, cb)
+  if type(ignore_whitespace) == "function" then
+    cb, ignore_whitespace = ignore_whitespace, false
+  end
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = base .. "..." .. target
+  self:run_async(args, parse_cb(cb))
 end
 
 -- Resolve the merge base (fork point) of two refs (`git merge-base a b`).
@@ -385,8 +424,9 @@ end
 -- Parsed net diff `base...target` (three-dot: changes on target since it
 -- diverged from base — "what's in the branch that isn't in main"). Returns a
 -- list of FileEntries.
-function Git:combined_diff(base, target, path)
-  local args = { "diff", "--no-color", base .. "..." .. target }
+function Git:combined_diff(base, target, path, ignore_whitespace)
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = base .. "..." .. target
   if path then args[#args + 1] = "--"; args[#args + 1] = path end
   local out, err = self:run(args)
   if not out then return nil, err end
@@ -395,8 +435,9 @@ end
 
 -- Parsed diff over an arbitrary range `from..to` for a single path. Used for
 -- the tighter `Xe^..TARGET` follow-up re-diff in later stages.
-function Git:range_diff(from, to, path)
-  local args = { "diff", "--no-color", from .. ".." .. to }
+function Git:range_diff(from, to, path, ignore_whitespace)
+  local args = append_diff_options({ "diff", "--no-color" }, ignore_whitespace)
+  args[#args + 1] = from .. ".." .. to
   if path then args[#args + 1] = "--"; args[#args + 1] = path end
   local out, err = self:run(args)
   if not out then return nil, err end

@@ -322,4 +322,151 @@ do
   h.assert_eq("empty: no files", #tail.files, 0)
 end
 
+-- Every diff-producing API uses the same boolean option normalization. The
+-- ignored flag precedes refs and pathspecs, while omitted options retain the
+-- exact argument vectors used before whitespace mode existed. Async methods
+-- accept the new boolean before their callback and retain their old callback-
+-- only form.
+do
+  local calls = {}
+  local recording_git = git_mod.new({
+    repo_root = repo.root,
+    run = function(args)
+      calls[#calls + 1] = table.concat(args, "|")
+      return { code = 0, stdout = "", stderr = "" }
+    end,
+  })
+  local function noop() end
+
+  recording_git:log_patches("base", "target")
+  h.assert_eq("diff opts: exact log args unchanged", calls[#calls],
+    "log|--first-parent|--reverse|-p|-U0|-M|--no-color|--format=%x00%H%x09%s|base..target")
+  recording_git:log_patches("base", "target", true)
+  h.assert_eq("diff opts: log flag before range", calls[#calls],
+    "log|--first-parent|--reverse|-p|-U0|-M|--no-color|--format=%x00%H%x09%s|--ignore-all-space|base..target")
+  recording_git:log_patches_async("base", "target", true, noop)
+  h.assert_eq("diff opts: async log flag before range", calls[#calls],
+    "log|--first-parent|--reverse|-p|-U0|-M|--no-color|--format=%x00%H%x09%s|--ignore-all-space|base..target")
+  recording_git:log_patches_from_root_async("target", true, noop)
+  h.assert_eq("diff opts: root log flag before root and target", calls[#calls],
+    "log|--first-parent|--reverse|-p|-U0|-M|--no-color|--format=%x00%H%x09%s|--ignore-all-space|--root|target")
+
+  recording_git:worktree_diff("f.txt", true)
+  h.assert_eq("diff opts: worktree sync ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|HEAD|--|f.txt")
+  recording_git:worktree_diff_async(true, noop)
+  h.assert_eq("diff opts: worktree async ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|HEAD")
+  recording_git:diff_to_worktree("base", "f.txt", true)
+  h.assert_eq("diff opts: to-worktree sync ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|base|--|f.txt")
+  recording_git:diff_to_worktree_async("base", true, noop)
+  h.assert_eq("diff opts: to-worktree async ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|base")
+  recording_git:diff_async("base", "target", true, noop)
+  h.assert_eq("diff opts: two-ref async ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|base|target")
+  recording_git:combined_diff("base", "target", "f.txt", true)
+  h.assert_eq("diff opts: combined sync ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|base...target|--|f.txt")
+  recording_git:combined_diff_async("base", "target", true, noop)
+  h.assert_eq("diff opts: combined async ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|base...target")
+  recording_git:range_diff("base", "target", "f.txt", true)
+  h.assert_eq("diff opts: range ordering", calls[#calls],
+    "diff|--no-color|--ignore-all-space|base..target|--|f.txt")
+
+  recording_git:worktree_diff_async(noop)
+  h.assert_eq("diff opts: old async call remains exact", calls[#calls],
+    "diff|--no-color|HEAD")
+end
+
+-- Git's --ignore-all-space semantics hide indentation, internal-spacing, and
+-- blank-line whitespace edits while retaining exact text and coordinates for a
+-- semantic edit. Exercise sync, async, history, root-history, worktree, and
+-- untracked paths against a real repository.
+do
+  local wrepo = testutil.make_repo({
+    { msg = "whitespace base", files = {
+      ["ws.txt"] = "plain\n  indented\ninternal space\n\nsemantic old\n",
+    } },
+    { msg = "whitespace and semantic", files = {
+      ["ws.txt"] = "plain\n    indented\ninternal     space\n   \nsemantic new\n",
+    } },
+  })
+  local wgit = git_mod.new({
+    repo_root = wrepo.root,
+    run = function(args)
+      local cmd = { "git" }
+      for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+      local res = vim.system(cmd, { cwd = wrepo.root, env = wrepo.env, text = true }):wait()
+      return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+    end,
+  })
+  local wbase, wtarget = wrepo.shas[1], wrepo.shas[2]
+  local function changed(files)
+    local lines = {}
+    for _, file in ipairs(files or {}) do
+      for _, hunk in ipairs(file.hunks) do
+        for _, line in ipairs(hunk.lines) do
+          if line.kind ~= "context" then
+            lines[#lines + 1] = table.concat({
+              file.path, line.kind, line.old_lnum or "", line.new_lnum or "", line.text,
+            }, "|")
+          end
+        end
+      end
+    end
+    return lines
+  end
+
+  local exact = changed(wgit:combined_diff(wbase, wtarget))
+  h.assert_true("ignore semantics: exact patch includes whitespace edits", #exact > 2)
+  local ignored_files = wgit:combined_diff(wbase, wtarget, nil, true)
+  local ignored = changed(ignored_files)
+  h.assert_eq("ignore semantics: only semantic pair remains", table.concat(ignored, "\n"),
+    "ws.txt|del|5||semantic old\nws.txt|add||5|semantic new")
+
+  local async_files
+  wgit:combined_diff_async(wbase, wtarget, true, function(files) async_files = files end)
+  h.assert_eq("ignore semantics: sync and async models match",
+    vim.inspect(async_files), vim.inspect(ignored_files))
+
+  local exact_patches = wgit:log_patches(wbase, wtarget)
+  local ignored_patches = wgit:log_patches(wbase, wtarget, true)
+  h.assert_true("ignore semantics: exact history remains exact",
+    #changed(exact_patches[1].files) > 2)
+  h.assert_eq("ignore semantics: ignored history keeps semantic pair",
+    table.concat(changed(ignored_patches[1].files), "\n"), table.concat(ignored, "\n"))
+
+  local root_patches
+  wgit:log_patches_from_root_async(wtarget, true, function(patches) root_patches = patches end)
+  h.assert_eq("ignore semantics: root history count", #root_patches, 2)
+  h.assert_eq("ignore semantics: root history honors flag",
+    table.concat(changed(root_patches[2].files), "\n"), table.concat(ignored, "\n"))
+
+  local f = assert(io.open(wrepo.root .. "/ws.txt", "w"))
+  f:write("plain\n\tindented\ninternal space\n\nsemantic worktree\n")
+  f:close()
+  local u = assert(io.open(wrepo.root .. "/untracked.txt", "w"))
+  u:write("alpha\n  beta\n")
+  u:close()
+  local untracked_before = wgit:untracked()
+
+  local worktree_exact = changed(wgit:worktree_diff())
+  local worktree_ignored = changed(wgit:worktree_diff(nil, true))
+  h.assert_true("ignore semantics: exact worktree includes whitespace edits", #worktree_exact > 2)
+  h.assert_eq("ignore semantics: ignored worktree keeps semantic pair",
+    table.concat(worktree_ignored, "\n"),
+    "ws.txt|del|5||semantic new\nws.txt|add||5|semantic worktree")
+
+  local to_worktree = changed(wgit:diff_to_worktree(wbase, nil, true))
+  h.assert_eq("ignore semantics: ignored base-to-worktree keeps semantic pair",
+    table.concat(to_worktree, "\n"),
+    "ws.txt|del|5||semantic old\nws.txt|add||5|semantic worktree")
+  local untracked_after = wgit:untracked()
+  h.assert_eq("ignore semantics: untracked synthesis unchanged",
+    vim.inspect(untracked_after), vim.inspect(untracked_before))
+end
+
 h.finish()
