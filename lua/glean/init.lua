@@ -301,17 +301,21 @@ local function build_model_async(git, base, target, hints, cb)
   local display_mode = ignore_whitespace and "ignore-all-space" or "exact"
   local display_patches = display_mode == "exact" and exact_patches
     or cached_patches(hints.patch_cache, display_mode, cache_head)
+  local function net_diff(ignored, done)
+    if worktree then
+      git:diff_to_worktree_async(base, ignored, done)
+    elseif hints.from_root then
+      git:diff_async(base, target, ignored, done)
+    else
+      git:combined_diff_async(base, target, ignored, done)
+    end
+  end
   local jobs = {
-    net = function(done)
-      if worktree then
-        git:diff_to_worktree_async(base, ignore_whitespace, done)
-      elseif hints.from_root then
-        git:diff_async(base, target, ignore_whitespace, done)
-      else
-        git:combined_diff_async(base, target, ignore_whitespace, done)
-      end
-    end,
+    net = function(done) net_diff(ignore_whitespace, done) end,
   }
+  if ignore_whitespace then
+    jobs.exact_net = function(done) net_diff(false, done) end
+  end
   if not exact_patches then
     if hints.from_root then
       jobs.exact_commits = function(done)
@@ -376,6 +380,14 @@ local function build_model_async(git, base, target, hints, cb)
       return cb(nil, res.display_wt and res.display_wt[2])
     end
     local untracked = res.untracked and res.untracked[1] or nil
+    local canonical_files = ignore_whitespace and res.exact_net[1] or files
+    if not canonical_files then return cb(nil, res.exact_net and res.exact_net[2]) end
+    if worktree and ignore_whitespace then
+      canonical_files = vim.deepcopy(canonical_files)
+      for _, file in ipairs(untracked or {}) do
+        canonical_files[#canonical_files + 1] = vim.deepcopy(file)
+      end
+    end
     local lineage_worktree_files = {}
     for _, file in ipairs(exact_wt_files or {}) do
       lineage_worktree_files[#lineage_worktree_files + 1] = file
@@ -395,6 +407,7 @@ local function build_model_async(git, base, target, hints, cb)
       patch_cache = patch_cache,
       lineage_commits = exact_patches,
       lineage_worktree_files = lineage_worktree_files,
+      canonical_files = canonical_files,
       head = head,
       exact_reused = exact_reused,
     })
@@ -590,7 +603,8 @@ function Session:line_identity(dl, path, owner, ord)
   if not sha then return nil end
   if sha == M.WORKTREE then
     local id = state_mod.wt_identity(path, dl.text)
-    id.ord = ord
+    local display_file = self:file_for_path(path)
+    id.ord = self:canonical_ordinal(display_file, dl) or ord
     return id
   end
   if dl.kind == "add" then return state_mod.add_identity(sha, path, lnum) end
@@ -788,6 +802,68 @@ function Session:displayed_files()
   return fs
 end
 
+local function file_with_path(files, path)
+  for _, file in ipairs(files or {}) do
+    if file.path == path then return file end
+  end
+end
+
+-- Return the exact diff file corresponding to a displayed file. Commit scope
+-- uses the exact first-parent patch for that commit (or exact worktree patch);
+-- combined scope uses the exact net diff. This keeps content-addressed review
+-- records in one canonical ordinal space regardless of the active projection.
+function Session:canonical_file(display_file)
+  if not display_file then return nil end
+  if self.scope == "combined" then
+    return file_with_path(self.canonical_files, display_file.path)
+  end
+  for _, commit in ipairs(self.commits or {}) do
+    for _, file in ipairs(commit.files) do
+      if file == display_file then
+        if commit.sha == M.WORKTREE then
+          return file_with_path(self.lineage_worktree_files, file.path)
+        end
+        for _, exact in ipairs(self.lineage_commits or {}) do
+          if exact.sha == commit.sha then return file_with_path(exact.files, file.path) end
+        end
+      end
+    end
+  end
+end
+
+local function line_coordinates_match(a, b)
+  return a.kind == b.kind and a.text == b.text
+    and a.old_lnum == b.old_lnum and a.new_lnum == b.new_lnum
+end
+
+local function line_ordinal(file, wanted)
+  if not (file and wanted) then return nil end
+  local ord = 0
+  for _, hunk in ipairs(file.hunks) do
+    for _, dl in ipairs(hunk.lines) do
+      ord = ord + 1
+      if line_coordinates_match(dl, wanted) then return ord end
+    end
+  end
+end
+
+local function line_at_ordinal(file, wanted)
+  if not (file and wanted) then return nil end
+  local ord = 0
+  for _, hunk in ipairs(file.hunks) do
+    for _, dl in ipairs(hunk.lines) do
+      ord = ord + 1
+      if ord == wanted then return dl end
+    end
+  end
+end
+
+-- The canonical exact ordinal for a displayed diff line. Real Git coordinates
+-- plus exact text disambiguate repeated equal-content lines.
+function Session:canonical_ordinal(display_file, dl)
+  return line_ordinal(self:canonical_file(display_file), dl)
+end
+
 -- The displayed diff file holding `path`'s uncommitted lines: in commit scope
 -- the synthetic worktree commit's file, in combined scope the combined file.
 function Session:file_for_path(path)
@@ -807,21 +883,16 @@ function Session:file_for_path(path)
   return nil
 end
 
--- The flattened diff-line texts of `path`'s displayed file (the resolution space
--- worktree seen-blocks and comments re-anchor against), or nil if not displayed.
+-- Worktree seen records resolve against exact diff text, never the filtered
+-- projection. Their stored anchors therefore survive whitespace-mode toggles.
 function Session:wt_flat_texts(path)
-  local file = self:file_for_path(path)
+  local file = self:canonical_file(self:file_for_path(path))
   if not file then return nil end
   local texts = {}
   for i, dl in ipairs(flatten_diff_lines(file)) do texts[i] = dl.text end
   return texts
 end
 
--- The set of flattened ordinals currently marked seen for an uncommitted file,
--- computed by re-anchoring each stored seen-block via `M.resolve` (single
--- closest match). Cached per render (reset in build) since it depends on the
--- live diff. A trivial one-line block resolves to exactly one ordinal, never
--- file-wide; a block whose own text changed fails to resolve and so is unseen.
 function Session:wt_seen_ords(path)
   self._wt_seen = self._wt_seen or {}
   local cached = self._wt_seen[path]
@@ -840,70 +911,110 @@ function Session:wt_seen_ords(path)
   return set
 end
 
--- Re-anchor a file's comments against its current diff-line texts: map the
--- flattened ordinal each comment resolves to (its content match, or a clamped
--- fallback when the content is gone) to the list of comments shown there. An
--- orphaned comment (content no longer in the diff) is clamped into range and
--- flagged `outdated` so it still surfaces inline, dimmed and dismissible.
+-- Resolve comments in canonical exact space, then map the canonical anchor line
+-- into this display file. A canonical match with no displayed counterpart is
+-- hidden by whitespace mode, not outdated.
 function Session:resolve_comments(file)
-  local flat = flatten_diff_lines(file)
-  if #flat == 0 then return {} end
-  local texts = {}
-  for i, dl in ipairs(flat) do texts[i] = dl.text end
+  local exact = self:canonical_file(file)
+  local exact_flat = flatten_diff_lines(exact or file)
+  if #exact_flat == 0 then return {} end
+  local exact_texts = {}
+  for i, dl in ipairs(exact_flat) do exact_texts[i] = dl.text end
   local by_ord = {}
   for _, rec in ipairs(self.store:comments_for(file.path)) do
-    local start = state_mod.resolve(rec.content, rec.anchor, texts)
-    local ord = start or math.max(1, math.min(rec.anchor or 1, #flat))
-    by_ord[ord] = by_ord[ord] or {}
-    by_ord[ord][#by_ord[ord] + 1] = {
-      path = file.path,
-      anchor = rec.anchor,
-      content = rec.content,
-      text = rec.text,
-      outdated = start == nil,
-    }
+    local start = state_mod.resolve(rec.content, rec.anchor, exact_texts)
+    if start then
+      local display_ord = line_ordinal(file, exact_flat[start])
+      if display_ord then
+        by_ord[display_ord] = by_ord[display_ord] or {}
+        by_ord[display_ord][#by_ord[display_ord] + 1] = {
+          path = file.path, anchor = rec.anchor, content = rec.content,
+          text = rec.text, outdated = false, hidden = false,
+        }
+      end
+    else
+      local ord = math.max(1, math.min(rec.anchor or 1, #flatten_diff_lines(file)))
+      by_ord[ord] = by_ord[ord] or {}
+      by_ord[ord][#by_ord[ord] + 1] = {
+        path = file.path, anchor = rec.anchor, content = rec.content,
+        text = rec.text, outdated = true, hidden = false,
+      }
+    end
   end
   return by_ord
 end
 
--- Gather every stored comment for the displayed file paths, re-anchored by
--- content. Each record { anchor, content, text } is resolved against the file's
--- flattened diff-line texts: a match yields the matched line's number, a miss is
--- flagged `outdated` and anchored to its stored ordinal. Comments are global per
--- path, so a path appearing in several commits is de-duplicated (a resolved
--- match wins over an outdated one). Returns { order = {paths}, by_path }.
-function Session:collect_comments()
-  local best = {}
-  for _, file in ipairs(self:displayed_files()) do
-    local flat = flatten_diff_lines(file)
-    local texts = {}
-    for i, dl in ipairs(flat) do texts[i] = dl.text end
-    for _, rec in ipairs(self.store:comments_for(file.path)) do
-      local start = state_mod.resolve(rec.content, rec.anchor, texts)
-      local dl = flat[start or rec.anchor]
-      local entry = {
-        anchor = rec.anchor,
-        content = rec.content,
-        line = rec.content[1] or "",
-        lnum = dl and (dl.new_lnum or dl.old_lnum),
-        outdated = start == nil,
-        text = rec.text,
+local function comment_key(rec)
+  return tostring(rec.anchor) .. "\0" .. table.concat(rec.content, "\n") .. "\0" .. rec.text
+end
+
+-- Enumerate exact canonical files and their active display counterparts. Hidden
+-- exact files remain present here so their comments stay discoverable.
+function Session:comment_file_pairs()
+  local pairs_out = {}
+  if self.scope == "combined" then
+    for _, exact in ipairs(self.canonical_files or {}) do
+      pairs_out[#pairs_out + 1] = {
+        exact = exact, display = file_with_path(self.combined_files or {}, exact.path),
       }
-      local rkey = tostring(rec.anchor) .. "\0"
-        .. table.concat(rec.content, "\n") .. "\0" .. rec.text
-      best[file.path] = best[file.path] or {}
-      local prev = best[file.path][rkey]
-      if not prev or (prev.outdated and not entry.outdated) then
-        best[file.path][rkey] = entry
-      end
+    end
+    return pairs_out
+  end
+  for _, exact_commit in ipairs(self.lineage_commits or {}) do
+    local display_commit
+    for _, commit in ipairs(self.commits or {}) do
+      if commit.sha == exact_commit.sha then display_commit = commit break end
+    end
+    for _, exact in ipairs(exact_commit.files) do
+      pairs_out[#pairs_out + 1] = {
+        exact = exact,
+        display = display_commit and file_with_path(display_commit.files, exact.path) or nil,
+      }
     end
   end
-  local order = {}
-  local by_path = {}
+  if self.worktree then
+    local display_commit = self.commits[#self.commits]
+    for _, exact in ipairs(self.lineage_worktree_files or {}) do
+      pairs_out[#pairs_out + 1] = {
+        exact = exact,
+        display = display_commit and file_with_path(display_commit.files, exact.path) or nil,
+      }
+    end
+  end
+  return pairs_out
+end
+
+function Session:collect_comments()
+  local best = {}
+  for _, pair in ipairs(self:comment_file_pairs()) do
+    local flat = flatten_diff_lines(pair.exact)
+    local texts = {}
+    for i, dl in ipairs(flat) do texts[i] = dl.text end
+    for _, rec in ipairs(self.store:comments_for(pair.exact.path)) do
+      local start = state_mod.resolve(rec.content, rec.anchor, texts)
+      local canonical_dl = flat[start or rec.anchor]
+      local display_ord = start and pair.display and line_ordinal(pair.display, canonical_dl) or nil
+      local entry = {
+        anchor = rec.anchor, content = rec.content, line = rec.content[1] or "",
+        lnum = canonical_dl and (canonical_dl.new_lnum or canonical_dl.old_lnum),
+        outdated = start == nil,
+        hidden = start ~= nil and display_ord == nil and self.ignore_whitespace,
+        text = rec.text,
+      }
+      local path = pair.exact.path
+      local rkey = comment_key(rec)
+      best[path] = best[path] or {}
+      local prev = best[path][rkey]
+      local rank = entry.outdated and 0 or (entry.hidden and 1 or 2)
+      local prev_rank = prev and (prev.outdated and 0 or (prev.hidden and 1 or 2)) or -1
+      if rank > prev_rank then best[path][rkey] = entry end
+    end
+  end
+  local order, by_path = {}, {}
   for path, recs in pairs(best) do
     order[#order + 1] = path
     local list = {}
-    for _, e in pairs(recs) do list[#list + 1] = e end
+    for _, entry in pairs(recs) do list[#list + 1] = entry end
     table.sort(list, function(a, b) return (a.anchor or 0) < (b.anchor or 0) end)
     by_path[path] = list
   end
@@ -1301,12 +1412,17 @@ function Session:build()
       emit(path, { summary_file = path }, "GleanFileHeader")
       for _, e in ipairs(summary.by_path[path]) do
         local loc = e.outdated and "(Outdated)"
+          or e.hidden and "(Hidden by whitespace mode)"
           or (e.lnum and ("L%d"):format(e.lnum) or "L?")
         -- The comment record carried so `dd`/`i`/`e` act on it directly, plus
         -- `summary_comment` so `<CR>` expands its hunk and jumps to it above.
-        local c = { path = path, anchor = e.anchor, content = e.content, text = e.text }
+        local c = {
+          path = path, anchor = e.anchor, content = e.content, text = e.text,
+          outdated = e.outdated, hidden = e.hidden,
+        }
         local ctarget = { comment = c, summary_comment = { path = path } }
-        emit(("  %s  %s"):format(loc, e.line), ctarget, e.outdated and "GleanSeen" or "GleanContext")
+        emit(("  %s  %s"):format(loc, e.line), ctarget,
+          (e.outdated or e.hidden) and "GleanSeen" or "GleanContext")
         for _, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
           emit("> " .. part, ctarget, "GleanComment")
         end
@@ -2709,7 +2825,10 @@ function Session:comment_target(row)
   local file = self:row_file(target)
   if not file then return nil end
   local dl = file.hunks[target.hunk].lines[target.line]
-  return { path = file.path, anchor = target_ordinal(file, target), content = { dl.text } }
+  local exact = self:canonical_file(file)
+  local anchor = line_ordinal(exact, dl)
+  if not anchor then return nil end
+  return { path = file.path, anchor = anchor, content = { dl.text } }
 end
 
 -- The visual-span authoring target: the contiguous run of literal diff-line rows
@@ -2722,8 +2841,9 @@ function Session:visual_comment_target(srow, erow)
     if t and t.line and not t.pending then
       local file = self:row_file(t)
       if file then
-        local ord = target_ordinal(file, t)
         local dl = file.hunks[t.hunk].lines[t.line]
+        local ord = self:canonical_ordinal(file, dl)
+        if not ord then break end
         if not path then
           path, anchor, content, prev_ord = file.path, ord, { dl.text }, ord
         elseif file.path == path and ord == prev_ord + 1 then
@@ -2958,6 +3078,13 @@ end
 -- (falling back to the file header when the comment is outdated / not shown).
 function Session:reveal_summary_comment(c)
   if not c then return end
+  if c.hidden and self.ignore_whitespace then
+    self._reveal_comment_after_refresh = {
+      path = c.path, anchor = c.anchor, content = c.content, text = c.text,
+    }
+    self:set_ignore_whitespace(false)
+    return
+  end
   self:expand_path(c.path)
   self:render()
   local changed = false
@@ -3320,6 +3447,7 @@ function Session:refresh_model(hints)
     self.commits = commits
     self.lineage_commits = meta.lineage_commits
     self.lineage_worktree_files = meta.lineage_worktree_files
+    self.canonical_files = meta.canonical_files
     self.store = store
     self._wt_lines = nil
     -- Ownership is recomposed wholesale from the patches, but the committed
@@ -3336,6 +3464,11 @@ function Session:refresh_model(hints)
     self:start_owner_loader()
     self:render()
     self:restore_cursor_anchor(cursor_anchor)
+    local reveal = self._reveal_comment_after_refresh
+    if reveal then
+      self._reveal_comment_after_refresh = nil
+      self:reveal_summary_comment(reveal)
+    end
   end)
 end
 
@@ -3984,6 +4117,7 @@ function M.open(opts)
     commits = {},
     lineage_commits = {},
     lineage_worktree_files = {},
+    canonical_files = {},
     -- Baselines so the first content-only reload after open is already
     -- incremental (reuses the cached committed lineage) rather than re-walking
     -- the log once before the incremental path can engage.

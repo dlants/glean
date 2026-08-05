@@ -114,15 +114,19 @@ Alternatives considered:
   - Mode changes clear undo and redo immediately, then use the existing refresh-generation guard. Replaced sessions also have their refresh and ownership generations invalidated so callbacks from a prior opener cannot repaint the shared buffer.
   - The active header label is appended to either scope name as `ignore-whitespace`; scope changes do not rebuild the model or alter the selected whitespace mode.
 
-## Review-state and comment integration
+## Review-state and comment integration — completed August 5, 2026
 
-- Goal: Seen marks, sticky overrides, and comments continue using exact canonical identities; hidden whitespace-only comments remain discoverable without being marked outdated.
-- Tests:
-  - Marking a semantic line in either mode should be reflected in the other mode.
-  - A mark/comment on a whitespace-only row should disappear from the body in ignore mode and return unchanged afterward.
-  - Hidden comments should appear in the summary with the hidden status, and navigation should reveal and jump to the exact row.
-  - Repeated equal-content lines should not cause a hidden comment to re-anchor to a different visible line.
-  - Undo/redo should not apply stale row targets across a mode transition.
+- [x] Goal: Seen marks, sticky overrides, and comments continue using exact canonical identities; hidden whitespace-only comments remain discoverable without being marked outdated.
+- [x] Tests:
+  - Marking a semantic line in either mode is reflected in the other mode, including its content-addressed sticky override.
+  - A mark/comment on a whitespace-only row disappears from the body in ignore mode and returns unchanged afterward.
+  - Hidden comments appear in the summary with the hidden status, and navigation disables ignore mode before revealing and jumping to the exact row.
+  - Repeated equal-content lines retain the authored canonical anchor rather than re-anchoring to a different occurrence.
+  - Mode transitions clear undo/redo so stale actions cannot mutate review state.
+- Decisions:
+  - Comment and worktree seen-record anchors now use flattened ordinals from exact canonical files. Display rows map to canonical rows by exact text plus Git old/new coordinates, which disambiguates repeated content without changing the persisted schema.
+  - Ignore-mode acquisition retains an exact net diff in addition to exact lineage patches. The exact net diff is the canonical resolution space for combined-scope comments and worktree marks; exact first-parent/worktree files serve the same role in commit scope.
+  - A canonically resolved comment whose anchor has no active display row is labeled `Hidden by whitespace mode`, never `Outdated`. Summary navigation switches back to exact mode atomically, then expands and jumps to the original inline comment.
 
 ## Live refresh and auxiliary views
 

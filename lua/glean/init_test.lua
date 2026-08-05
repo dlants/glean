@@ -3447,6 +3447,126 @@ do
     #live.lineage_commits, 2)
 end
 
+-- Review state is shared through exact identities across whitespace projections.
+-- Comments on suppressed rows stay canonically anchored, are summarized as
+-- hidden (not outdated), and reveal by restoring the exact projection first.
+do
+  local sr = testutil.make_repo({
+    { msg = "base", files = {
+      ["review.txt"] = "top\n\nmiddle\n\nvalue\nsemantic\n",
+    } },
+    { msg = "edit", files = {
+      ["review.txt"] = "top\n   \nmiddle\n   \nVALUE\nSEMANTIC\n",
+    } },
+  })
+  local function runs(args)
+    local cmd = { "git" }
+    for _, arg in ipairs(args) do cmd[#cmd + 1] = arg end
+    local res = vim.system(cmd, { cwd = sr.root, env = sr.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local dir = vim.fn.tempname()
+  local s = glean.open({
+    base = sr.shas[1], target = sr.shas[2], repo_root = sr.root, run = runs,
+    open_window = true, state_dir = dir, scope = "combined", ignore_whitespace = false,
+  })
+  local space_rows = {}
+  for row = 0, api.nvim_buf_line_count(s.buf) - 1 do
+    local line = api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
+    local t = s.row_map[row]
+    if t and t.line and line == "+   " then space_rows[#space_rows + 1] = row end
+  end
+  h.assert_eq("whitespace state: repeated whitespace rows present", #space_rows, 2)
+  local second_space = space_rows[2]
+  local hidden_target = s:comment_target(second_space)
+  local hidden_id = s:row_identity(s.row_map[second_space])
+  s:add_comment_at(second_space, "second whitespace note")
+  local semantic_row = find_row(s, function(_, line, t)
+    return t and t.line and line == "+SEMANTIC"
+  end)
+  s:add_comment_at(semantic_row, "semantic note")
+
+  s:toggle_ignore_whitespace()
+  vim.wait(100, function() return s.ignore_whitespace
+    and find_row(s, function(_, line, t) return t and t.line and line == "+SEMANTIC" end) ~= nil
+  end, 5)
+  local ignored_semantic = find_row(s, function(_, line, t)
+    return t and t.line and line == "+SEMANTIC"
+  end)
+  local semantic_id = s:row_identity(s.row_map[ignored_semantic])
+
+  local summary = s:collect_comments()
+  local hidden
+  for _, entry in ipairs(summary.by_path["review.txt"] or {}) do
+    if entry.text == "second whitespace note" then hidden = entry break end
+  end
+  h.assert_true("whitespace comments: suppressed comment is hidden", hidden and hidden.hidden)
+  h.assert_true("whitespace comments: suppressed comment is not outdated",
+    hidden and not hidden.outdated)
+  h.assert_eq("whitespace comments: repeated content keeps second line coordinate",
+    hidden and hidden.lnum, 4)
+  local body = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("whitespace comments: summary has hidden status",
+    body:find("Hidden by whitespace mode", 1, true) ~= nil)
+  h.assert_true("whitespace comments: hidden note is absent inline",
+    find_row(s, function(_, _, t)
+      return t and t.comment and not t.summary_comment
+        and t.comment.text == "second whitespace note"
+    end) == nil)
+  h.assert_true("whitespace comments: semantic note remains inline",
+    find_row(s, function(_, _, t)
+      return t and t.comment and not t.summary_comment and t.comment.text == "semantic note"
+    end) ~= nil)
+
+  s:mark_visual_range(ignored_semantic, ignored_semantic)
+  h.assert_true("whitespace state: ignored-mode mark uses exact committed identity",
+    s:id_seen(semantic_id))
+  h.assert_true("whitespace state: ignored-mode mark records exact sticky text",
+    s.store:is_sticky("review.txt", "SEMANTIC"))
+
+  local summary_row = find_row(s, function(_, _, t)
+    return t and t.summary_comment and t.comment.text == "second whitespace note"
+  end)
+  s:jump(summary_row)
+  vim.wait(200, function()
+    local t = s.row_map[s:cursor_row()]
+    return not s.ignore_whitespace and t and t.comment
+      and not t.summary_comment and t.comment.text == "second whitespace note"
+  end, 5)
+  local revealed = s.row_map[s:cursor_row()]
+  h.assert_true("whitespace comments: navigation restores exact mode",
+    not s.ignore_whitespace)
+  h.assert_eq("whitespace comments: navigation lands on original repeated anchor",
+    revealed and revealed.comment and revealed.comment.anchor, hidden_target.anchor)
+  h.assert_true("whitespace state: ignored-mode semantic mark survives exact restore",
+    s:id_seen(semantic_id))
+
+  local restored_space = find_row(s, function(row, line, t)
+    local target = t and t.line and line == "+   " and s:comment_target(row) or nil
+    return target and target.anchor == hidden_target.anchor
+  end)
+  h.assert_true("whitespace comments: suppressed row returns unchanged", restored_space ~= nil)
+  s:mark_visual_range(restored_space, restored_space)
+  h.assert_true("whitespace state: hidden-line exact identity marked", s:id_seen(hidden_id))
+  h.assert_true("whitespace state: hidden-line sticky override stored",
+    s.store:is_sticky("review.txt", "   "))
+
+  local before = #s.store:comments_for("review.txt")
+  s:add_comment(hidden_target, "clears stale undo")
+  s:toggle_ignore_whitespace()
+  vim.wait(100, function() return s.ignore_whitespace end, 5)
+  h.assert_eq("whitespace state: mode transition clears undo stack", #s.undo_stack, 0)
+  h.assert_eq("whitespace state: mode transition clears redo stack", #s.redo_stack, 0)
+  local old_notify = vim.notify
+  vim.notify = function() end
+  s:undo()
+  vim.notify = old_notify
+  h.assert_eq("whitespace state: stale undo cannot mutate canonical comments",
+    #s.store:comments_for("review.txt"), before + 1)
+  h.assert_true("whitespace state: hidden exact mark survives filtered projection",
+    s:id_seen(hidden_id))
+end
+
 -- Command dispatch enters the list views instead of treating their names as
 -- dirty-review bases.
 do
