@@ -101,14 +101,18 @@ Alternatives considered:
   - Cached commit arrays never receive the synthetic worktree commit. Display assembly creates fresh commit arrays, and exact untracked entries are included only in the separately synthesized lineage worktree layer.
   - `ignore_whitespace = false` is now a setup/open default so model acquisition can select the display projection; the runtime keymap, toggle lifecycle, and header remain Stage 3 work.
 
-## Runtime toggle and rendering
+## Runtime toggle and rendering — completed August 5, 2026
 
-- Goal: `W` toggles the mode in place, refreshes atomically, preserves a semantic cursor location, clears mode-specific undo/redo, and exposes the active mode in the header.
-- Tests:
-  - The keymap and direct method should remove and restore whitespace-only rows and update progress counts/header text.
-  - A rapid double toggle with delayed fake runners should render only the final mode.
-  - Scope toggling should work independently in both whitespace modes.
-  - Reopening an existing buffer with an explicit conflicting mode should rebuild that session rather than create a duplicate or retain stale content.
+- [x] Goal: `W` toggles the mode in place, refreshes atomically, preserves a semantic cursor location, clears mode-specific undo/redo, and exposes the active mode in the header.
+- [x] Tests:
+  - The keymap and direct method remove and restore whitespace-only rows and update progress counts/header text.
+  - A rapid double toggle with delayed fake runners renders only the final mode.
+  - Scope toggling works independently in both whitespace modes.
+  - Reopening an existing buffer with an explicit conflicting mode rebuilds that buffer rather than creating a duplicate or retaining stale content.
+- Decisions:
+  - Cursor restoration captures the displayed path, commit SHA when applicable, line kind, and Git old/new coordinates before refresh; the winning model selects the nearest same-path row and falls back to the file header (then the top row if the file is hidden entirely).
+  - Mode changes clear undo and redo immediately, then use the existing refresh-generation guard. Replaced sessions also have their refresh and ownership generations invalidated so callbacks from a prior opener cannot repaint the shared buffer.
+  - The active header label is appended to either scope name as `ignore-whitespace`; scope changes do not rebuild the model or alter the selected whitespace mode.
 
 ## Review-state and comment integration
 

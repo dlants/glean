@@ -163,7 +163,24 @@ do
   h.assert_true("superseded: winner's model landed", #s.files > 0)
 end
 
--- 6. The buffer going away mid-flight aborts cleanly: the late callbacks run
+-- 6. Rapid mode changes share the refresh-generation guard: the ignored build
+-- is superseded before it lands, so only the final exact selection repaints.
+do
+  local s = open()
+  local drain = defer(s)
+  local n = count_renders(function()
+    s:toggle_ignore_whitespace()
+    s:toggle_ignore_whitespace()
+    drain()
+  end)
+  h.assert_eq("mode toggle: only final selection repaints", n, 1)
+  h.assert_true("mode toggle: final selection wins", not s.ignore_whitespace)
+  local header = api.nvim_buf_get_lines(s.buf, 0, 1, false)[1]
+  h.assert_true("mode toggle: stale ignored result did not repaint",
+    header:find("ignore-whitespace", 1, true) == nil)
+end
+
+-- 7. The buffer going away mid-flight aborts cleanly: the late callbacks run
 -- without error and paint nothing.
 do
   local s = open()

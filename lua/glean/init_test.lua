@@ -3379,6 +3379,70 @@ do
     #live._commit_patch_cache["ignore-all-space"].patches, 2)
   h.assert_eq("whitespace cache: active display has one synthetic commit",
     live.commits[#live.commits].sha, glean.WORKTREE)
+  -- Runtime mode changes rebuild this buffer in place, update the header and
+  -- progress projection, preserve a model-coordinate cursor, and clear actions
+  -- whose row targets came from the previous projection.
+  local runtime = glean.open({
+    base = wr.shas[1], target = wr.shas[3], repo_root = wr.root, run = runw,
+    open_window = true, state_dir = vim.fn.tempname(), ignore_whitespace = false,
+  })
+  local runtime_buf = runtime.buf
+  local normal_header = api.nvim_buf_get_lines(runtime.buf, 0, 1, false)[1]
+  local whitespace_row = find_row(runtime, function(_, line, t)
+    return t and t.line and line == "+   "
+  end)
+  h.assert_true("whitespace runtime: found removable cursor row", whitespace_row ~= nil)
+  api.nvim_win_set_cursor(runtime.win, { whitespace_row + 1, 0 })
+  runtime.undo_stack = { { kind = "collapse" } }
+  runtime.redo_stack = { { kind = "collapse" } }
+  runtime:toggle_ignore_whitespace()
+  settle()
+  local ignored_header = api.nvim_buf_get_lines(runtime.buf, 0, 1, false)[1]
+  h.assert_true("whitespace runtime: header shows active mode",
+    ignored_header:find("ignore-whitespace", 1, true) ~= nil)
+  h.assert_true("whitespace runtime: progress changes with projection",
+    ignored_header ~= normal_header)
+  h.assert_true("whitespace runtime: direct toggle removes whitespace rows",
+    find_row(runtime, function(_, line, t) return t and t.line and line == "+   " end) == nil)
+  h.assert_eq("whitespace runtime: toggle clears undo", #runtime.undo_stack, 0)
+  h.assert_eq("whitespace runtime: toggle clears redo", #runtime.redo_stack, 0)
+  local restored = runtime.row_map[runtime:cursor_row()]
+  local restored_file = runtime:row_file(restored)
+  h.assert_eq("whitespace runtime: cursor stays in the same file",
+    restored_file and restored_file.path, "semantic.txt")
+  local restored_dl = restored_file and restored.hunk and restored.line
+    and restored_file.hunks[restored.hunk].lines[restored.line] or nil
+  local restored_lnum = restored_dl and (restored_dl.new_lnum or restored_dl.old_lnum)
+  h.assert_true("whitespace runtime: cursor restores near hidden coordinate",
+    restored_lnum ~= nil and math.abs(restored_lnum - 2) <= 1)
+
+  runtime:set_scope("commits")
+  h.assert_true("whitespace runtime: scope toggle keeps ignored projection",
+    api.nvim_buf_get_lines(runtime.buf, 0, 1, false)[1]:find("ignore-whitespace", 1, true) ~= nil)
+  h.assert_true("whitespace runtime: commit scope remains whitespace-filtered",
+    table.concat(api.nvim_buf_get_lines(runtime.buf, 0, -1, false), "\n")
+      :find("space.txt", 1, true) == nil)
+  runtime:set_scope("combined")
+  local wmap = vim.fn.maparg("W", "n", false, true)
+  h.assert_true("whitespace runtime: W keymap installed", type(wmap.callback) == "function")
+  wmap.callback()
+  settle()
+  h.assert_true("whitespace runtime: W restores exact rows",
+    find_row(runtime, function(_, line, t) return t and t.line and line == "+   " end) ~= nil)
+  h.assert_true("whitespace runtime: header clears inactive mode",
+    api.nvim_buf_get_lines(runtime.buf, 0, 1, false)[1]
+      :find("ignore-whitespace", 1, true) == nil)
+
+  local reopened = glean.open({
+    base = wr.shas[1], target = wr.shas[3], repo_root = wr.root, run = runw,
+    open_window = false, state_dir = vim.fn.tempname(), ignore_whitespace = true,
+  })
+  settle()
+  h.assert_eq("whitespace runtime: conflicting reopen reuses buffer", reopened.buf, runtime_buf)
+  h.assert_true("whitespace runtime: conflicting reopen applies requested mode",
+    reopened.ignore_whitespace)
+  h.assert_true("whitespace runtime: conflicting reopen rebuilds projection",
+    find_row(reopened, function(_, line, t) return t and t.line and line == "+   " end) == nil)
   h.assert_eq("whitespace cache: exact lineage remains synthetic-free",
     #live.lineage_commits, 2)
 end

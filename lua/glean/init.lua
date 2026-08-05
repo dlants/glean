@@ -1179,6 +1179,7 @@ function Session:build()
     return ("  (%d seen / %d unseen)"):format(seen, total - seen)
   end
   local mode_label = self.scope == "combined" and "combined" or "commit-by-commit"
+  if self.ignore_whitespace then mode_label = mode_label .. " · ignore-whitespace" end
   local progress = self:progress_counts()
   local function count_label(n, singular, plural)
     return ("%d %s"):format(n, n == 1 and singular or plural)
@@ -3191,6 +3192,73 @@ function Session:toggle_scope()
   self:set_scope(self.scope == "commits" and "combined" or "commits")
 end
 
+-- Capture a cursor location in model coordinates before replacing the active
+-- display projection. Row indices are unstable across whitespace modes, while
+-- paths and Git's real old/new line numbers remain comparable.
+function Session:cursor_anchor()
+  if not (self.win and api.nvim_win_is_valid(self.win)) then return nil end
+  local target = self.row_map[self:cursor_row()]
+  local file = self:row_file(target)
+  if not file then return nil end
+  local anchor = { path = file.path }
+  if self.scope == "commits" and target.commit then
+    local commit = self.commits[target.commit]
+    anchor.sha = commit and commit.sha
+  end
+  if target.hunk and target.line then
+    local dl = file.hunks[target.hunk].lines[target.line]
+    anchor.kind = dl.kind
+    anchor.old_lnum = dl.old_lnum
+    anchor.new_lnum = dl.new_lnum
+  end
+  return anchor
+end
+
+function Session:restore_cursor_anchor(anchor)
+  if not (anchor and self.win and api.nvim_win_is_valid(self.win)) then return end
+  local header = self:file_header_row(anchor.path)
+  local best_row, best_score
+  for row, target in pairs(self.row_map) do
+    local file = target and target.hunk and target.line and self:row_file(target) or nil
+    if file and file.path == anchor.path then
+      local commit = target.commit and self.commits[target.commit] or nil
+      local dl = file.hunks[target.hunk].lines[target.line]
+      local score = 0
+      if anchor.sha and (not commit or commit.sha ~= anchor.sha) then score = score + 1000000 end
+      if anchor.kind and dl.kind ~= anchor.kind then score = score + 1 end
+      local distance
+      if anchor.new_lnum and dl.new_lnum then
+        distance = math.abs(anchor.new_lnum - dl.new_lnum)
+      elseif anchor.old_lnum and dl.old_lnum then
+        distance = math.abs(anchor.old_lnum - dl.old_lnum)
+      else
+        local a = anchor.new_lnum or anchor.old_lnum
+        local b = dl.new_lnum or dl.old_lnum
+        distance = a and b and math.abs(a - b) or 10000
+      end
+      score = score + distance * 10
+      if not best_score or score < best_score or (score == best_score and row < best_row) then
+        best_row, best_score = row, score
+      end
+    end
+  end
+  self:restore_cursor(best_row or header or 0)
+end
+
+function Session:set_ignore_whitespace(enabled)
+  enabled = enabled == true
+  if enabled == self.ignore_whitespace then return end
+  local anchor = self:cursor_anchor()
+  self.ignore_whitespace = enabled
+  self.undo_stack = {}
+  self.redo_stack = {}
+  self:refresh_model({ head = self._commit_cache_head, cursor_anchor = anchor })
+end
+
+function Session:toggle_ignore_whitespace()
+  self:set_ignore_whitespace(not self.ignore_whitespace)
+end
+
 -- ---------------------------------------------------------------------------
 -- Live update (work-tree target) — poll the repo and re-render in place.
 -- ---------------------------------------------------------------------------
@@ -3233,10 +3301,12 @@ end
 -- previous complete state or the next one, never a half-built model.
 function Session:refresh_model(hints)
   if not api.nvim_buf_is_valid(self.buf) then return end
+  hints = hints or {}
+  local cursor_anchor = hints.cursor_anchor
   local gen = self:bump_refresh()
   build_model_async(self.git, self.base, self.target, {
-    head = hints and hints.head,
-    wt_diff_text = hints and hints.wt_diff_text,
+    head = hints.head,
+    wt_diff_text = hints.wt_diff_text,
     patch_cache = self._commit_patch_cache,
     ignore_whitespace = self.ignore_whitespace,
     from_root = self.from_root,
@@ -3265,6 +3335,7 @@ function Session:refresh_model(hints)
     self:apply_collapse()
     self:start_owner_loader()
     self:render()
+    self:restore_cursor_anchor(cursor_anchor)
   end)
 end
 
@@ -3526,6 +3597,7 @@ local function setup_keymaps(buf, session)
   map("n", "<CR>", function() session:jump() end)
   map("n", "D", function() session:diffsplit() end)
   map("n", "S", function() session:toggle_scope() end)
+  map("n", "W", function() session:toggle_ignore_whitespace() end)
   map("n", "q", function()
     if api.nvim_win_is_valid(session.win) then
       api.nvim_win_close(session.win, true)
@@ -3889,7 +3961,13 @@ function M.open(opts)
   views[key] = collapse
 
   local prev = sessions[key]
-  if prev then prev:stop_live() end
+  if prev then
+    prev:stop_live()
+    -- A superseded session can still have Git callbacks in flight. Invalidate
+    -- them before the shared buffer is handed to the replacement session.
+    prev:bump_refresh()
+    prev._load_gen = (prev._load_gen or 0) + 1
+  end
 
   local session = setmetatable({
     git = git,
