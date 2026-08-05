@@ -50,6 +50,7 @@ local NS_STICKY = api.nvim_create_namespace("glean_sticky_hl")
 
 M.config = {
   default_base = "main",
+  ignore_whitespace = false,
   -- Combined-scope display-only demotion threshold: a seen run inside a
   -- partially-seen hunk shorter than this collapses back to unseen rows rather
   -- than a `✓ marked` marker. 0 or 1 disables demotion entirely.
@@ -238,15 +239,17 @@ end
 -- `commits` (each with its own first-parent patch), and the `shas` to load from
 -- the store. For a work-tree target the diff runs base->work tree and the
 -- floating commit (tracked dirty edits + untracked files) is appended last.
--- The commit list and every commit's own diff come from a single
--- `log_patches` walk, so the commits scope costs no extra subprocess.
+-- In normal mode the commit list and ownership patches share one exact history
+-- walk; ignore mode adds a separate display-history walk.
 
-
--- Assemble the model from the fanned-out query results (pure: no git).
-local function assemble_model(worktree, files, commits, wt_files, untracked)
+-- Assemble the active display model from parsed display patches. Cached commit
+-- arrays are never mutated: the synthetic worktree commit and untracked files
+-- are attached only to fresh per-model arrays.
+local function assemble_model(worktree, files, patches, wt_files, untracked)
   for _, f in ipairs(files) do f.collapsed = false end
-  local shas = {}
-  for _, c in ipairs(commits) do
+  local commits, shas = {}, {}
+  for i, c in ipairs(patches) do
+    commits[i] = { sha = c.sha, summary = c.summary, files = c.files }
     shas[#shas + 1] = c.sha
   end
   if worktree then
@@ -256,13 +259,13 @@ local function assemble_model(worktree, files, commits, wt_files, untracked)
       ffiles[#ffiles + 1] = f
     end
     for _, f in ipairs(untracked or {}) do
-      f.collapsed = false
-      ffiles[#ffiles + 1] = f
+      local copy = vim.deepcopy(f)
+      copy.collapsed = false
+      ffiles[#ffiles + 1] = copy
     end
     -- `git diff <base>` (the combined net diff) omits untracked files, so attach
-    -- them to the combined file list too -- otherwise a brand-new file is visible
-    -- (and markable) only in commit scope. Fresh entries keep the two scopes'
-    -- ephemeral collapse state independent.
+    -- them to the combined file list too. Each scope gets its own entry because
+    -- collapse is ephemeral display state.
     for _, f in ipairs(untracked or {}) do
       local copy = vim.deepcopy(f)
       copy.collapsed = false
@@ -276,71 +279,125 @@ local function assemble_model(worktree, files, commits, wt_files, untracked)
   return files, commits, shas
 end
 
--- Fan out every query the model needs and assemble it when the last one lands:
--- the net diff, the first-parent log walk, and (for a work-tree target) the
--- tracked dirty diff plus the untracked listing. The queries are independent, so
--- they go out together; nothing blocks the UI thread. `cb(files, commits, shas)`
--- on success, `cb(nil, err)` on failure. Under an injected (test) runner every
--- callback fires synchronously, so `cb` runs before this returns.
+local function cached_patches(cache, mode, head)
+  local entry = cache and cache[mode]
+  if entry and head and entry.head == head then return entry.patches end
+  return nil
+end
+
+-- Fan out the active display projection and the exact ownership inputs. Exact
+-- first-parent and worktree patches are always acquired even when display
+-- patches use `--ignore-all-space`; only exact patches feed lineage. Committed
+-- walks are cached independently by resolved target and normalized diff mode.
+-- `cb(files, commits, shas, meta)` receives display files/commits plus
+-- `meta.lineage_commits` and `meta.lineage_worktree_files` on success.
 local function build_model_async(git, base, target, hints, cb)
   hints = hints or {}
   local worktree = target == M.WORKTREE
   local commit_target = worktree and "HEAD" or target
-  -- The committed layers depend only on (base, HEAD). When the poll has already
-  -- resolved HEAD and it hasn't moved, the cached patch list is still exact, so
-  -- the log walk is skipped entirely -- the common case (a save).
-  local reuse = hints.patches and hints.head and hints.head == hints.patches_head
+  local ignore_whitespace = hints.ignore_whitespace == true
+  local cache_head = hints.head
+  local exact_patches = cached_patches(hints.patch_cache, "exact", cache_head)
+  local display_mode = ignore_whitespace and "ignore-all-space" or "exact"
+  local display_patches = display_mode == "exact" and exact_patches
+    or cached_patches(hints.patch_cache, display_mode, cache_head)
   local jobs = {
     net = function(done)
       if worktree then
-        git:diff_to_worktree_async(base, done)
+        git:diff_to_worktree_async(base, ignore_whitespace, done)
       elseif hints.from_root then
-        git:diff_async(base, target, done)
+        git:diff_async(base, target, ignore_whitespace, done)
       else
-        git:combined_diff_async(base, target, done)
+        git:combined_diff_async(base, target, ignore_whitespace, done)
       end
     end,
   }
-  if not reuse then
+  if not exact_patches then
     if hints.from_root then
-      jobs.commits = function(done) git:log_patches_from_root_async(commit_target, done) end
+      jobs.exact_commits = function(done)
+        git:log_patches_from_root_async(commit_target, false, done)
+      end
     else
-      jobs.commits = function(done) git:log_patches_async(base, commit_target, done) end
+      jobs.exact_commits = function(done)
+        git:log_patches_async(base, commit_target, false, done)
+      end
+    end
+  end
+  if ignore_whitespace and not display_patches then
+    if hints.from_root then
+      jobs.display_commits = function(done)
+        git:log_patches_from_root_async(commit_target, true, done)
+      end
+    else
+      jobs.display_commits = function(done)
+        git:log_patches_async(base, commit_target, true, done)
+      end
     end
   end
   if worktree then
     if not hints.wt_diff_text then
-      jobs.wt = function(done) git:worktree_diff_async(done) end
+      jobs.exact_wt = function(done) git:worktree_diff_async(false, done) end
     end
-    -- Resolve HEAD when the caller didn't (the open path), so the walked
-    -- patches can be cached against it and the *next* refresh can reuse them.
-    if not hints.head then
-      jobs.head = function(done) git:run_async({ "rev-parse", "HEAD" }, done) end
+    if ignore_whitespace then
+      jobs.display_wt = function(done) git:worktree_diff_async(true, done) end
     end
     jobs.untracked = function(done) git:untracked_async(nil, done) end
+  end
+  -- Resolve the concrete committed target on the initial acquisition. It keys
+  -- both history modes; callers that already resolved it (polls/mode switches)
+  -- pass `hints.head` and can reuse a matching entry immediately.
+  if not hints.head then
+    jobs.head = function(done) git:run_async({ "rev-parse", commit_target }, done) end
   end
   git_mod.join(jobs, function(res)
     local files, ferr = res.net[1], res.net[2]
     if not files then return cb(nil, ferr) end
-    local patches = hints.patches
-    if not reuse then
-      local cerr
-      patches, cerr = res.commits[1], res.commits[2]
-      if not patches then return cb(nil, cerr) end
+    local exact_reused = exact_patches ~= nil
+    if not exact_patches then
+      local err
+      exact_patches, err = res.exact_commits[1], res.exact_commits[2]
+      if not exact_patches then return cb(nil, err) end
     end
-    -- The cached list must survive assemble_model appending the floating
-    -- commit to it, so the walk's entries are copied into a fresh array.
-    local commits = {}
-    for i, c in ipairs(patches) do
-      commits[i] = { sha = c.sha, summary = c.summary, files = c.files }
+    if display_mode == "exact" then
+      display_patches = exact_patches
+    elseif not display_patches then
+      local err
+      display_patches, err = res.display_commits[1], res.display_commits[2]
+      if not display_patches then return cb(nil, err) end
     end
-    local wt_files = hints.wt_diff_text and diff_mod.parse(hints.wt_diff_text)
-      or (res.wt and res.wt[1] or nil)
-    local f, c, s = assemble_model(worktree, files, commits, wt_files,
-      res.untracked and res.untracked[1] or nil)
-    local head = hints.head
+    local exact_wt_files = hints.wt_diff_text and diff_mod.parse(hints.wt_diff_text)
+      or (res.exact_wt and res.exact_wt[1] or nil)
+    if worktree and not exact_wt_files then
+      return cb(nil, res.exact_wt and res.exact_wt[2])
+    end
+    local display_wt_files = ignore_whitespace
+      and (res.display_wt and res.display_wt[1] or nil) or exact_wt_files
+    if worktree and ignore_whitespace and not display_wt_files then
+      return cb(nil, res.display_wt and res.display_wt[2])
+    end
+    local untracked = res.untracked and res.untracked[1] or nil
+    local lineage_worktree_files = {}
+    for _, file in ipairs(exact_wt_files or {}) do
+      lineage_worktree_files[#lineage_worktree_files + 1] = file
+    end
+    for _, file in ipairs(untracked or {}) do
+      lineage_worktree_files[#lineage_worktree_files + 1] = file
+    end
+    local f, c, s = assemble_model(worktree, files, display_patches,
+      display_wt_files, untracked)
+    local head = cache_head
       or (res.head and res.head[1] and (res.head[1]:gsub("%s+$", ""))) or nil
-    cb(f, c, s, { patches = patches, head = reuse and hints.patches_head or head, reused = reuse })
+    local patch_cache = {}
+    for mode, entry in pairs(hints.patch_cache or {}) do patch_cache[mode] = entry end
+    patch_cache.exact = { head = head, patches = exact_patches }
+    patch_cache[display_mode] = { head = head, patches = display_patches }
+    cb(f, c, s, {
+      patch_cache = patch_cache,
+      lineage_commits = exact_patches,
+      lineage_worktree_files = lineage_worktree_files,
+      head = head,
+      exact_reused = exact_reused,
+    })
   end)
 end
 
@@ -466,25 +523,24 @@ function Session:hunk_loaded(target)
 end
 
 -- Resolve combined-scope ownership for *every* path in one shot by composing
--- the ordered first-parent patches already fetched by `build_model` (plus the
--- floating work-tree layer last). Pure Lua, no subprocess: the single
--- `log_patches` walk that produced `self.commits` is the only git call the
--- combined view needs. Idempotent within a model generation.
+-- the exact ordered first-parent patches already fetched by `build_model` (plus
+-- the exact floating work-tree layer last). Pure Lua, no additional subprocess;
+-- display-only ignored patches never enter composition. Idempotent within a
+-- model generation.
 function Session:load_lineage()
   if self._owner then return self._owner end
   -- The committed layers depend only on (base, HEAD), so their composed state
   -- is cached across refreshes: a content-only reload re-applies just the
   -- work-tree layer over a clone of it (O(hunks) of pure Lua).
-  local committed, wt = {}, nil
-  for _, c in ipairs(self.commits) do
-    if c.sha == M.WORKTREE then wt = c else committed[#committed + 1] = c end
-  end
   local states = self._committed_states
   if not states then
-    states = lineage.extend({}, committed)
+    states = lineage.extend({}, self.lineage_commits or {})
     self._committed_states = states
   end
-  if wt then states = lineage.extend(lineage.clone(states), { wt }) end
+  if self.worktree then
+    local wt = { sha = M.WORKTREE, files = self.lineage_worktree_files or {} }
+    states = lineage.extend(lineage.clone(states), { wt })
+  end
   local owner = {}
   for path, maps in pairs(lineage.finish(states)) do
     owner[path] = { status = "loaded", prov = maps.prov, del_attr = maps.del_attr }
@@ -3181,8 +3237,8 @@ function Session:refresh_model(hints)
   build_model_async(self.git, self.base, self.target, {
     head = hints and hints.head,
     wt_diff_text = hints and hints.wt_diff_text,
-    patches = self._commit_patches,
-    patches_head = self._commit_head,
+    patch_cache = self._commit_patch_cache,
+    ignore_whitespace = self.ignore_whitespace,
     from_root = self.from_root,
   }, function(files, commits, shas, meta)
     if gen ~= self._refresh_gen then return end
@@ -3192,6 +3248,8 @@ function Session:refresh_model(hints)
     store:load(shas)
     self.files = files
     self.commits = commits
+    self.lineage_commits = meta.lineage_commits
+    self.lineage_worktree_files = meta.lineage_worktree_files
     self.store = store
     self._wt_lines = nil
     -- Ownership is recomposed wholesale from the patches, but the committed
@@ -3199,9 +3257,9 @@ function Session:refresh_model(hints)
     -- work-tree layer is re-applied. The per-file signatures survive as the
     -- input to incremental rendering.
     self._file_sigs = combined_file_sigs(files)
-    self._commit_patches = meta.patches
-    self._commit_head = meta.head
-    if not meta.reused then self._committed_states = nil end
+    self._commit_patch_cache = meta.patch_cache
+    self._commit_cache_head = meta.head
+    if not meta.exact_reused then self._committed_states = nil end
     self._owner = nil
     self.combined_files = nil
     self:apply_collapse()
@@ -3840,10 +3898,14 @@ function M.open(opts)
     target = opts.target,
     worktree = worktree,
     from_root = opts.from_root == true,
+    ignore_whitespace = opts.ignore_whitespace == nil
+      and M.config.ignore_whitespace or opts.ignore_whitespace == true,
     state_dir = state_dir,
     wt_shard = wt_shard,
     files = {},
     commits = {},
+    lineage_commits = {},
+    lineage_worktree_files = {},
     -- Baselines so the first content-only reload after open is already
     -- incremental (reuses the cached committed lineage) rather than re-walking
     -- the log once before the incremental path can engage.

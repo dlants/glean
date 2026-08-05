@@ -3233,6 +3233,156 @@ do
   h.assert_true("stage5: combined shows the merged line as seen",
     joined:find(" seen (", 1, true) ~= nil)
 end
+-- Ignore-whitespace model acquisition keeps display patches separate from the
+-- exact patches used for ownership, while preserving Git's real coordinates.
+do
+  local wr = testutil.make_repo({
+    { msg = "base", files = {
+      ["semantic.txt"] = "alpha\n\nbeta\n",
+      ["space.txt"] = "left right\n",
+      ["mixed.txt"] = "one\n two\n",
+      ["shift-add.txt"] = "top\nvalue\n",
+      ["shift-del.txt"] = "top\n\nvalue\n",
+    } },
+    { msg = "whitespace only", files = {
+      ["semantic.txt"] = "alpha\n   \nbeta\n",
+      ["space.txt"] = "left    right\n",
+      ["shift-add.txt"] = "top\n\nvalue\n",
+      ["shift-del.txt"] = "top\nvalue\n",
+    } },
+    { msg = "semantic edits", files = {
+      ["semantic.txt"] = "alpha\n   \nBETA\n",
+      ["mixed.txt"] = "one\n   TWO\n",
+      ["shift-add.txt"] = "top\n\nVALUE-ADD\n",
+      ["shift-del.txt"] = "top\nVALUE-DEL\n",
+    } },
+  })
+  local calls = {}
+  local function runw(args)
+    calls[#calls + 1] = vim.deepcopy(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = wr.root, env = wr.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local function settle()
+    vim.wait(50, function() return false end, 5)
+  end
+  local function wopen(scope, ignore)
+    local session = glean.open({
+      base = wr.shas[1], target = wr.shas[3], repo_root = wr.root, run = runw,
+      open_window = false, state_dir = vim.fn.tempname(), scope = scope,
+      ignore_whitespace = ignore,
+    })
+    settle()
+    return session
+  end
+
+  local normal = wopen("combined", false)
+  local normal_body = table.concat(api.nvim_buf_get_lines(normal.buf, 0, -1, false), "\n")
+  h.assert_true("whitespace model: normal projection includes whitespace-only file",
+    normal_body:find("space.txt", 1, true) ~= nil)
+  h.assert_true("whitespace model: normal projection includes whitespace-only row",
+    find_row(normal, function(_, line, t) return t and t.line and line == "+   " end) ~= nil)
+
+  local ignored = wopen("combined", true)
+  local ignored_body = table.concat(api.nvim_buf_get_lines(ignored.buf, 0, -1, false), "\n")
+  h.assert_true("whitespace model: ignored projection removes whitespace-only file",
+    ignored_body:find("space.txt", 1, true) == nil)
+  h.assert_true("whitespace model: ignored projection removes whitespace-only row",
+    find_row(ignored, function(_, line, t) return t and t.line and line == "+   " end) == nil)
+  h.assert_true("whitespace model: mixed semantic row retains exact text",
+    ignored_body:find("+   TWO", 1, true) ~= nil)
+
+  local beta_row = find_row(ignored, function(_, line, t)
+    return t and t.line and line == "+BETA"
+  end)
+  local beta_id = ignored:row_identity(ignored.row_map[beta_row])
+  h.assert_eq("whitespace model: displayed add maps through exact lineage",
+    beta_id.sha, wr.shas[3])
+  h.assert_eq("whitespace model: displayed add keeps commit coordinate", beta_id.lnum, 3)
+  local beta_jump = ignored:jump_target(beta_row)
+  local shifted_add_row = find_row(ignored, function(_, line, t)
+    return t and t.line and line == "+VALUE-ADD"
+  end)
+  local shifted_add_id = ignored:row_identity(ignored.row_map[shifted_add_row])
+  h.assert_eq("whitespace model: add after inserted blank maps to semantic commit",
+    shifted_add_id.sha, wr.shas[3])
+  h.assert_eq("whitespace model: add after inserted blank keeps shifted coordinate",
+    shifted_add_id.lnum, 3)
+  local shifted_del_row = find_row(ignored, function(_, line, t)
+    return t and t.line and line == "+VALUE-DEL"
+  end)
+  local shifted_del_id = ignored:row_identity(ignored.row_map[shifted_del_row])
+  h.assert_eq("whitespace model: add after removed blank maps to semantic commit",
+    shifted_del_id.sha, wr.shas[3])
+  h.assert_eq("whitespace model: add after removed blank keeps shifted coordinate",
+    shifted_del_id.lnum, 2)
+  h.assert_eq("whitespace model: source jump keeps target coordinate", beta_jump.lnum, 3)
+
+  local commit_view = wopen("commits", true)
+  local first_display_paths = {}
+  for _, file in ipairs(commit_view.commits[1].files) do
+    first_display_paths[file.path] = true
+  end
+  h.assert_true("whitespace model: commit projection hides whitespace-only files",
+    not first_display_paths["semantic.txt"] and not first_display_paths["space.txt"])
+  h.assert_true("whitespace model: exact lineage retains hidden patches",
+    #commit_view.lineage_commits[1].files > #commit_view.commits[1].files)
+  h.assert_true("whitespace model: semantic commit remains visible",
+    #commit_view.commits[2].files > 0)
+  local commit_body = table.concat(api.nvim_buf_get_lines(commit_view.buf, 0, -1, false), "\n")
+  h.assert_true("whitespace model: commit scope hides whitespace-only file",
+    commit_body:find("space.txt", 1, true) == nil)
+
+  -- A worktree session caches exact and ignored history independently. Moving
+  -- between projections with a known HEAD performs no repeated history walk,
+  -- and cached arrays never acquire the synthetic WORKTREE commit.
+  local live = glean.open({
+    base = wr.shas[1], target = glean.WORKTREE, repo_root = wr.root, run = runw,
+    open_window = false, state_dir = vim.fn.tempname(), ignore_whitespace = false,
+  })
+  local head = wr.run({ "rev-parse", "HEAD" })
+  local function log_counts()
+    local exact, ignored_count = 0, 0
+    for _, args in ipairs(calls) do
+      if args[1] == "log" then
+        local ignored_call = false
+        for _, arg in ipairs(args) do
+          if arg == "--ignore-all-space" then ignored_call = true end
+        end
+        if ignored_call then ignored_count = ignored_count + 1 else exact = exact + 1 end
+      end
+    end
+    return exact, ignored_count
+  end
+  calls = {}
+  live.ignore_whitespace = true
+  live:refresh_model({ head = head })
+  settle()
+  local exact_logs, ignored_logs = log_counts()
+  h.assert_eq("whitespace cache: switching mode reuses exact history", exact_logs, 0)
+  h.assert_eq("whitespace cache: first ignored projection walks once", ignored_logs, 1)
+  calls = {}
+  live.ignore_whitespace = false
+  live:refresh_model({ head = head })
+  settle()
+  live.ignore_whitespace = true
+  live:refresh_model({ head = head })
+  settle()
+  exact_logs, ignored_logs = log_counts()
+  h.assert_eq("whitespace cache: repeated switches reuse exact history", exact_logs, 0)
+  h.assert_eq("whitespace cache: repeated switches reuse ignored history", ignored_logs, 0)
+  h.assert_eq("whitespace cache: exact cache excludes synthetic commit",
+    #live._commit_patch_cache.exact.patches, 2)
+  h.assert_eq("whitespace cache: ignored cache excludes synthetic commit",
+    #live._commit_patch_cache["ignore-all-space"].patches, 2)
+  h.assert_eq("whitespace cache: active display has one synthetic commit",
+    live.commits[#live.commits].sha, glean.WORKTREE)
+  h.assert_eq("whitespace cache: exact lineage remains synthetic-free",
+    #live.lineage_commits, 2)
+end
+
 -- Command dispatch enters the list views instead of treating their names as
 -- dirty-review bases.
 do

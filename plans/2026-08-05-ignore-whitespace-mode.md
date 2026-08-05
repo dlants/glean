@@ -87,14 +87,19 @@ Alternatives considered:
   - The shared option helper is also applied to `range_diff`, since it is a diff-producing API, while `poll_async` intentionally remains exact and untracked synthesis remains option-free.
   - The blank-line fixture changes an empty line to a whitespace-only line. A newly inserted blank line is not hidden by Git's `--ignore-all-space` semantics and is therefore outside the promised behavior.
 
-## Canonical and display models
+## Canonical and display models — completed August 5, 2026
 
-- Goal: `build_model_async` returns active display files/commits plus exact lineage inputs, with separate cache keys for exact and ignored committed patches.
-- Tests:
+- [x] Goal: `build_model_async` returns active display files/commits plus exact lineage inputs, with separate cache keys for exact and ignored committed patches.
+- [x] Tests:
   - In ignore mode, whitespace-only files/hunks disappear from both combined and commit scopes, while mixed semantic changes remain.
-  - Exact lineage composition should receive exact patches even when the active display model is ignored.
-  - Displayed additions/deletions after inserted or removed blank lines should resolve to the correct commit owner and source line.
-  - Toggling repeatedly should reuse cached history for each mode and should not leak synthetic worktree commits into cached arrays.
+  - Exact lineage composition receives exact patches even when the active display model is ignored.
+  - Displayed additions/deletions after inserted or removed blank lines resolve to the correct commit owner and source line.
+  - Toggling repeatedly reuses cached history for each mode and does not leak synthetic worktree commits into cached arrays.
+- Decisions:
+  - `self.files` and `self.commits` remain the active display projection; `self.lineage_commits` and `self.lineage_worktree_files` are the exact ownership inputs consumed by `load_lineage`.
+  - Committed patch caches are stored by normalized mode (`exact` / `ignore-all-space`), with each entry carrying its resolved HEAD/target identity. A mode switch with a known HEAD can therefore reuse both histories independently.
+  - Cached commit arrays never receive the synthetic worktree commit. Display assembly creates fresh commit arrays, and exact untracked entries are included only in the separately synthesized lineage worktree layer.
+  - `ignore_whitespace = false` is now a setup/open default so model acquisition can select the display projection; the runtime keymap, toggle lifecycle, and header remain Stage 3 work.
 
 ## Runtime toggle and rendering
 
