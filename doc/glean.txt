@@ -50,6 +50,20 @@ commits			every commit laid out flat. Seen-marks and comments
 			combined view.
 
 ==============================================================================
+IGNORE WHITESPACE				*glean-ignore-whitespace*
+
+Press `W` to toggle ignore-whitespace mode for the current review. The header's
+scope label includes `ignore-whitespace` while the mode is enabled, and progress
+counts include only visible changes. Seen marks and comments remain in the same
+persistent review store and reappear unchanged when the mode is disabled.
+
+The displayed diff uses Git's `--ignore-all-space`: whitespace is ignored when
+comparing lines. Rendered text is not trimmed or normalized, so visible rows keep
+their exact content and source coordinates. This does not mean every blank line
+is removed; for example, a newly added blank line may remain a real addition.
+Untracked files render identically in both modes because they have no pre-image.
+
+==============================================================================
 SEEN / COLLAPSE						*glean-seen*
 
 Seen-ness is a flat set of stable line identities. A hunk is "seen" iff every
@@ -67,7 +81,9 @@ COMMENTS						*glean-comments*
 Comments are content-addressed records attached per path and re-anchored to
 their matching diff line on every render, so they follow the code as the diff
 changes. A comment whose anchor disappears is flagged outdated and shown in the
-file summary.
+file summary. A comment on a whitespace-only row hidden by ignore-whitespace mode
+is instead labeled `Hidden by whitespace mode` in the summary. Pressing <CR> on
+that entry disables the mode, reveals the row, and jumps to the inline comment.
 
 The comment editor opens in a markdown split. Submit with <CR> (normal mode) or
 by writing the buffer (`:w`); abort with `q` or <C-c>. Submitting an
@@ -97,6 +113,7 @@ Inside the glean buffer:
 	D		open an ephemeral side-by-side diff for the hunk
 			under the cursor
 	S		toggle scope (combined / commits)
+	W		toggle ignore-whitespace mode (Git --ignore-all-space)
 	q		close the window
 
 ==============================================================================
@@ -106,6 +123,7 @@ SETUP							*glean-setup*
 >lua
 	require("glean").setup({
 	  default_base = "main",   -- trunk used for fork-point / upstream resolution
+	  ignore_whitespace = false,  -- initial Git --ignore-all-space display mode
 	})
 <
 `setup` registers the `:Glean` command and defines the highlight groups
@@ -115,6 +133,12 @@ Options:
 
 	default_base	(string) Trunk used for fork-point / upstream
 			resolution. Default: "main".
+
+	ignore_whitespace
+			(boolean) Start newly opened reviews in ignore-whitespace
+			mode. Toggle the active review with `W`. This affects the
+			display and progress counts, not exact source text or
+			persisted review data. Default: false.
 
 ==============================================================================
 vim:tw=78:ts=8:ft=help:norl:

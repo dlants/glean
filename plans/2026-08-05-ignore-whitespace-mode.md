@@ -142,9 +142,14 @@ Alternatives considered:
   - An unchanged resolved HEAD reuses both committed patch caches; a changed HEAD causes both modes to walk history and replaces both cache entries before ownership is recomposed.
   - Neovim's `diffopt` is global rather than window-local. Ignored side-by-side views therefore reference-count a transient `iwhiteall` addition, force `diffupdate`, and remove only glean's addition as soon as either window in each pair closes; normal-mode splits never add it.
 
-## Documentation and full regression
+## Documentation and full regression — completed August 5, 2026
 
-- Goal: Public behavior, configuration, keymap, limitations, and terminology are documented and all suites pass.
-- Tests:
-  - Update README examples with `ignore_whitespace = false`, the `W` keymap, the header indication, hidden-comment behavior, and the fact that this means Git `--ignore-all-space` rather than trimming rendered text.
-  - Run `nvim -l lua/glean/run_tests.lua` from the repository root.
+- [x] Goal: Public behavior, configuration, keymap, limitations, and terminology are documented and all suites pass.
+- [x] Tests:
+  - Updated README examples with `ignore_whitespace = false`, the `W` keymap, the header indication, hidden-comment behavior, and the fact that this means Git `--ignore-all-space` rather than trimming rendered text.
+  - Ran `nvim -l lua/glean/run_tests.lua` from the repository root: all 13 suites passed (1,089 assertions total).
+  - Regenerated/validated Neovim help tags with `nvim --clean -u NONE -i NONE --headless '+helptags doc' +qa` and verified `git diff --check` passes.
+- Decisions:
+  - Updated both `README.md` and `doc/glean.txt` so the installed `:help glean` documentation matches the public README.
+  - Documentation calls out Git's exact comparison semantics, including that newly added blank lines may remain visible and untracked files are unaffected because they have no pre-image.
+  - The repository has no configured typecheck or lint command. A standalone `stylua --check lua` does not match the repository's established formatting and reports pre-existing whole-tree differences, so no unrelated formatting rewrite was made.

@@ -58,6 +58,23 @@ Toggle with `S`:
   against a stable `(commit_sha, path, line)` identity here, and the same mark
   is reflected in the combined view.
 
+## Ignore whitespace mode
+
+Press `W` to toggle ignore-whitespace mode for the current review. While enabled,
+the scope label in the header includes `ignore-whitespace`, and progress counts
+cover only the changes still visible in that mode. The setting is view state for
+the review session: it does not create a separate review store, and toggling back
+restores whitespace-only rows together with their existing seen marks and
+comments.
+
+This mode uses Git's `--ignore-all-space` when producing the displayed diff:
+whitespace is ignored while comparing lines. glean does not trim or normalize
+the text it renders, so visible lines retain their exact content and source line
+numbers. In particular, this is Git's behavior rather than a rule that removes
+every blank line; a newly added blank line may still be a real addition.
+Untracked files have no pre-image to compare and therefore render identically in
+both modes.
+
 ## Seen / collapse
 
 Seen-ness is a flat set of stable line identities. A hunk is "seen" iff every
@@ -86,7 +103,10 @@ unseen.
 Comments are content-addressed records attached per path and re-anchored to
 their matching diff line on every render, so they follow the code as the diff
 changes. A comment whose anchor disappears is flagged outdated and shown in the
-file summary.
+file summary. If its anchor is merely a whitespace-only row hidden by
+ignore-whitespace mode, the summary instead labels it `Hidden by whitespace
+mode`. Pressing `<CR>` on that summary entry disables the mode, reveals the
+original row, and jumps to the inline comment.
 
 The comment editor opens in a markdown split. Submit with `<CR>` (normal mode)
 or by writing the buffer (`:w`); abort with `q` or `<C-c>`. Submitting an
@@ -117,6 +137,7 @@ header.
 - `<CR>` — jump to the source line (live file when the ref is HEAD, else a read-only `git show` buffer); on a comment-summary row, navigate to the comment/file in the diff instead
 - `D` — open an ephemeral side-by-side diff for the hunk under the cursor
 - `S` — toggle scope (combined / commits)
+- `W` — toggle ignore-whitespace mode (Git `--ignore-all-space`)
 - `q` — close the window
 
 ## Installation
@@ -136,6 +157,7 @@ glean has no external plugin dependencies — it shells out to `git`. Neovim
 ```lua
 require("glean.init").setup({
   default_base = "main",   -- trunk used for fork-point / upstream resolution
+  ignore_whitespace = false,  -- start reviews with Git --ignore-all-space display mode
   min_seen_run = 5,        -- combined-scope: demote seen runs shorter than this to unseen
   hunk_indent = 2,         -- display indent for the active hunk body
   hunk_indent_delay_ms = 50,  -- wait before applying the active-hunk indent
@@ -144,6 +166,11 @@ require("glean.init").setup({
 
 `setup` registers the `:Glean` command and defines the
 highlight groups (re-derived from `DiffAdd`/`DiffDelete` on every `ColorScheme`).
+
+`ignore_whitespace` selects the initial display mode for newly opened reviews;
+`W` can change it in place at any time. The mode affects rendered files, hunks,
+changed lines, and progress counts, but source buffers and persisted review data
+remain exact.
 
 ### `min_seen_run`
 
