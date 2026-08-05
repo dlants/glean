@@ -44,6 +44,7 @@ M.WORKTREE = "WORKTREE"
 local NS = api.nvim_create_namespace("glean_hl")
 local NS_INTRA = api.nvim_create_namespace("glean_intra_hl")
 local NS_CURSOR = api.nvim_create_namespace("glean_cursor_hl")
+local NS_CURSOR_INDENT = api.nvim_create_namespace("glean_cursor_indent")
 local NS_STICKY = api.nvim_create_namespace("glean_sticky_hl")
 
 
@@ -53,6 +54,9 @@ M.config = {
   -- partially-seen hunk shorter than this collapses back to unseen rows rather
   -- than a `✓ marked` marker. 0 or 1 disables demotion entirely.
   min_seen_run = 5,
+  -- Display indentation applied to the active hunk body (the header stays put).
+  hunk_indent = 2,
+  hunk_indent_delay_ms = 50,
 }
 
 -- Registry of live glean buffers, keyed by (repo_root, base, target), so a
@@ -1066,7 +1070,7 @@ function Session:build()
     flush()
   end
 
-  local function emit_file_body(file, target_base, owner, seen_ck, comments_by_ord)
+  local function emit_file_body(file, target_base, owner, seen_ck, comments_by_ord, indent)
     local seen_idx, unseen_idx = {}, {}
     local base_ord = {}
     local acc = 0
@@ -1080,16 +1084,22 @@ function Session:build()
     -- "seen (N hunks)" toggle, default collapsed. When expanded, the seen hunks
     -- show and a "--- unseen ---" divider marks where the bare unseen work below
     -- begins.
+    local emitted_hunk = false
+    local function emit_body_hunk(hi, sec)
+      if emitted_hunk then emit("", {}) end
+      emit_hunk(file.hunks[hi], hi, target_base, owner, base_ord[hi], comments_by_ord, sec, file.path)
+      emitted_hunk = true
+    end
     local seen_expanded = false
     if #seen_idx > 0 then
       local c = self.collapse[seen_ck]; if c == nil then c = true end
       seen_expanded = not c
       local chev = c and CHEVRON_CLOSED or CHEVRON_OPEN
-      emit(("%s seen (%d hunks)"):format(chev, #seen_idx),
+      emit(("%s%s seen (%d hunks)"):format(indent, chev, #seen_idx),
         vim.tbl_extend("force", target_base, { seen = true }), "GleanSeen")
       if not c then
         for _, hi in ipairs(seen_idx) do
-          emit_hunk(file.hunks[hi], hi, target_base, owner, base_ord[hi], comments_by_ord, "seen", file.path)
+          emit_body_hunk(hi, "seen")
         end
       end
     end
@@ -1100,7 +1110,7 @@ function Session:build()
       emit("--- unseen ---", target_base, "GleanDivider")
     end
     for _, hi in ipairs(unseen_idx) do
-      emit_hunk(file.hunks[hi], hi, target_base, owner, base_ord[hi], comments_by_ord, "unseen", file.path)
+      emit_body_hunk(hi, "unseen")
     end
   end
 
@@ -1165,7 +1175,7 @@ function Session:build()
             if not file.collapsed then
               emit_file_body(file, { commit = ci, file = fi },
                 self:commit_owner(commit),
-                seen_key(commit.sha, file.path), self:resolve_comments(file))
+                seen_key(commit.sha, file.path), self:resolve_comments(file), indent .. "  ")
             end
           end
         end
@@ -1216,7 +1226,7 @@ function Session:build()
           emit("  ⟳ resolving review state…", tb, "GleanSeen")
         else
           emit_file_body(cf, tb, self:combined_owner(cf.path),
-            cseen_key(cf.path), self:resolve_comments(cf))
+            cseen_key(cf.path), self:resolve_comments(cf), ("  "):rep(node.depth + 1))
         end
       end
        end)
@@ -1585,16 +1595,25 @@ function Session:apply_intraline(blocks, ranges)
   vim.schedule(step)
 end
 
--- Mark every row of the hunk under the cursor with a `▌` bar in the sign column,
--- so the active hunk's extent reads as a single contiguous block in the gutter.
--- Cleared and reapplied on each move.
+-- Shift the active hunk body to the right while keeping its header fixed, and
+-- retain the gutter bar as a secondary boundary cue. Inline virtual text keeps
+-- this display-only: row_map and the read-only buffer projection stay unchanged.
 function Session:highlight_cursor_hunk()
   if not (self.buf and api.nvim_buf_is_valid(self.buf)) then return end
-  api.nvim_buf_clear_namespace(self.buf, NS_CURSOR, 0, -1)
   if not (self.win and api.nvim_win_is_valid(self.win)) then return end
-  api.nvim_set_option_value("signcolumn", "yes:1", { win = self.win })
   local t = self.row_map[self:cursor_row()]
+  local state = (t and t.hunk) and table.concat({
+    t.commit or 0, t.file or 0, t.cfile or 0, t.hunk, self._render_gen or 0,
+  }, ":") or ("none:" .. (self._render_gen or 0))
+  if self._cursor_hunk_state == state then return end
+  self._cursor_hunk_state = state
+  self._cursor_indent_gen = (self._cursor_indent_gen or 0) + 1
+  local indent_gen = self._cursor_indent_gen
+  api.nvim_buf_clear_namespace(self.buf, NS_CURSOR, 0, -1)
+  api.nvim_buf_clear_namespace(self.buf, NS_CURSOR_INDENT, 0, -1)
+  api.nvim_set_option_value("signcolumn", "yes:1", { win = self.win })
   if not (t and t.hunk) then return end
+  local indent = string.rep(" ", math.max(0, tonumber(self.hunk_indent) or 0))
   local function same(o)
     return o and o.hunk == t.hunk and o.commit == t.commit
       and o.file == t.file and o.cfile == t.cfile
@@ -1608,6 +1627,21 @@ function Session:highlight_cursor_hunk()
       })
     end
   end
+  if #indent == 0 then return end
+  local function apply_indent()
+    if indent_gen ~= self._cursor_indent_gen or self._cursor_hunk_state ~= state
+        or not api.nvim_buf_is_valid(self.buf) then return end
+    for r, o in pairs(self.row_map) do
+      if same(o) and not (o.line == nil and o.marker == nil and o.comment == nil) then
+        api.nvim_buf_set_extmark(self.buf, NS_CURSOR_INDENT, r, 0, {
+          virt_text = { { indent, "Normal" } },
+          virt_text_pos = "inline",
+        })
+      end
+    end
+  end
+  local delay = math.max(0, tonumber(self.hunk_indent_delay_ms) or 0)
+  if delay == 0 then apply_indent() else vim.defer_fn(apply_indent, delay) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -2032,6 +2066,28 @@ function Session:section_action(sec)
   }, (not cur)
 end
 
+function Session:collapse_header_row(target)
+  for r, t in pairs(self.row_map) do
+    if target.marker then
+      local a, b = target.marker, t.marker
+      if b and not t.line and t.commit == target.commit and t.file == target.file
+          and t.cfile == target.cfile and t.hunk == target.hunk
+          and b.lo == a.lo and b.hi_line == a.hi_line then return r end
+    elseif target.dir then
+      if t.dir == target.dir and t.commit == target.commit then return r end
+    elseif target.cfile then
+      if t.cfile == target.cfile and not t.hunk and not t.line and not t.seen then return r end
+    elseif target.file then
+      if t.commit == target.commit and t.file == target.file
+          and not t.hunk and not t.line and not t.seen then return r end
+    elseif target.commit then
+      if t.commit == target.commit and not t.file and not t.cfile and not t.dir
+          and not t.hunk then return r end
+    end
+  end
+  return nil
+end
+
 function Session:toggle_collapse(row)
   if row == nil then row = self:cursor_row() end
   local target = self.row_map[row]
@@ -2043,6 +2099,7 @@ function Session:toggle_collapse(row)
     local action = self:collapse_action(target)
     if action then self:perform(action) end
     self:render()
+    if action and action.value then self:restore_cursor(self:collapse_header_row(target)) end
     return
   end
 
@@ -2073,6 +2130,7 @@ function Session:toggle_collapse(row)
   local action = self:collapse_action(target)
   if action then self:perform(action) end
   self:render()
+  if action and action.value then self:restore_cursor(self:collapse_header_row(target)) end
 end
 
 -- Build the collapse action for `target`, or nil if the target is not
@@ -3792,6 +3850,8 @@ function M.open(opts)
     _file_sigs = {},
     scope = opts.scope or "combined",
     min_seen_run = opts.min_seen_run or M.config.min_seen_run,
+    hunk_indent = opts.hunk_indent or M.config.hunk_indent,
+    hunk_indent_delay_ms = opts.hunk_indent_delay_ms or M.config.hunk_indent_delay_ms,
     buf = buf,
     win = nil,
     row_map = {},

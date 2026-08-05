@@ -137,6 +137,8 @@ glean has no external plugin dependencies — it shells out to `git`. Neovim
 require("glean.init").setup({
   default_base = "main",   -- trunk used for fork-point / upstream resolution
   min_seen_run = 5,        -- combined-scope: demote seen runs shorter than this to unseen
+  hunk_indent = 2,         -- display indent for the active hunk body
+  hunk_indent_delay_ms = 50,  -- wait before applying the active-hunk indent
 })
 ```
 

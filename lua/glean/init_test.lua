@@ -39,9 +39,11 @@ local function open(o)
     target = target,
     repo_root = repo.root,
     run = inject_run,
-    open_window = false,
+    open_window = o.open_window == true,
     state_dir = o.state_dir or state_dir,
     scope = o.scope,
+    hunk_indent = o.hunk_indent,
+    hunk_indent_delay_ms = o.hunk_indent_delay_ms,
     identifier = o.identifier,
   })
 end
@@ -123,6 +125,46 @@ do
   h.assert_eq("collapse: re-expand restores rows", restored, before)
 end
 
+-- The active hunk body shifts right without moving its header; leaving the hunk
+-- removes the display-only indentation. The configured width is used verbatim.
+do
+  local s = open({
+    open_window = true, state_dir = vim.fn.tempname(),
+    hunk_indent = 4, hunk_indent_delay_ms = 50,
+  })
+  local body, header, file_header
+  for row, t in pairs(s.row_map) do
+    if t.cfile and t.line and not body then body = row end
+    if t.cfile and t.hunk and not t.line and not t.marker and not header then header = row end
+    if t.cfile and not t.hunk and not file_header then file_header = row end
+  end
+  api.nvim_win_set_cursor(s.win, { body + 1, 0 })
+  s:highlight_cursor_hunk()
+  local ns = api.nvim_get_namespaces().glean_cursor_indent
+  h.assert_eq("hunk indent: delayed before display",
+    #api.nvim_buf_get_extmarks(s.buf, ns, 0, -1, {}), 0)
+  h.assert_true("hunk indent: appears after configured delay", vim.wait(500, function()
+    return #api.nvim_buf_get_extmarks(s.buf, ns, 0, -1, {}) > 0
+  end, 5))
+  local marks = api.nvim_buf_get_extmarks(s.buf, ns, 0, -1, { details = true })
+  local by_row = {}
+  for _, mark in ipairs(marks) do by_row[mark[2]] = mark[4] end
+  h.assert_true("hunk indent: header stays fixed", by_row[header] == nil)
+  h.assert_eq("hunk indent: configured width shifts body",
+    by_row[body].virt_text[1][1], "    ")
+  api.nvim_win_set_cursor(s.win, { file_header + 1, 0 })
+  s:highlight_cursor_hunk()
+  h.assert_eq("hunk indent: leaving hunk clears indentation",
+    #api.nvim_buf_get_extmarks(s.buf, ns, 0, -1, {}), 0)
+
+  -- Collapsing from inside a section parks the cursor on the header that remains.
+  api.nvim_win_set_cursor(s.win, { body + 1, 0 })
+  s:toggle_collapse()
+  local target = s.row_map[s:cursor_row()]
+  h.assert_true("collapse cursor: moves from body to collapsed file header",
+    target and target.cfile and not target.hunk and not target.line)
+  s:toggle_collapse()
+end
 -- Helpers for commit-scope tests.
 local function find_row(s, pred)
   local n = api.nvim_buf_line_count(s.buf)
@@ -1512,6 +1554,16 @@ do
   -- Mark the L2 hunk seen via the UI (routes each line, incl. context, to its
   -- owning commit). It forms its own hunk, separate from the L10 hunk.
   local s = open3()
+  local hunk_rows = {}
+  for row, t in pairs(s.row_map) do
+    if t.cfile and t.hunk and not t.line and not t.marker then
+      hunk_rows[#hunk_rows + 1] = row
+    end
+  end
+  table.sort(hunk_rows)
+  h.assert_eq("two-hunk: both hunk headers rendered", #hunk_rows, 2)
+  h.assert_eq("two-hunk: blank row separates hunks",
+    api.nvim_buf_get_lines(s.buf, hunk_rows[2] - 1, hunk_rows[2], false)[1], "")
   local l2row = find_row(s, function(_, line, t)
     return t and t.cfile and t.hunk and line:find("+L2", 1, true)
   end)

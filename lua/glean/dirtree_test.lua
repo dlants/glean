@@ -152,6 +152,8 @@ for _, scope in ipairs({ "combined", "commits" }) do
     h.assert_true(label .. "mark: nothing seen initially", not seen_state(s, "src").any)
     s:toggle_seen(dir_row(s, "src"))
     h.assert_true(label .. "mark: both files under src/ marked seen", seen_state(s, "src").all)
+    h.assert_true(label .. "mark: seen header is indented beneath its file",
+      buftext(s):find("\n    ▶ seen (1 hunks)", 1, true) ~= nil)
     h.assert_true(label .. "mark: root.txt untouched",
       buftext(s):find("\n+R", 1, true) ~= nil)
     s:toggle_seen(dir_row(s, "src"))
