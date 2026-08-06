@@ -33,10 +33,10 @@ pasted snippet is a sufficient address.
 
 - **Session id** — in the buffer name: `Glean:g2 glean main [8df5247a..09997456]`
   → the session is `"g2"`. Pass `nil` when only one review is open.
-- **Comment id** — the bracketed token of a comment row: `💬 [7] why is this
-  needed?` → the comment is `7` (a number, not a string). The same `[7]` token
-  appears in the review's comments summary section. Your reply renders beneath
-  the comment as an indented `↳` block.
+- **Comment id** — the bracketed token that opens a comment row: `💬 [7] why is
+  this needed?` inline in the diff, or `[7] L51  <code preview>` in the
+  comments summary at the bottom → the comment is `7` (a number, not a string).
+  Your reply renders beneath the comment as an indented `↳` block.
 
 ## Entry points
 

@@ -103,9 +103,9 @@ unseen.
 Comments are content-addressed records attached per path and re-anchored to
 their matching diff line on every render, so they follow the code as the diff
 changes. A comment whose anchor disappears is flagged outdated and shown in the
-file summary. If its anchor is merely a whitespace-only row hidden by
-ignore-whitespace mode, the summary instead labels it `Hidden by whitespace
-mode`. Pressing `<CR>` on that summary entry disables the mode, reveals the
+file summary as `(outdated)`. If its anchor is merely a whitespace-only row
+hidden by ignore-whitespace mode, the summary instead labels it `(hidden)`.
+Pressing `<CR>` on that summary entry disables the mode, reveals the
 original row, and jumps to the inline comment.
 
 The comment editor opens in a markdown split. Submit with `<CR>` (normal mode)
@@ -113,6 +113,9 @@ or by writing the buffer (`:w`); abort with `q` or `<C-c>`. Submitting an
 empty/whitespace-only buffer is treated as an abort.
 
 Every comment is also listed in a summary section at the bottom of the buffer.
+Each entry is one header row — `[id] L<lnum>` plus a truncated preview of the
+anchored line — followed by the comment text under `💬` and the agent reply
+under `↳`.
 The summary rows are live: `i`/`dd` edit or delete the comment from there,
 visual `d` deletes all selected comments as one undoable action, and
 `<CR>` navigates back into the diff — on a comment row it expands that hunk and

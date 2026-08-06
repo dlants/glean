@@ -1149,6 +1149,31 @@ end
 -- Build (pure projection): returns lines, row_map, highlights, comments.
 -- ---------------------------------------------------------------------------
 
+-- Comment-summary rows are laid out (not soft-wrapped) so the projection stays
+-- a pure list of strings; SUMMARY_WIDTH is the column budget they wrap at.
+local SUMMARY_WIDTH = 100
+
+local function wrap_text(text, width, indent, cont)
+  local out = {}
+  for _, para in ipairs(vim.split(text, "\n", { plain = true })) do
+    local lead = indent
+    local room = width - vim.fn.strchars(lead)
+    local line
+    for word in para:gmatch("%S+") do
+      if not line then
+        line = word
+      elseif vim.fn.strchars(line) + 1 + vim.fn.strchars(word) <= room then
+        line = line .. " " .. word
+      else
+        out[#out + 1] = lead .. line
+        lead, room, line = cont, width - vim.fn.strchars(cont), word
+      end
+    end
+    out[#out + 1] = lead .. (line or "")
+  end
+  return out
+end
+
 function Session:build()
   -- Worktree seen-marks are resolved positionally against the live diff; the
   -- per-path ord cache is rebuilt each render since the diff may have changed.
@@ -1479,15 +1504,16 @@ function Session:build()
   local summary = self:collect_comments()
   if #summary.order > 0 then
    section("comments", function()
-    emit("", {})
-    emit("## comments", {}, "GleanModeHeader")
+    local total = 0
+    for _, path in ipairs(summary.order) do total = total + #summary.by_path[path] end
+    emit(("comments (%d)"):format(total), {}, "GleanModeHeader")
     for _, path in ipairs(summary.order) do
       -- `<CR>` on the file row jumps to that file's header in the diff above.
       emit("", {})
-      emit("### " .. path, { summary_file = path }, "GleanFileHeader")
+      emit("▾ " .. path, { summary_file = path }, "GleanFileHeader")
       for _, e in ipairs(summary.by_path[path]) do
-        local loc = e.outdated and "(Outdated)"
-          or e.hidden and "(Hidden by whitespace mode)"
+        local loc = e.outdated and "(outdated)"
+          or e.hidden and "(hidden)"
           or (e.lnum and ("L%d"):format(e.lnum) or "L?")
         -- The comment record carried so `dd`/`i`/`e` act on it directly, plus
         -- `summary_comment` so `<CR>` expands its hunk and jumps to it above.
@@ -1496,18 +1522,25 @@ function Session:build()
           reply = e.reply, outdated = e.outdated, hidden = e.hidden,
         }
         local ctarget = { comment = c, summary_comment = { path = path } }
-        emit("", {})
-        emit(("**%s** `%s`"):format(loc, (e.line:gsub("^%s+", ""):gsub("`", "'"))), ctarget,
+        local tag = ("[%d]"):format(e.id)
+        local snippet = e.line:gsub("^%s+", "")
+        if #e.content > 1 then snippet = snippet .. (" …+%d"):format(#e.content - 1) end
+        local prefix = ("  %s %s  "):format(tag, loc)
+        -- The full anchored block is one `<CR>` away in the diff above, so the
+        -- header only needs enough of the first line to recognize the site.
+        local room = math.max(20, SUMMARY_WIDTH - #prefix)
+        if vim.fn.strchars(snippet) > room then
+          snippet = vim.fn.strcharpart(snippet, 0, room - 1) .. "…"
+        end
+        local hrow = emit(prefix .. snippet, ctarget,
           (e.outdated or e.hidden) and "GleanSeen" or "GleanContext")
-        emit("", {})
-        for i, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
-          local tag = (i == 1 and e.id) and ("[" .. e.id .. "] ") or ""
-          local row = emit(tag .. part, ctarget, "GleanComment")
-          if tag ~= "" then hl_span(row, 0, #tag, "GleanCommentId") end
+        hl_span(hrow, 2, 2 + #tag, "GleanCommentId")
+        for _, row in ipairs(wrap_text(e.text, SUMMARY_WIDTH, "      💬 ", "         ")) do
+          emit(row, ctarget, "GleanComment")
         end
         if e.reply then
-          for _, part in ipairs(vim.split(e.reply, "\n", { plain = true })) do
-            emit("   ↳ " .. part, ctarget, "GleanCommentReply")
+          for _, row in ipairs(wrap_text(e.reply, SUMMARY_WIDTH, "      ↳ ", "        ")) do
+            emit(row, ctarget, "GleanCommentReply")
           end
         end
       end
