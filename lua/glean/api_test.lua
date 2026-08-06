@@ -167,9 +167,58 @@ do
   wipe(b)
   wipe(a)
 end
--- The api is read-only in this stage: no mutating entry points are exposed.
+-- Mutations: reply/unreply by (session, id), undoable, persisted, rendered.
+do
+  local s = open()
+  local target_id = gapi.comments(nil, { path = "g.txt" })[1].id
+  local before = gapi.comments(nil, { path = "g.txt" })[1]
+  gapi.reply(nil, target_id, "agent says hi")
+  local after = gapi.comments(nil, { path = "g.txt" })[1]
+  h.assert_eq("reply: surfaced", after.reply, "agent says hi")
+  h.assert_eq("reply: text untouched", after.text, before.text)
+  h.assert_eq("reply: id untouched", after.id, before.id)
+  local joined = table.concat(vapi.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("reply: rendered in the buffer",
+    joined:find("agent says hi", 1, true) ~= nil)
+
+  gapi.reply(nil, target_id, "second answer")
+  h.assert_eq("reply: replaces, not accumulates",
+    gapi.comments(nil, { path = "g.txt" })[1].reply, "second answer")
+
+  s:undo()
+  h.assert_eq("undo: back to the previous reply",
+    gapi.comments(nil, { path = "g.txt" })[1].reply, "agent says hi")
+  s:undo()
+  h.assert_true("undo: back to unanswered",
+    gapi.comments(nil, { path = "g.txt" })[1].reply == nil)
+
+  gapi.reply(nil, target_id, "final answer")
+  gapi.unreply(nil, target_id)
+  h.assert_true("unreply: cleared",
+    gapi.comments(nil, { path = "g.txt" })[1].reply == nil)
+  gapi.reply(nil, target_id, "final answer")
+
+  local ok, err = pcall(gapi.reply, nil, 99999, "nope")
+  h.assert_true("reply: unknown id errors", not ok)
+  h.assert_true("reply: unknown id message",
+    tostring(err):find("99999", 1, true) ~= nil, tostring(err))
+  local ok2 = pcall(gapi.reply, nil, target_id, "")
+  h.assert_true("reply: empty text errors", not ok2)
+
+  wipe(s)
+  local reopened = open()
+  h.assert_eq("reply: persists across reopen",
+    gapi.comments(nil, { path = "g.txt" })[1].reply, "final answer")
+  wipe(reopened)
+end
+
+-- The api can never author or destroy a human comment: reply is the only write.
 do
   h.assert_true("surface: no add", gapi.add == nil)
   h.assert_true("surface: no delete", gapi.delete == nil)
+  h.assert_true("surface: no remove", gapi.remove == nil)
+  h.assert_true("surface: no edit", gapi.edit == nil)
+  h.assert_true("surface: reply exists", type(gapi.reply) == "function")
+  h.assert_true("surface: unreply exists", type(gapi.unreply) == "function")
 end
 h.finish()

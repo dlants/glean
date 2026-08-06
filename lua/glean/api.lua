@@ -108,4 +108,37 @@ function M.comments(session, opts)
   end
   return out
 end
+-- The stored record for `id` in this review, plus its path, or an error naming
+-- the id. Never a silent no-op: an unknown id is a caller bug.
+local function find_record(s, id)
+  for _, pair in ipairs(s:comment_file_pairs()) do
+    local path = pair.exact.path
+    for _, rec in ipairs(s.store:comments_for(path)) do
+      if rec.id == id then
+        return vim.tbl_extend("force", rec, { path = path })
+      end
+    end
+  end
+  error(("glean: no comment with id %s in this review"):format(tostring(id)), 0)
+end
+
+-- Set the agent reply on a comment, replacing any previous one. The human's
+-- `text` is never touched. Routed through `Session:perform`, so it undoes with
+-- `u` in the buffer, persists through the normal save path, and re-renders.
+function M.reply(session, id, text)
+  if type(text) ~= "string" or text == "" then
+    error("glean: reply text must be a non-empty string", 0)
+  end
+  local s = M.session(session)
+  s:set_comment_reply(find_record(s, id), text)
+  return true
+end
+
+-- Clear the agent reply on a comment (a no-op reply-to-nil, still undoable).
+function M.unreply(session, id)
+  local s = M.session(session)
+  s:set_comment_reply(find_record(s, id), nil)
+  return true
+end
+
 return M

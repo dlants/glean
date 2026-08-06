@@ -125,14 +125,26 @@ Decisions/deviations:
 - `review_title` gained an `id` parameter; the two title assertions in `init_test.lua` were
   updated for the `Glean:<id> <repo> …` prefix and the 8-char oids.
 
-## mutations
+## mutations — DONE
 
 - Goal: `reply` and `unreply` work by `(session, id)` and are visible in the buffer immediately.
-- Tests:
-  - `reply(session, id, "x")` shows up on the next `comments()` and in the rendered buffer; the parent `text` and `id` are unchanged.
-  - `u` in the buffer after an api mutation reverses it (the action went through `perform`).
-  - Mutations persist: reopening the session from the same state dir lists them.
-  - There is no way to reach a comment's `text` or remove a record through the API.
+- Work (done): `api.reply(session, id, text)` / `api.unreply(session, id)` plus a private
+  `find_record(session, id)` that walks `comment_file_pairs()` and errors on an unknown id.
+  Both delegate to the existing `Session:set_comment_reply`, which performs the undoable
+  `reply` action and re-renders.
+- Tests (done, `api_test.lua`):
+  - `reply` surfaces on the next `comments()` and in the rendered buffer; `text` and `id` unchanged.
+  - Replying twice replaces rather than accumulates.
+  - `Session:undo()` after api mutations walks back through the previous reply to unanswered.
+  - `unreply` clears; mutations persist across a wipe + reopen from the same state dir.
+  - Unknown id and empty reply text both error; the surface exposes no `add`/`edit`/`remove`/`delete`.
+
+Decisions/deviations:
+
+- `api.reply` rejects a non-string or empty reply rather than silently clearing; clearing is
+  `api.unreply`, so the two intents can't be confused by a JSON round-trip dropping a value.
+- `find_record` returns a copy of the stored record extended with its `path`, which is exactly
+  the shape `Session:set_comment_reply` expects — no new store primitive was needed.
 
 ## skill
 
