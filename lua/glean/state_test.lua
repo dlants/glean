@@ -287,4 +287,68 @@ do
     vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
 end
 
+-- Comment ids and agent replies: ids are minted monotonically, stamped on the
+-- record, and survive a save/reload; a reply round-trips and replaces rather
+-- than accumulating; legacy shards written before ids get them backfilled.
+do
+  local dir = vim.fn.tempname()
+  local s = state.new({ dir = dir })
+  s:load({ state.COMMENTS_ID })
+  s:add_comment_record("f.txt", { anchor = 1, content = { "a" }, text = "one" })
+  s:add_comment_record("g.txt", { anchor = 2, content = { "b" }, text = "two" })
+  local id1 = s:comments_for("f.txt")[1].id
+  local id2 = s:comments_for("g.txt")[1].id
+  h.assert_eq("ids: monotonic", id2, id1 + 1)
+  h.assert_true("ids: no reply by default", s:comments_for("f.txt")[1].reply == nil)
+  s:set_comment_reply("f.txt", { id = id1 }, "first answer")
+  s:set_comment_reply("f.txt", { id = id1 }, "second answer")
+  local replied = s:comments_for("f.txt")[1]
+  h.assert_eq("reply: replaces", replied.reply, "second answer")
+  h.assert_eq("reply: text untouched", replied.text, "one")
+  s:save_commit(state.COMMENTS_ID)
+
+  local s2 = state.new({ dir = dir })
+  s2:load({ state.COMMENTS_ID })
+  h.assert_eq("reply: survives reload", s2:comments_for("f.txt")[1].reply, "second answer")
+  h.assert_eq("ids: survive reload", s2:comments_for("f.txt")[1].id, id1)
+  h.assert_true("reply: unrelated record keeps nil reply",
+    s2:comments_for("g.txt")[1].reply == nil)
+  -- A fresh id after reload never collides with a persisted one.
+  s2:add_comment_record("f.txt", { anchor = 3, content = { "c" }, text = "three" })
+  h.assert_eq("ids: seq resumes past reload", s2:comments_for("f.txt")[2].id, id2 + 1)
+  -- Clearing a reply (undo of a reply) restores the unanswered state.
+  s2:set_comment_reply("f.txt", { id = id1 }, nil)
+  h.assert_true("reply: clears", s2:comments_for("f.txt")[1].reply == nil)
+  -- An unknown id matches nothing.
+  h.assert_true("reply: unknown id no-ops", s2:set_comment_reply("f.txt", { id = 999 }, "x") == nil)
+end
+-- Legacy shard (records without ids) gets stable ids backfilled on load.
+do
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local shard = {
+    worktree = true, files = {},
+    comments = {
+      ["b.txt"] = { { anchor = 1, content = { "x" }, text = "bee" } },
+      ["a.txt"] = {
+        { anchor = 1, content = { "y" }, text = "one" },
+        { anchor = 2, content = { "z" }, text = "two" },
+      },
+    },
+  }
+  vim.fn.writefile({ vim.json.encode(shard) }, dir .. "/" .. state.COMMENTS_ID .. ".json")
+  local s = state.new({ dir = dir })
+  s:load({ state.COMMENTS_ID })
+  local a, b = s:comments_for("a.txt"), s:comments_for("b.txt")
+  h.assert_eq("migrate: ids in path order", a[1].id, 1)
+  h.assert_eq("migrate: ids in list order", a[2].id, 2)
+  h.assert_eq("migrate: later path", b[1].id, 3)
+  h.assert_true("migrate: no reply", a[1].reply == nil)
+  s:save_commit(state.COMMENTS_ID)
+  local s2 = state.new({ dir = dir })
+  s2:load({ state.COMMENTS_ID })
+  h.assert_eq("migrate: ids stable on second load", s2:comments_for("a.txt")[2].id, 2)
+  s2:add_comment_record("a.txt", { anchor = 9, content = { "w" }, text = "new" })
+  h.assert_eq("migrate: seq seeded past max", s2:comments_for("a.txt")[3].id, 4)
+end
 h.finish()

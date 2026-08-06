@@ -210,6 +210,7 @@ end
 -- (`{ [hash] = true }`). The two are incompatible, and worktree marks are cheap
 -- to recreate, so a legacy `seen` list is dropped rather than migrated in place.
 function M.migrate_shard(decoded)
+  M.migrate_comment_ids(decoded)
   if not decoded.worktree or type(decoded.files) ~= "table" then
     return
   end
@@ -220,6 +221,33 @@ function M.migrate_shard(decoded)
       f.seen = {}
     end
   end
+end
+
+-- Stamp ids onto comment records written before ids existed, in a deterministic
+-- order (path, then authoring order), and seed `comment_seq` past the maximum so
+-- freshly minted ids never collide with the backfilled ones.
+function M.migrate_comment_ids(decoded)
+  if type(decoded.comments) ~= "table" then return end
+  local paths = {}
+  for path in pairs(decoded.comments) do paths[#paths + 1] = path end
+  table.sort(paths)
+  local seq = decoded.comment_seq or 0
+  for _, path in ipairs(paths) do
+    for _, rec in ipairs(decoded.comments[path]) do
+      if type(rec.id) == "number" then
+        seq = math.max(seq, rec.id)
+      end
+    end
+  end
+  for _, path in ipairs(paths) do
+    for _, rec in ipairs(decoded.comments[path]) do
+      if type(rec.id) ~= "number" then
+        seq = seq + 1
+        rec.id = seq
+      end
+    end
+  end
+  decoded.comment_seq = seq
 end
 
 function Store:load(shas)
@@ -513,12 +541,29 @@ function Store:comments_commit()
   return c
 end
 
--- Append a comment record { anchor, content = {...}, text } for `path`.
+-- Mint a fresh comment id. Ids are monotonic within a store and persisted
+-- alongside the records (in `comment_seq`), so they survive a restart: an id
+-- names a conversation, not its current location.
+function Store:next_comment_id()
+  local c = self:comments_commit()
+  c.comment_seq = (c.comment_seq or 0) + 1
+  return c.comment_seq
+end
+
+-- Append a comment record { anchor, content = {...}, text } for `path`. `id`
+-- and `reply` are carried when present (an edit/undo replays the same record),
+-- and a record without an id is stamped with a fresh one.
 function Store:add_comment_record(path, record)
   local c = self:comments_commit()
   c.comments[path] = c.comments[path] or {}
   local list = c.comments[path]
-  list[#list + 1] = { anchor = record.anchor, content = record.content, text = record.text }
+  list[#list + 1] = {
+    id = record.id or self:next_comment_id(),
+    anchor = record.anchor,
+    content = record.content,
+    text = record.text,
+    reply = record.reply,
+  }
 end
 
 local function content_eq(a, b)
@@ -546,6 +591,26 @@ function Store:remove_comment_record(path, record)
       return
     end
   end
+end
+
+-- Set (or clear, with nil) the agent reply on the record matching `record` for
+-- `path`. Matches by id when the record carries one, else the same way
+-- `remove_comment_record` does. Returns the stored record, or nil if unmatched.
+function Store:set_comment_reply(path, record, reply)
+  local c = self.data[self.wt_shard]
+  local list = c and c.comments and c.comments[path]
+  if not list then return nil end
+  for i = #list, 1, -1 do
+    local r = list[i]
+    local match = record.id and r.id == record.id
+      or (not record.id and r.anchor == record.anchor and r.text == record.text
+        and content_eq(r.content, record.content))
+    if match then
+      r.reply = reply
+      return r
+    end
+  end
+  return nil
 end
 
 -- All comment records for `path` (possibly empty).

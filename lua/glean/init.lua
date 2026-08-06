@@ -967,16 +967,16 @@ function Session:resolve_comments(file)
       if display_ord then
         by_ord[display_ord] = by_ord[display_ord] or {}
         by_ord[display_ord][#by_ord[display_ord] + 1] = {
-          path = file.path, anchor = rec.anchor, content = rec.content,
-          text = rec.text, outdated = false, hidden = false,
+          path = file.path, id = rec.id, anchor = rec.anchor, content = rec.content,
+          text = rec.text, reply = rec.reply, outdated = false, hidden = false,
         }
       end
     else
       local ord = math.max(1, math.min(rec.anchor or 1, #flatten_diff_lines(file)))
       by_ord[ord] = by_ord[ord] or {}
       by_ord[ord][#by_ord[ord] + 1] = {
-        path = file.path, anchor = rec.anchor, content = rec.content,
-        text = rec.text, outdated = true, hidden = false,
+        path = file.path, id = rec.id, anchor = rec.anchor, content = rec.content,
+        text = rec.text, reply = rec.reply, outdated = true, hidden = false,
       }
     end
   end
@@ -1034,6 +1034,7 @@ function Session:collect_comments()
       local canonical_dl = flat[start or rec.anchor]
       local display_ord = start and pair.display and line_ordinal(pair.display, canonical_dl) or nil
       local entry = {
+        id = rec.id, reply = rec.reply,
         anchor = rec.anchor, content = rec.content, line = rec.content[1] or "",
         lnum = canonical_dl and (canonical_dl.new_lnum or canonical_dl.old_lnum),
         outdated = start == nil,
@@ -1165,8 +1166,20 @@ function Session:build()
     local ctarget = vim.tbl_extend("force", htarget or {}, { comment = c })
     local lead = c.outdated and "💬 (outdated) " or "💬 "
     local hl = c.outdated and "GleanSeen" or "GleanComment"
-    for _, part in ipairs(vim.split(c.text, "\n", { plain = true })) do
-      emit(lead .. part, ctarget, hl)
+    -- The id is rendered inline so a snippet pasted out of the buffer is a
+    -- sufficient address for the programmatic comment API.
+    local tag = c.id and ("[" .. c.id .. "] ") or ""
+    for i, part in ipairs(vim.split(c.text, "\n", { plain = true })) do
+      local prefix = lead .. (i == 1 and tag or "")
+      local row = emit(prefix .. part, ctarget, hl)
+      if i == 1 and tag ~= "" then
+        hl_span(row, #lead, #lead + #tag, "GleanCommentId")
+      end
+    end
+    if c.reply then
+      for _, part in ipairs(vim.split(c.reply, "\n", { plain = true })) do
+        emit("   ↳ " .. part, ctarget, "GleanCommentReply")
+      end
     end
   end
 
@@ -1452,16 +1465,23 @@ function Session:build()
         -- The comment record carried so `dd`/`i`/`e` act on it directly, plus
         -- `summary_comment` so `<CR>` expands its hunk and jumps to it above.
         local c = {
-          path = path, anchor = e.anchor, content = e.content, text = e.text,
-          outdated = e.outdated, hidden = e.hidden,
+          path = path, id = e.id, anchor = e.anchor, content = e.content, text = e.text,
+          reply = e.reply, outdated = e.outdated, hidden = e.hidden,
         }
         local ctarget = { comment = c, summary_comment = { path = path } }
         emit("", {})
         emit(("**%s** `%s`"):format(loc, (e.line:gsub("^%s+", ""):gsub("`", "'"))), ctarget,
           (e.outdated or e.hidden) and "GleanSeen" or "GleanContext")
         emit("", {})
-        for _, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
-          emit(part, ctarget, "GleanComment")
+        for i, part in ipairs(vim.split(e.text, "\n", { plain = true })) do
+          local tag = (i == 1 and e.id) and ("[" .. e.id .. "] ") or ""
+          local row = emit(tag .. part, ctarget, "GleanComment")
+          if tag ~= "" then hl_span(row, 0, #tag, "GleanCommentId") end
+        end
+        if e.reply then
+          for _, part in ipairs(vim.split(e.reply, "\n", { plain = true })) do
+            emit("   ↳ " .. part, ctarget, "GleanCommentReply")
+          end
         end
       end
     end
@@ -2117,6 +2137,10 @@ function Session:apply_comment(a, op)
   elseif op == "unedit" then
     self.store:remove_comment_record(a.path, a.record)
     self.store:add_comment_record(a.path, a.old_record)
+  elseif op == "reply" then
+    self.store:set_comment_reply(a.path, a.record, a.reply)
+  elseif op == "unreply" then
+    self.store:set_comment_reply(a.path, a.record, a.old_reply)
   end
   self.store:save_commit(self.store.wt_shard)
 end
@@ -2155,7 +2179,7 @@ function Session:reverse_action(a)
   if a.kind == "seen" then
     self:apply_seen(a, a.op == "mark" and "unmark" or "mark")
   elseif a.kind == "comment" then
-    local rev = { add = "remove", remove = "add", edit = "unedit" }
+    local rev = { add = "remove", remove = "add", edit = "unedit", reply = "unreply" }
     self:apply_comment(a, rev[a.op or "add"])
   elseif a.kind == "comments" then
     self:apply_comments(a, a.op == "remove" and "add" or "remove")
@@ -2938,7 +2962,8 @@ function Session:delete_comment_at(row)
     if not c then return end
     self:perform({
       kind = "comment", op = "remove", path = c.path,
-      record = { anchor = c.anchor, content = c.content, text = c.text },
+      record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text,
+        reply = c.reply },
     })
     self:render()
   end
@@ -2968,7 +2993,8 @@ function Session:delete_comment_under(row)
   if not c then return end
   self:perform({
     kind = "comment", op = "remove", path = c.path,
-    record = { anchor = c.anchor, content = c.content, text = c.text },
+    record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text,
+        reply = c.reply },
   })
   self:render()
 end
@@ -2989,7 +3015,8 @@ function Session:delete_comments_visual_range(srow, erow)
         seen[key] = true
         records[#records + 1] = {
           path = c.path,
-          record = { anchor = c.anchor, content = c.content, text = c.text },
+          record = { id = c.id, anchor = c.anchor, content = c.content,
+            text = c.text, reply = c.reply },
         }
       end
     end
@@ -3008,13 +3035,26 @@ function Session:edit_comment_under(row)
     if text == c.text then return end
     self:perform({
       kind = "comment", op = "edit", path = c.path,
-      old_record = { anchor = c.anchor, content = c.content, text = c.text },
-      record = { anchor = c.anchor, content = c.content, text = text },
+      old_record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text,
+        reply = c.reply },
+      record = { id = c.id, anchor = c.anchor, content = c.content, text = text,
+        reply = c.reply },
     })
     self:render()
   end)
 end
 
+-- Set (or clear, with `text = nil`) the agent reply on a comment record
+-- (undoable). The human's `text` is never touched; replying twice replaces.
+function Session:set_comment_reply(c, text)
+  if not c then return end
+  self:perform({
+    kind = "comment", op = "reply", path = c.path,
+    record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text },
+    reply = text, old_reply = c.reply,
+  })
+  self:render()
+end
 -- Open an ephemeral, multi-line comment editor in a split above the glean
 -- window, seeded with `initial` lines. `:w` or `<CR>` (normal mode) submits the
 -- (trimmed-of-empty) buffer text to `on_submit`; `q` or `<C-c>` cancels. The scratch buffer is
@@ -4380,6 +4420,8 @@ local function setup_highlights()
   api.nvim_set_hl(0, "GleanContext", { link = "Normal", default = true })
   api.nvim_set_hl(0, "GleanSeen", { link = "NonText", default = true })
   api.nvim_set_hl(0, "GleanComment", { link = "WarningMsg", default = true })
+  api.nvim_set_hl(0, "GleanCommentId", { link = "Number", default = true })
+  api.nvim_set_hl(0, "GleanCommentReply", { link = "Comment", default = true })
   api.nvim_set_hl(0, "GleanModeHeader", { link = "Title", default = true })
   -- The "--- unseen ---" divider is meant to pop, not blend in.
   api.nvim_set_hl(0, "GleanDivider", { link = "Todo", default = true })

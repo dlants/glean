@@ -266,6 +266,53 @@ do
   h.assert_eq("comment: row carries identity", ct.text, "first note")
 end
 
+-- Agent replies: a reply renders beneath its comment, replaces rather than
+-- accumulates, leaves the human's text alone, and undo restores the previous
+-- reply (including back to none). The comment's id survives an edit of its text.
+do
+  local dir = vim.fn.tempname()
+  local s = open({ scope = "commits", state_dir = dir })
+  local trow = find_row(s, function(_, line, t)
+    return t and t.commit == 1 and t.line and line == "+TWO"
+  end)
+  s:add_comment_at(trow, "a question")
+  local crow = find_row(s, function(_, line, t)
+    return t and t.comment and line:find("a question", 1, true) ~= nil
+  end)
+  local c = s.row_map[crow].comment
+  h.assert_true("reply: comment has an id", type(c.id) == "number")
+  h.assert_true("reply: id rendered inline",
+    api.nvim_buf_get_lines(s.buf, crow, crow + 1, false)[1]:find("[" .. c.id .. "]", 1, true) ~= nil)
+  s:set_comment_reply(c, "an answer")
+  local rrow = find_row(s, function(_, line, t)
+    return t and t.comment and line:find("↳ an answer", 1, true) ~= nil
+  end)
+  h.assert_true("reply: reply row rendered", rrow ~= nil)
+  local stored = s.store:comments_for("f.txt")
+  h.assert_eq("reply: exactly one record", #stored, 1)
+  h.assert_eq("reply: text untouched", stored[1].text, "a question")
+  s:set_comment_reply(s.row_map[rrow].comment, "a better answer")
+  h.assert_eq("reply: replaces", s.store:comments_for("f.txt")[1].reply, "a better answer")
+  s:undo()
+  h.assert_eq("reply: undo restores previous", s.store:comments_for("f.txt")[1].reply, "an answer")
+  s:undo()
+  h.assert_true("reply: undo back to unanswered",
+    s.store:comments_for("f.txt")[1].reply == nil)
+  -- editing the human's text keeps the id (and the reply).
+  s:redo()
+  local live = find_row(s, function(_, line, t)
+    return t and t.comment and line:find("a question", 1, true) ~= nil
+  end)
+  s:perform({
+    kind = "comment", op = "edit", path = "f.txt",
+    old_record = s.row_map[live].comment,
+    record = vim.tbl_extend("force", s.row_map[live].comment, { text = "edited" }),
+  })
+  local edited = s.store:comments_for("f.txt")[1]
+  h.assert_eq("reply: id survives an edit", edited.id, c.id)
+  h.assert_eq("reply: reply survives an edit", edited.reply, "an answer")
+end
+
 -- Delete comment: removing a comment drops it from the store and is undoable.
 do
   local dir = vim.fn.tempname()
@@ -321,7 +368,7 @@ do
   h.assert_eq("multiline: stored one comment", #got, 1)
   h.assert_eq("multiline: newline preserved", got[1].text, "first line\nsecond line")
   local r1 = find_row(s, function(_, line, t)
-    return t and t.comment and line == "💬 first line"
+    return t and t.comment and line == ("💬 [%d] first line"):format(got[1].id)
   end)
   local r2 = find_row(s, function(_, line, t)
     return t and t.comment and line == "💬 second line"
@@ -381,7 +428,7 @@ do
   s:render()
   local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("reanchor: outdated in summary", joined:find("(Outdated)", 1, true) ~= nil)
-  h.assert_true("reanchor: outdated text present", joined:find("\ngone note", 1, true) ~= nil)
+  h.assert_true("reanchor: outdated text present", joined:find("\n%[%d+%] gone note") ~= nil)
 end
 
 -- Deleting a comment from its inline row (the `dd` path) drops it from the
@@ -423,8 +470,8 @@ do
   h.assert_true("summary: section header present",
     joined:find("## comments", 1, true) ~= nil)
   h.assert_true("summary: file path listed", joined:find("\n### f.txt", 1, true) ~= nil)
-  h.assert_true("summary: live comment text", joined:find("\nlive note", 1, true) ~= nil)
-  h.assert_true("summary: stale comment text", joined:find("\nstale note", 1, true) ~= nil)
+  h.assert_true("summary: live comment text", joined:find("\n%[%d+%] live note") ~= nil)
+  h.assert_true("summary: stale comment text", joined:find("\n%[%d+%] stale note") ~= nil)
   h.assert_true("summary: present comment not outdated",
     joined:find("**L2** `TWO`", 1, true) ~= nil)
   h.assert_true("summary: outdated comment flagged",
@@ -507,11 +554,11 @@ do
 
   local first = find_row(s, function(_, line, t)
     return t and t.summary_comment and t.comment.text == "first note\ncontinued"
-      and line == "first note"
+      and line:match("^%[%d+%] first note$")
   end)
   local last = find_row(s, function(_, line, t)
     return t and t.summary_comment and t.comment.text == "second note"
-      and line == "second note"
+      and line:match("^%[%d+%] second note$")
   end)
   h.assert_true("summary-visual-delete: selection endpoints present",
     first ~= nil and last ~= nil)
@@ -543,12 +590,12 @@ do
   h.assert_true("ctx-summary: section header present",
     joined:find("## comments", 1, true) ~= nil)
   h.assert_true("ctx-summary: context comment listed",
-    joined:find("\ncontext note", 1, true) ~= nil)
+    joined:find("\n%[%d+%] context note") ~= nil)
   -- survives reopen (owner shard loaded on demand).
   local s2 = open({ scope = "combined", state_dir = dir })
   local joined2 = table.concat(api.nvim_buf_get_lines(s2.buf, 0, -1, false), "\n")
   h.assert_true("ctx-summary: persists across reopen",
-    joined2:find("\ncontext note", 1, true) ~= nil)
+    joined2:find("\n%[%d+%] context note") ~= nil)
 end
 -- Stage 2 — commits-scope seen section: marking an expanded file's only hunk
 -- seen tucks it under a default-collapsed " seen (N hunks)" header.
