@@ -1151,6 +1151,13 @@ function Session:build()
     return row
   end
 
+  -- A column-ranged highlight on an already-emitted row, for coloring a
+  -- fragment of a line (rather than the whole line, which `emit` handles).
+  local function hl_span(row, start_col, end_col, hl)
+    highlights[#highlights + 1] =
+      { row = row, hl = hl, start_col = start_col, end_col = end_col }
+  end
+
   -- A stored comment rendered as real, cursor-addressable buffer rows (multi-
   -- line text splits across rows). Every row carries the same comment identity
   -- (path + record) so `dd`/`i`/`dc` anywhere on it acts on the whole comment.
@@ -1317,12 +1324,18 @@ function Session:build()
     return ("%d %s"):format(n, n == 1 and singular or plural)
   end
   section("header", function()
-    emit(("── %s ──  unreviewed: %s / %s / %s / %s"):format(mode_label,
+    local head = ("── %s ──  unreviewed: %s / %s "):format(mode_label,
       count_label(progress.files, "file", "files"),
-      count_label(progress.hunks, "hunk", "hunks"),
-      count_label(progress.adds, "added line", "added lines"),
-      count_label(progress.dels, "deleted line", "deleted lines")),
-      {}, "GleanModeHeader")
+      count_label(progress.hunks, "hunk", "hunks"))
+    local adds = ("+%d"):format(progress.adds)
+    local dels = ("-%d"):format(progress.dels)
+    local row = emit(head .. "[" .. adds .. " / " .. dels .. "]", {}, "GleanModeHeader")
+    -- Byte offsets into the rendered line; the counts sit at fixed positions
+    -- after the (possibly multibyte) prefix.
+    local astart = #head + 1
+    local dstart = astart + #adds + 3
+    hl_span(row, astart, astart + #adds, "GleanAddText")
+    hl_span(row, dstart, dstart + #dels, "GleanDelText")
   end)
   if self.scope == "commits" then
     for ci, commit in ipairs(self.commits) do
@@ -1483,6 +1496,7 @@ function Session:section_sigs(lines, row_map, highlights, sections)
   local hls_by_row = {}
   for _, hl in ipairs(highlights) do
     hls_by_row[hl.row] = (hls_by_row[hl.row] or "") .. "\1" .. hl.hl
+      .. ":" .. (hl.start_col or "") .. ":" .. (hl.end_col or "")
   end
   local out = {}
   for _, sec in ipairs(sections) do
@@ -1537,7 +1551,7 @@ function Session:render()
   self._render_gen = (self._render_gen or 0) + 1
   self.row_hl = {}
   for _, hl in ipairs(highlights) do
-    self.row_hl[hl.row] = hl.hl
+    if not hl.start_col then self.row_hl[hl.row] = hl.hl end
   end
   local win = self.win
   local cur
@@ -1567,7 +1581,18 @@ function Session:render()
   -- neighbors untouched. `at_row` is the section's current buffer row; `key_row`
   -- is its final-layout row (where apply_intraline looks up add/del marks).
   local function stamp(hl, at_row, key_row, ids)
-    local id = api.nvim_buf_set_extmark(self.buf, NS, at_row, 0, {
+    local id
+    if hl.start_col then
+      id = api.nvim_buf_set_extmark(self.buf, NS, at_row, hl.start_col, {
+        end_row = at_row,
+        end_col = hl.end_col,
+        hl_group = hl.hl,
+        priority = 4300,
+      })
+      ids[#ids + 1] = id
+      return
+    end
+    id = api.nvim_buf_set_extmark(self.buf, NS, at_row, 0, {
       end_row = at_row + 1,
       end_col = 0,
       hl_group = hl.hl,

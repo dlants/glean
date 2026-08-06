@@ -65,7 +65,7 @@ do
   local s = open({ state_dir = vim.fn.tempname() })
   local top = api.nvim_buf_get_lines(s.buf, 0, 1, false)[1]
   h.assert_eq("progress: initial counts", top,
-    "── combined ──  unreviewed: 2 files / 2 hunks / 3 added lines / 2 deleted lines")
+    "── combined ──  unreviewed: 2 files / 2 hunks [+3 / -2]")
   local frow
   for row, t in pairs(s.row_map) do
     local line = api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
@@ -74,7 +74,7 @@ do
   s:toggle_seen(frow)
   top = api.nvim_buf_get_lines(s.buf, 0, 1, false)[1]
   h.assert_eq("progress: updates after marking a file", top,
-    "── combined ──  unreviewed: 1 file / 1 hunk / 1 added line / 0 deleted lines")
+    "── combined ──  unreviewed: 1 file / 1 hunk [+1 / -0]")
 end
 
 -- row_map: every rendered row resolves, headers carry file, body carries line.
