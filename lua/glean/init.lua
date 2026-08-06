@@ -109,6 +109,21 @@ local buffers = {}
 -- update timer; and content-addressed collapse overrides per buffer key, kept in
 -- process memory so a reload-from-disk never loses expand/collapse state.
 local sessions = {}
+-- Process-local review ids (`g1`, `g2`, …) per buffer key: short, unambiguous
+-- handles the agent-facing api addresses sessions by. Rendered into the buffer
+-- name so a paste out of the review carries its own address. Reopening the same
+-- diff reuses the buffer and keeps its id; a wiped buffer's id is never reused.
+local session_ids = {}
+local session_seq = 0
+local function session_id_for(key)
+  local id = session_ids[key]
+  if not id then
+    session_seq = session_seq + 1
+    id = "g" .. session_seq
+    session_ids[key] = id
+  end
+  return id
+end
 local views = {}
 local log_buffers = {}
 local log_views = {}
@@ -171,14 +186,25 @@ local function range_identifier(base, target)
   return ("%s..%s"):format(base, display_target)
 end
 
-local function review_title(git, identifier, base, target)
+-- Display-only abbreviation of a ref: a full 40-char hex oid renders as its
+-- first 8 chars, symbolic refs are left alone. Never touches `buffer_key`, the
+-- store, or any lookup — only what the buffer name shows.
+local function abbrev_ref(ref)
+  if #ref == 40 and ref:match("^%x+$") then return ref:sub(1, 8) end
+  return ref
+end
+local function review_title(git, id, identifier, base, target)
   local repo = vim.fn.fnamemodify(git.repo_root, ":t")
   local range = range_identifier(base, target)
+  local short_range = range_identifier(abbrev_ref(base), abbrev_ref(target))
   -- Keep branch names intact in filename-tail displays instead of letting
   -- Neovim interpret their slashes as path separators.
   local function display(ref) return ref:gsub("/", "∕") end
-  if identifier == range then return ("Glean:%s %s"):format(repo, display(identifier)) end
-  return ("Glean:%s %s [%s]"):format(repo, display(identifier), display(range))
+  if identifier == range then
+    return ("Glean:%s %s %s"):format(id, repo, display(short_range))
+  end
+  return ("Glean:%s %s %s [%s]"):format(id, repo, display(abbrev_ref(identifier)),
+    display(short_range))
 end
 
 local Session = {}
@@ -807,6 +833,7 @@ local function flatten_diff_lines(file)
   return out
 end
 
+M.flatten_diff_lines = flatten_diff_lines
 -- The flattened diff-line ordinal of a (hunk, line) target within its file.
 local function target_ordinal(file, target)
   local ord = 0
@@ -4119,6 +4146,19 @@ end
 --   - from_root (internal): base is the empty tree and history includes root.
 --   - open_window (optional, default true).
 
+-- The live review sessions, in id order. The programmatic surface
+-- (`glean.api`) addresses reviews through this registry rather than reaching
+-- into the file-local tables.
+function M.live_sessions()
+  local out = {}
+  for _, session in pairs(sessions) do
+    if session.buf and api.nvim_buf_is_valid(session.buf) then out[#out + 1] = session end
+  end
+  table.sort(out, function(a, b)
+    return tonumber(a.id:sub(2)) < tonumber(b.id:sub(2))
+  end)
+  return out
+end
 function M.open(opts)
   assert(opts and opts.base and opts.target, "glean.open requires base and target")
   local repo_root = opts.repo_root
@@ -4175,6 +4215,7 @@ function M.open(opts)
       callback = function()
         buffers[key] = nil
         views[key] = nil
+        session_ids[key] = nil
         local s = sessions[key]
         if s then
           s:stop_live()
@@ -4185,7 +4226,7 @@ function M.open(opts)
     })
   end
   api.nvim_set_option_value("buflisted", true, { buf = buf })
-  pcall(api.nvim_buf_set_name, buf, review_title(git,
+  pcall(api.nvim_buf_set_name, buf, review_title(git, session_id_for(key),
     opts.identifier or range_identifier(opts.base, opts.target), opts.base, opts.target))
 
   -- Collapse overrides are content-addressed and kept in process memory keyed by
@@ -4204,6 +4245,7 @@ function M.open(opts)
   end
 
   local session = setmetatable({
+    id = session_id_for(key),
     git = git,
     store = store,
     base = opts.base,

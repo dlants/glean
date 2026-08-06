@@ -93,7 +93,7 @@ Decisions/deviations:
 - Existing render assertions that matched a bare comment body were updated for the `[id] `
   prefix.
 
-## session accessor and listing
+## session accessor and listing — DONE
 
 - Goal: `require("glean.api").comments()` returns every comment in the open review with a stable id, path, current line, text and reply.
 - Tests (`api_test.lua`, fake git runner + temp state dir, `M.open{open_window=false}`):
@@ -107,6 +107,23 @@ Decisions/deviations:
     symbolic refs are unchanged and `buffer_key` still uses the full oids.
   - `opts.unanswered` returns exactly the unreplied comments.
   - With no session open, every entry point errors with a message naming the fix; with two sessions and no `session`, the error lists both candidates with their repo and range.
+
+Decisions/deviations:
+
+- Session ids are minted per *buffer key* (`session_ids[key]`, cleared on wipeout) rather than
+  per Session object, so the refresh/reopen path that replaces a Session keeps the id.
+- `M.live_sessions()` (init.lua) is the registry accessor; `api.sessions()` is the descriptive,
+  JSON-only projection over it. `api.session(id)` takes the id (or a buffer number) positionally
+  rather than an opts table, matching the `(session, ...)` shape of the other entry points.
+- `api.comments` walks `comment_file_pairs()` and re-anchors with `state.resolve` against the
+  exact file directly (the same computation `collect_comments` does) instead of
+  `resolve_comments`, because it wants the canonical diff line's `lnum`/`side`, not a display
+  ordinal, and must work for pairs whose display file is hidden. `M.flatten_diff_lines` is
+  exported from init so nothing is re-implemented.
+- Entries carry both `content` (the captured block, a list) and `code` (the same block joined),
+  so a caller can use either shape.
+- `review_title` gained an `id` parameter; the two title assertions in `init_test.lua` were
+  updated for the `Glean:<id> <repo> …` prefix and the 8-char oids.
 
 ## mutations
 

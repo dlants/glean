@@ -2010,12 +2010,13 @@ do
   local s = open({ state_dir = dir })
   h.assert_true("buffer: listed", api.nvim_get_option_value("buflisted", { buf = s.buf }))
   h.assert_eq("buffer: range title", vim.fn.fnamemodify(api.nvim_buf_get_name(s.buf), ":t"),
-    ("Glean:%s %s..%s"):format(repo_name, base, target))
+    ("Glean:%s %s %s..%s"):format(s.id, repo_name, base:sub(1, 8), target:sub(1, 8)))
   local s2 = open({ state_dir = dir, identifier = "feature/review-ui" })
   h.assert_eq("buffer: reused on reopen", s2.buf, s.buf)
   h.assert_eq("buffer: title follows latest invocation",
     vim.fn.fnamemodify(api.nvim_buf_get_name(s2.buf), ":t"),
-    ("Glean:%s feature∕review-ui [%s..%s]"):format(repo_name, base, target))
+    ("Glean:%s %s feature∕review-ui [%s..%s]")
+      :format(s2.id, repo_name, base:sub(1, 8), target:sub(1, 8)))
 end
 
 -- Log entry view: renders first-parent history newest first, reuses its listed
