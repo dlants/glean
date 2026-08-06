@@ -47,7 +47,9 @@ Line identities come in three kinds:
   injectable (`opts.run`) so tests never shell out. Produces FileEntries/Commits.
 - `diff.lua` — pure unified-diff parser (no git, no IO). Turns `git diff` text
   into ordered FileEntries / Hunks / DiffLines, each carrying `new_lnum`.
-- `state.lua` — the persisted ReviewStore. Keyed by commit sha, sharded one JSON
+- `api.lua` — the flat, JSON-only programmatic surface (session/comment listing and
+  agent replies) that magenta drives over `nvim_exec_lua`; documented for agents by
+  `skills/glean-review/skill.md`, which dotfiles symlinks into `~/.claude/skills`.- `state.lua` — the persisted ReviewStore. Keyed by commit sha, sharded one JSON
   file per commit on disk (`<dir>/<sha>.json`), merged in memory. Holds seen
   ranges, del ranges, and content-addressed comments (in the `WORKTREE` shard).
 - `provenance.lua` — pure `git blame -p` porcelain parser for per-line ownership
