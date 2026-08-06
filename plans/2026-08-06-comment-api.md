@@ -146,8 +146,20 @@ Decisions/deviations:
 - `find_record` returns a copy of the stored record extended with its `path`, which is exactly
   the shape `Session:set_comment_reply` expects — no new store primitive was needed.
 
-## skill
+## skill — DONE
 
 - Goal: magenta discovers and drives the API without reading glean's source.
 - Content: `~/src/dotfiles/magenta-skills/glean-review/skill.md` with frontmatter (`name: glean-review`, description scoped to "reviewing and responding to glean review comments"), a short model of comments and the text/reply ownership split, and — most importantly — how to recover the session id from the pasted buffer name (`Glean:g2 ...`) and the comment id from the pasted `[3]` token, with copy-pasteable `nvim_lua` snippets for each entry point plus the "no session open" recovery.
-- Tests: manual — run each snippet from the skill against a live review and confirm the documented shape matches the actual return values.
+- Tests (done): manual — a headless script opened a real review (fake-free: a temp repo with
+  the git runner), then ran `sessions`, `comments` (with `unanswered`), `reply`, `unreply` and
+  both error paths, and the returned shapes were checked against the skill text.
+
+Decisions/deviations:
+
+- Corrections found by the manual run and folded into the skill: a comment row renders as
+  `💬 [7] text` (not `[7] > text`), and `sessions().title` is the raw buffer name, which can
+  carry a directory prefix — the id is the `g<N>` after `Glean:`.
+- `~/src/dotfiles/nix/magenta-skills.nix` gained `glean-review` to its skill list, so home
+  manager symlinks it into `~/.claude/skills` (skills are listed explicitly there, not globbed).
+- The skill states the read-only boundary explicitly (no add/edit/delete) and tells the agent
+  to ask the human rather than opening a review itself.
