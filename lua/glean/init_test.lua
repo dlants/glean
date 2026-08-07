@@ -1668,8 +1668,9 @@ do
   h.assert_eq("jump: reopening reuses the buffer", buf2, buf)
 end
 
--- Commit scope: an add line in a non-HEAD commit (c1) opens a `git show`
--- scratch buffer at that commit's post-image.
+-- Commit scope: an add line in a non-HEAD commit (c1) that still exists
+-- verbatim in the work tree opens the real file at its current line, so LSP and
+-- navigation work there.
 do
   local s = open({ scope = "commits" })
   local r = find_row(s, function(_, line, t)
@@ -1680,9 +1681,37 @@ do
   h.assert_eq("jump commits: ref is c1 sha", jt.ref, repo.shas[2])
   h.assert_eq("jump commits: lnum 2", jt.lnum, 2)
   h.assert_true("jump commits: c1 != HEAD", not s:ref_is_head(repo.shas[2]))
+  h.assert_eq("jump commits: opens live file", s:jump(r), repo.root .. "/f.txt")
+  h.assert_eq("jump commits: cursor on the live line",
+    api.nvim_win_get_cursor(0)[1], 2)
+end
+
+-- Commit scope: a line that a later commit rewrote cannot be followed into the
+-- work tree, so it falls back to the read-only post-image scratch.
+do
+  local sr = testutil.make_repo({
+    { msg = "base", files = { ["s.txt"] = "a\nb\nc\n" } },
+    { msg = "c1: b->B1", files = { ["s.txt"] = "a\nB1\nc\n" } },
+    { msg = "c2: b->B2", files = { ["s.txt"] = "a\nB2\nc\n" } },
+  })
+  local function runs(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = sr.root, env = sr.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local s = glean.open({
+    base = sr.shas[1], target = sr.shas[3], repo_root = sr.root, run = runs,
+    open_window = false, state_dir = vim.fn.tempname(), scope = "commits",
+  })
+  local r = find_row(s, function(_, line, t)
+    return t and t.commit == 1 and t.line and line == "+B1"
+  end)
+  h.assert_true("jump changed: found c1 +B1 row", r ~= nil)
   local buf = s:jump(r)
-  local content = table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
-  h.assert_true("jump commits: shows TWO at post-image", content:find("TWO", 1, true) ~= nil)
+  h.assert_true("jump changed: scratch buffer", type(buf) == "number")
+  h.assert_true("jump changed: scratch holds the c1 post-image",
+    table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n"):find("B1", 1, true) ~= nil)
 end
 
 -- Ephemeral split diff: a deletion row resolves to base (pre) / target (post),

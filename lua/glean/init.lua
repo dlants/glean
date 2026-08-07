@@ -2297,6 +2297,13 @@ function Session:apply_collapse()
   end
 end
 
+-- Byte column of the cursor in the glean buffer, or nil when the window is gone.
+function Session:cursor_col()
+  if self.win and api.nvim_win_is_valid(self.win) then
+    return api.nvim_win_get_cursor(self.win)[2]
+  end
+  return nil
+end
 function Session:cursor_row()
   if self.win and api.nvim_win_is_valid(self.win) then
     return api.nvim_win_get_cursor(self.win)[1] - 1
@@ -2588,6 +2595,60 @@ function Session:each_target_hunk(target, fn)
   end
 end
 
+-- Every hunk of the review in one flat, ordered list — the enumeration behind
+-- `glean.api.hunks`. `mode` is independent of `self.scope`: both projections are
+-- derivable from the model the session already holds, so an agent can walk a
+-- combined review commit by commit (and vice versa) without disturbing what the
+-- human is looking at. Order is commit -> file -> hunk (combined: file -> hunk),
+-- the same order the buffer renders in. Each entry carries the owner closure and
+-- flattened-ordinal base its hunk's identities need, so callers never re-derive
+-- ownership. `id` is the positional address, zero-padded so plain string
+-- comparison reproduces this order; it is valid only for the current model.
+function Session:all_hunks(mode)
+  local out = {}
+  if mode == "commits" then
+    for ci, commit in ipairs(self.commits or {}) do
+      local owner = self:commit_owner(commit)
+      for fi, file in ipairs(commit.files) do
+        local bases = hunk_base_ords(file)
+        for hi, hunk in ipairs(file.hunks) do
+          out[#out + 1] = {
+            id = ("c:%06d:%06d:%06d"):format(ci, fi, hi),
+            mode = mode,
+            sha = commit.sha,
+            path = file.path,
+            file = file,
+            hunk = hunk,
+            owner = owner,
+            base = bases[hunk],
+          }
+        end
+      end
+    end
+    return out
+  end
+  self.combined_files = self.combined_files or self:compute_combined()
+  -- Ownership must be resolved before identities are read, or every line reports
+  -- unowned and the whole review looks unseen. Idempotent and subprocess-free,
+  -- so it is safe here even on a commits-scope session.
+  self:load_lineage()
+  for cfi, cf in ipairs(self.combined_files) do
+    local bases = hunk_base_ords(cf)
+    local owner = self:combined_owner(cf.path)
+    for hi, hunk in ipairs(cf.hunks) do
+      out[#out + 1] = {
+        id = ("b:%06d:%06d"):format(cfi, hi),
+        mode = "combined",
+        path = cf.path,
+        file = cf,
+        hunk = hunk,
+        owner = owner,
+        base = bases[hunk],
+      }
+    end
+  end
+  return out
+end
 function Session:target_identities(target)
   local out = {}
   self:each_target_hunk(target, function(ids)
@@ -3260,6 +3321,26 @@ end
 --   new-file line in the post-image ref, and a deletion resolves to its old
 --   line in the pre-image ref. The ref is the commit's sha (commit scope) or
 --   target/base (combined scope).
+-- Place the cursor at (lnum, col) in `win`, clamping the column to the target
+-- line's length so a jump from a longer diff row never fails outright.
+-- Line `lnum` of the work-tree file at `abs`, preferring a loaded buffer so
+-- unwritten edits are accounted for. nil when the file or line is missing.
+local function worktree_line(abs, lnum)
+  local buf = vim.fn.bufnr(abs)
+  if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
+    return api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1]
+  end
+  if vim.fn.filereadable(abs) ~= 1 then return nil end
+  return vim.fn.readfile(abs, "", lnum)[lnum]
+end
+
+local function set_cursor_clamped(win, lnum, col)
+  local buf = api.nvim_win_get_buf(win)
+  local text = api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1]
+  if text then col = math.max(0, math.min(col, #text - 1)) end
+  pcall(api.nvim_win_set_cursor, win, { lnum, col })
+end
+
 function Session:jump_target(row)
   local target = self.row_map[row]
   if not target or not target.line then return nil end
@@ -3288,7 +3369,28 @@ function Session:jump_target(row)
   if dl.kind == "del" then
     return { ref = pre_ref, path = path, lnum = dl.old_lnum or 1, is_del = true }
   end
-  return { ref = post_ref, path = path, lnum = dl.new_lnum or 1 }
+  return { ref = post_ref, path = path, lnum = dl.new_lnum or 1, text = dl.text }
+end
+
+-- Follow a committed post-image line forward into the work tree. `sha`'s blob
+-- is the pre-image of `git diff <sha> -- <path>`, so mapping the line through
+-- that diff's hunks yields its current line number, or nil when the line did
+-- not survive. The caller verifies the text before trusting the result, so any
+-- drift (a rename, a stale cache) degrades to the read-only `git show` view.
+function Session:live_lnum(sha, path, lnum)
+  self._live_diff_cache = self._live_diff_cache or {}
+  local key = sha .. "\0" .. path
+  local entry = self._live_diff_cache[key]
+  if not entry then
+    local files = self.git:diff_to_worktree(sha, path)
+    if not files then return nil end
+    entry = { file = files[1] }
+    self._live_diff_cache[key] = entry
+  end
+  local file = entry.file
+  if not file then return lnum end
+  if file.kind == "delete" then return nil end
+  return diff_mod.map_lnum(file.hunks, lnum)
 end
 
 -- True when `ref` resolves to the currently checked-out HEAD commit, so the
@@ -3305,6 +3407,10 @@ end
 -- populated from `git show ref:path`, with filetype inferred from the path.
 function Session:jump(row)
   if row == nil then row = self:cursor_row() end
+  -- Diff rows render as a one-byte +/-/space marker followed by the source
+  -- text, so the source column is the glean column shifted left by the marker.
+  local col = self:cursor_col()
+  col = col and math.max(0, col - 1) or 0
   local target = self.row_map[row]
   -- Summary-section rows navigate *within* the glean buffer rather than to the
   -- source file: a file row jumps to that file's header above, a comment row
@@ -3323,10 +3429,19 @@ function Session:jump(row)
   -- always read its pre-image via `git show`. The floating commit's post-image
   -- ref is the live work tree directly; otherwise open live when ref is HEAD.
   local live = not jt.is_del and (jt.ref == M.WORKTREE or self:ref_is_head(jt.ref))
+  -- A committed line that is unchanged in the work tree opens in the real file
+  -- (so LSP and navigation work) at its current line number.
+  if not live and not jt.is_del and jt.ref ~= M.WORKTREE then
+    local sha = self.git:rev_parse(jt.ref)
+    local mapped = sha and self:live_lnum(sha, jt.path, jt.lnum)
+    if mapped and jt.text and worktree_line(abs, mapped) == jt.text then
+      jt.lnum, live = mapped, true
+    end
+  end
   if live and vim.fn.filereadable(abs) == 1 then
     if win and api.nvim_win_is_valid(win) then api.nvim_set_current_win(win) end
     vim.cmd("edit " .. vim.fn.fnameescape(abs))
-    pcall(api.nvim_win_set_cursor, 0, { jt.lnum, 0 })
+    set_cursor_clamped(0, jt.lnum, col)
     return abs
   end
   -- Read-only view of the file at a specific commit, named fugitive-style with
@@ -3353,7 +3468,7 @@ function Session:jump(row)
     api.nvim_set_current_win(win)
     api.nvim_win_set_buf(win, buf)
   end
-  pcall(api.nvim_win_set_cursor, 0, { jt.lnum, 0 })
+  set_cursor_clamped(0, jt.lnum, col)
   return buf
 end
 
@@ -3470,10 +3585,15 @@ end
 
 function Session:set_scope(scope)
   if scope == self.scope then return end
+  local anchor = self:cursor_anchor()
   self.scope = scope
   if scope == "commits" then self:apply_collapse() end
   self:start_owner_loader()
+  -- The destination scope may render the anchored file collapsed; only rows in
+  -- row_map are candidates for the cursor, so reveal it before the render we scan.
+  if anchor then self:expand_path(anchor.path) end
   self:render()
+  self:restore_cursor_anchor(anchor)
 end
 
 function Session:toggle_scope()
@@ -3483,6 +3603,24 @@ end
 -- Capture a cursor location in model coordinates before replacing the active
 -- display projection. Row indices are unstable across whitespace modes, while
 -- paths and Git's real old/new line numbers remain comparable.
+-- A scope-invariant string form of a line identity. `wt.ord` is deliberately
+-- excluded: it is the line's ordinal within its *display* file, which differs
+-- between the two scopes for the very same physical line.
+local function ident_key(id)
+  if not id then return nil end
+  if id.kind == "wt" then return "wt:" .. id.path .. "\0" .. id.text end
+  return id.kind .. ":" .. id.sha .. ":" .. id.path .. ":" .. tostring(id.lnum)
+end
+-- `row_identity` for an arbitrary row, nil instead of an assertion failure when
+-- the combined file's ownership hasn't been composed yet.
+function Session:safe_row_identity(target)
+  if not target then return nil end
+  if self.scope == "combined" then
+    local cf = target.cfile and self.combined_files and self.combined_files[target.cfile]
+    if not (cf and self:owner_status(cf.path) == "loaded") then return nil end
+  end
+  return self:row_identity(target)
+end
 function Session:cursor_anchor()
   if not (self.win and api.nvim_win_is_valid(self.win)) then return nil end
   local target = self.row_map[self:cursor_row()]
@@ -3498,22 +3636,40 @@ function Session:cursor_anchor()
     anchor.kind = dl.kind
     anchor.old_lnum = dl.old_lnum
     anchor.new_lnum = dl.new_lnum
+    -- Both scopes derive the same identity for the same physical line (a
+    -- commit-scope line is owned by its commit; a combined line by its composed
+    -- blame provenance), so this is what makes the cursor survive a scope toggle.
+    local id = self:safe_row_identity(target)
+    if id then
+      anchor.ident_key = ident_key(id)
+      anchor.ident_kind = id.kind
+      anchor.owner_sha = id.sha
+      anchor.owner_lnum = id.lnum
+    end
+  else
+    anchor.header = true
   end
   return anchor
 end
 
+-- Place the cursor at `anchor` in the current projection, best effort. Three
+-- degrading matches, in order: the exact same line identity (survives a scope
+-- toggle, since both scopes share the identity space); the same owning commit's
+-- nearest line (the anchored line was later changed or removed); the nearest
+-- line by display line number in the same file. Then the file header.
 function Session:restore_cursor_anchor(anchor)
   if not (anchor and self.win and api.nvim_win_is_valid(self.win)) then return end
   local header = self:file_header_row(anchor.path)
-  local best_row, best_score
+  if anchor.header then
+    if header then self:restore_cursor(header) end
+    return
+  end
+  local exact_row, exact_dist, owner_row, owner_score, best_row, best_score
   for row, target in pairs(self.row_map) do
     local file = target and target.hunk and target.line and self:row_file(target) or nil
     if file and file.path == anchor.path then
       local commit = target.commit and self.commits[target.commit] or nil
       local dl = file.hunks[target.hunk].lines[target.line]
-      local score = 0
-      if anchor.sha and (not commit or commit.sha ~= anchor.sha) then score = score + 1000000 end
-      if anchor.kind and dl.kind ~= anchor.kind then score = score + 1 end
       local distance
       if anchor.new_lnum and dl.new_lnum then
         distance = math.abs(anchor.new_lnum - dl.new_lnum)
@@ -3524,13 +3680,34 @@ function Session:restore_cursor_anchor(anchor)
         local b = dl.new_lnum or dl.old_lnum
         distance = a and b and math.abs(a - b) or 10000
       end
-      score = score + distance * 10
+      if anchor.ident_key then
+        local id = self:safe_row_identity(target)
+        local key = ident_key(id)
+        if key == anchor.ident_key then
+          -- A wt identity is content-addressed, so duplicate lines share a key;
+          -- break the tie by display proximity to where the cursor was.
+          if not exact_row or distance < exact_dist
+              or (distance == exact_dist and row < exact_row) then
+            exact_row, exact_dist = row, distance
+          end
+        elseif id and anchor.owner_sha and id.sha == anchor.owner_sha then
+          local score = math.abs((id.lnum or 0) - (anchor.owner_lnum or 0)) * 10
+          if id.kind ~= anchor.ident_kind then score = score + 1 end
+          if not owner_row or score < owner_score
+              or (score == owner_score and row < owner_row) then
+            owner_row, owner_score = row, score
+          end
+        end
+      end
+      local score = distance * 10
+      if anchor.sha and (not commit or commit.sha ~= anchor.sha) then score = score + 1000000 end
+      if anchor.kind and dl.kind ~= anchor.kind then score = score + 1 end
       if not best_score or score < best_score or (score == best_score and row < best_row) then
         best_row, best_score = row, score
       end
     end
   end
-  self:restore_cursor(best_row or header or 0)
+  self:restore_cursor(exact_row or owner_row or best_row or header or 0)
 end
 
 function Session:set_ignore_whitespace(enabled)
@@ -3667,6 +3844,8 @@ function Session:poll(opts)
     if usig then self._untracked_sig = usig end
     if opts.baseline then return end
     if changed then
+      -- The work tree moved, so cached sha->worktree line mappings are stale.
+      self._live_diff_cache = nil
       self:refresh_model({ head = head, wt_diff_text = diff_text })
     elseif opts.unchanged then
       opts.unchanged()

@@ -123,4 +123,24 @@ function M.parse(text)
   return files
 end
 
+-- Map a line number from a diff's pre-image to its post-image, given that
+-- diff's `hunks`. Returns nil when the line did not survive (it was deleted or
+-- replaced). Used to follow a commit-scope line forward into the work tree.
+function M.map_lnum(hunks, lnum)
+  local shift = 0
+  for _, h in ipairs(hunks) do
+    if lnum < h.old_start then break end
+    if lnum < h.old_start + h.old_count then
+      for _, dl in ipairs(h.lines) do
+        if dl.old_lnum == lnum then
+          return dl.kind == "context" and dl.new_lnum or nil
+        end
+      end
+      return nil
+    end
+    shift = (h.new_start + h.new_count) - (h.old_start + h.old_count)
+  end
+  return lnum + shift
+end
+
 return M

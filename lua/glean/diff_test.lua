@@ -148,4 +148,31 @@ do
     a[1].hunks[1].lines[2].new_lnum, b[1].hunks[1].lines[2].new_lnum)
 end
 
+-- map_lnum: follow a pre-image line through a diff into the post-image.
+do
+  local text = table.concat({
+    "diff --git a/e.txt b/e.txt",
+    "--- a/e.txt",
+    "+++ b/e.txt",
+    "@@ -3,3 +3,4 @@",
+    " c",
+    "-d",
+    "+D",
+    "+D2",
+    " e",
+    "@@ -10,2 +11,1 @@",
+    "-j",
+    " k",
+  }, "\n")
+  local hunks = diff.parse(text)[1].hunks
+  h.assert_eq("map: before first hunk", diff.map_lnum(hunks, 1), 1)
+  h.assert_eq("map: context in hunk", diff.map_lnum(hunks, 3), 3)
+  h.assert_eq("map: deleted line", diff.map_lnum(hunks, 4), nil)
+  h.assert_eq("map: context after del", diff.map_lnum(hunks, 5), 6)
+  h.assert_eq("map: between hunks", diff.map_lnum(hunks, 8), 9)
+  h.assert_eq("map: second hunk del", diff.map_lnum(hunks, 10), nil)
+  h.assert_eq("map: second hunk context", diff.map_lnum(hunks, 11), 11)
+  h.assert_eq("map: after last hunk", diff.map_lnum(hunks, 20), 20)
+  h.assert_eq("map: no hunks", diff.map_lnum({}, 7), 7)
+end
 h.finish()
