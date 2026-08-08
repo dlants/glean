@@ -108,6 +108,157 @@ function M.comments(session, opts)
   end
   return out
 end
+-- ---------------------------------------------------------------------------
+-- Hunks — the read side of the review body, and marking it seen.
+-- ---------------------------------------------------------------------------
+-- A file-path glob ("lua/**/*.lua") as a predicate. Compiled once per query.
+local function glob_filter(glob)
+  if not glob then return function() return true end end
+  local pat = vim.glob.to_lpeg(glob)
+  return function(path) return vim.lpeg.match(pat, path) ~= nil end
+end
+-- The display line number and side of a diff line, plus its rendered body.
+local function api_line(session, entry, i)
+  local dl = entry.hunk.lines[i]
+  local id = session:line_identity(dl, entry.path, entry.owner, entry.base + i)
+  local lnum, side = line_position(dl)
+  return {
+    i = i,
+    kind = dl.kind,
+    lnum = lnum,
+    side = side or "new",
+    text = dl.text,
+    seen = id ~= nil and session:id_seen(id),
+  }
+end
+-- Project one `Session:all_hunks` entry into its flat, JSON-safe form. Seen-ness
+-- is `Session:hunk_seen`/`id_seen`, the same predicates the renderer uses, so an
+-- api answer and the buffer can't disagree. The display-only short-run demotion
+-- (`min_seen_run`) is deliberately not applied: this reports the stored model.
+local function api_hunk(session, entry)
+  local h = entry.hunk
+  local lines, adds, dels, unseen = {}, 0, 0, 0
+  for i, dl in ipairs(h.lines) do
+    local line = api_line(session, entry, i)
+    lines[i] = line
+    if dl.kind == "add" then adds = adds + 1 end
+    if dl.kind == "del" then dels = dels + 1 end
+    if (dl.kind == "add" or dl.kind == "del") and not line.seen then unseen = unseen + 1 end
+  end
+  return {
+    id = entry.id,
+    mode = entry.mode,
+    sha = entry.sha,
+    path = entry.path,
+    kind = entry.file.kind,
+    header = h.header,
+    old_start = h.old_start,
+    old_count = h.old_count,
+    new_start = h.new_start,
+    new_count = h.new_count,
+    seen = session:hunk_seen(h, entry.path, entry.owner, entry.base),
+    adds = adds,
+    dels = dels,
+    unseen_lines = unseen,
+    lines = lines,
+  }
+end
+-- One page of the review's hunks. `mode` picks the projection ("combined", the
+-- default, or "commits") independently of the scope the human is viewing, so an
+-- agent can walk a review commit by commit without disturbing their buffer.
+-- Order is the buffer's own (commit -> file -> hunk), and `cursor` is the id of
+-- the last hunk emitted: pass it back to get the next page, and stop when the
+-- returned cursor is nil.
+function M.hunks(session, opts)
+  opts = opts or {}
+  local mode = opts.mode or "combined"
+  if mode ~= "combined" and mode ~= "commits" then
+    error(("glean: unknown hunk mode %q; expected \"combined\" or \"commits\"")
+      :format(tostring(mode)), 0)
+  end
+  local s = M.session(session)
+  local limit = opts.limit or 20
+  local matches = glob_filter(opts.path)
+  local out, total, cursor = {}, 0, nil
+  for _, entry in ipairs(s:all_hunks(mode)) do
+    if matches(entry.path) and not (opts.cursor and entry.id <= opts.cursor) then
+      local hunk = api_hunk(s, entry)
+      if opts.seen == nil or opts.seen == hunk.seen then
+        total = total + 1
+        if #out < limit then
+          out[#out + 1] = hunk
+          cursor = hunk.id
+        end
+      end
+    end
+  end
+  return { hunks = out, cursor = total > #out and cursor or nil, total = total }
+end
+-- Resolve one selector — a hunk id, or `{ id, lines = {i, ...} }` — to the
+-- identities it addresses, plus the combined-scope sticky records that keep an
+-- explicit mark from being display-demoted. Unknown ids and out-of-range line
+-- indices are caller bugs: they error rather than silently marking nothing.
+local function selector_identities(s, index, sel)
+  local id = type(sel) == "table" and sel.id or sel
+  local entry = index[id]
+  if not entry then
+    error(("glean: no hunk with id %q in this review; re-list with hunks()")
+      :format(tostring(id)), 0)
+  end
+  local indices = type(sel) == "table" and sel.lines or nil
+  if not indices then
+    indices = {}
+    for i = 1, #entry.hunk.lines do indices[i] = i end
+  end
+  local ids, sticky = {}, {}
+  for _, i in ipairs(indices) do
+    local dl = entry.hunk.lines[i]
+    if not dl then
+      error(("glean: hunk %s has no line %s (it has %d)")
+        :format(id, tostring(i), #entry.hunk.lines), 0)
+    end
+    local lid = s:line_identity(dl, entry.path, entry.owner, entry.base + i)
+    if lid then
+      ids[#ids + 1] = lid
+      if entry.mode == "combined" then
+        sticky[#sticky + 1] = { path = entry.path, text = dl.text }
+      end
+    end
+  end
+  return ids, sticky
+end
+-- Mark hunks (or individual lines within them) seen — the api mirror of `m` in
+-- the buffer. `sel` is one selector or a list of them, each either a hunk id (the
+-- whole hunk) or `{ id = <hunk id>, lines = { i, ... } }` (those `lines[].i`
+-- values only, like a visual-mode mark). The whole batch is one `Session:perform`,
+-- so an agent's pass undoes with a single `u`.
+function M.mark(session, sel, seen)
+  if seen == nil then seen = true end
+  local s = M.session(session)
+  local sels = (type(sel) == "string" or (type(sel) == "table" and sel.id)) and { sel } or sel
+  if type(sels) ~= "table" or #sels == 0 then
+    error("glean: mark requires a hunk id or a list of them", 0)
+  end
+  local mode = type(sels[1]) == "table" and sels[1].id or sels[1]
+  mode = tostring(mode):sub(1, 1) == "c" and "commits" or "combined"
+  local index = {}
+  for _, entry in ipairs(s:all_hunks(mode)) do index[entry.id] = entry end
+  local op = seen and "mark" or "unmark"
+  local changed, sticky = {}, {}
+  for _, one in ipairs(sels) do
+    local ids, sticks = selector_identities(s, index, one)
+    for _, id in ipairs(ids) do
+      if (op == "mark") ~= s:id_seen(id) then changed[#changed + 1] = id end
+    end
+    for _, st in ipairs(sticks) do sticky[#sticky + 1] = st end
+  end
+  if #changed > 0 or #sticky > 0 then
+    s:perform({ kind = "seen", op = op, ids = changed, sticky = sticky })
+    s:render()
+  end
+  return { hunks = #sels, lines = #changed }
+end
+
 -- The stored record for `id` in this review, plus its path, or an error naming
 -- the id. Never a silent no-op: an unknown id is a caller bug.
 local function find_record(s, id)

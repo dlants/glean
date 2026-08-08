@@ -75,6 +75,53 @@ return require("glean.api").unreply("g1", 7)
 Replies are undoable (`u` in the review buffer), persist to glean's store, and
 re-render immediately, so the human watches your answers land live.
 
+## Hunks
+
+The same api exposes the review body, so you can read the diff and mark it seen
+the way the human does with `m`.
+
+```lua
+return require("glean.api").hunks("g1", { mode = "combined", path = "lua/**/*.lua", limit = 20 })
+```
+
+- `mode` — `"combined"` (default; the whole base..target diff, "what changed
+  overall") or `"commits"` (the same review commit by commit). Independent of
+  the scope the human is viewing, so asking for one does not disturb their
+  buffer.
+- `path` — a glob over the file path (`"lua/**/*.lua"`, `"*.txt"`).
+- `seen` — `true` / `false` to filter; omit for both.
+- `limit` (default 20) and `cursor` — paging. The result is
+  `{ hunks, cursor, total }`; pass the returned `cursor` back to get the next
+  page and stop when it comes back `nil`. `total` counts the matches after the
+  cursor, ignoring `limit`.
+
+Each hunk is `{ id, mode, sha (commits mode), path, kind, header, old_start,
+old_count, new_start, new_count, seen, adds, dels, unseen_lines, lines }`, and
+each entry of `lines` is `{ i, kind, lnum, side, text, seen }`. `i` is the line's
+address within the hunk; `seen` is `false` for context lines, which are not
+markable. `seen` on the hunk is true only when *every* changed line is seen.
+
+`id` is positional (`"b:000002:000001"`), so it is only valid for the review as
+it stands now: page and then act, don't stash ids. `mark` re-resolves and errors
+rather than marking the wrong hunk.
+
+Mark whole hunks, or specific lines within one:
+
+```lua
+local api = require("glean.api")
+api.mark("g1", id)                            -- the whole hunk, like `m`
+api.mark("g1", { id = id, lines = { 3, 4 } }) -- those lines, like a visual mark
+api.mark("g1", { id1, id2 })                  -- a batch: one undo step
+api.mark("g1", id, false)                     -- unmark
+```
+
+Returns `{ hunks, lines }` — selectors applied, and identities whose seen state
+actually flipped (`lines = 0` means it was already in that state). Marks are
+undoable with `u`, persist, and re-render live, exactly like the human's.
+
+Only mark when the human asks you to triage; seen-ness is their reading
+progress, not yours.
+
 ## Errors
 
 Every call errors loudly rather than no-opping:

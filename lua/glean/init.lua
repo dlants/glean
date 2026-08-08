@@ -1191,7 +1191,11 @@ function Session:build()
     fn()
     sections[#sections + 1] = { key = key, lo = lo, hi = #lines }
   end
-  local function emit(text, target, hl)
+  -- `virt` is an optional one-char diff marker (+/-) shown as inline virtual
+  -- text rather than buffer text, so the row's buffer content is the verbatim
+  -- source line: yanking, `0`/`^`/`w` motions and visual-block selection all
+  -- line up with the real file instead of being shifted by a marker column.
+  local function emit(text, target, hl, virt)
     -- The buffer is a pure line-projection: every row must be a single line.
     -- Defend the `nvim_buf_set_lines` contract at the sole row-append site so a
     -- stray newline in any source value (worktree/comment content) can never
@@ -1200,7 +1204,7 @@ function Session:build()
     lines[#lines + 1] = text
     local row = #lines - 1
     row_map[row] = target
-    if hl then highlights[#highlights + 1] = { row = row, hl = hl } end
+    if hl then highlights[#highlights + 1] = { row = row, hl = hl, virt = virt } end
     return row
   end
 
@@ -1293,8 +1297,8 @@ function Session:build()
           for ri = run.lo, run.hi_line do
             local dl = hunk.lines[ri]
             local m = dl.kind == "add" and "+" or dl.kind == "del" and "-" or " "
-            emit(m .. dl.text,
-              vim.tbl_extend("force", mtarget, { line = ri }), "GleanSeen")
+            emit(dl.text,
+              vim.tbl_extend("force", mtarget, { line = ri }), "GleanSeen", m)
             for _, c in ipairs(comments_by_ord[base_ord + ri] or {}) do
               emit_comment(c, target)
             end
@@ -1308,8 +1312,8 @@ function Session:build()
         local hl = dl.kind == "add" and "GleanAdd"
           or dl.kind == "del" and "GleanDel"
           or "GleanContext"
-        local row = emit(m .. dl.text,
-          vim.tbl_extend("force", target, { line = li }), hl)
+        local row = emit(dl.text,
+          vim.tbl_extend("force", target, { line = li }), hl, m)
         if dl.kind == "del" then
           if #adds > 0 then flush() end
           dels[#dels + 1] = { row = row, text = dl.text }
@@ -1577,6 +1581,7 @@ function Session:section_sigs(lines, row_map, highlights, sections)
   for _, hl in ipairs(highlights) do
     hls_by_row[hl.row] = (hls_by_row[hl.row] or "") .. "\1" .. hl.hl
       .. ":" .. (hl.start_col or "") .. ":" .. (hl.end_col or "")
+      .. ":" .. (hl.virt or "")
   end
   local out = {}
   for _, sec in ipairs(sections) do
@@ -1677,10 +1682,12 @@ function Session:render()
       end_col = 0,
       hl_group = hl.hl,
       hl_eol = true,
+      virt_text = hl.virt and { { hl.virt, hl.hl } } or nil,
+      virt_text_pos = hl.virt and "inline" or nil,
     })
     ids[#ids + 1] = id
     if hl.hl == "GleanAdd" or hl.hl == "GleanDel" then
-      self._line_marks[key_row] = { id = id, base = hl.hl }
+      self._line_marks[key_row] = { id = id, base = hl.hl, virt = hl.virt }
     end
   end
 
@@ -1825,12 +1832,17 @@ function Session:apply_intraline(blocks, ranges)
     if not mark then
       return
     end
+    local hl = TEXT_HL[mark.base]
     api.nvim_buf_set_extmark(self.buf, NS, row, 0, {
       id = mark.id,
       end_row = row + 1,
       end_col = 0,
-      hl_group = TEXT_HL[mark.base],
+      hl_group = hl,
       hl_eol = true,
+      -- Re-stamping by id replaces the mark wholesale, so the inline +/- marker
+      -- has to be carried over or the refined rows lose it and misalign.
+      virt_text = mark.virt and { { mark.virt, hl } } or nil,
+      virt_text_pos = mark.virt and "inline" or nil,
     })
   end
   -- Rows/segments are captured from the render that produced `blocks`; an
@@ -1842,8 +1854,8 @@ function Session:apply_intraline(blocks, ranges)
     if not line then return end
     local len = #line
     for _, seg in ipairs(segs) do
-      local s = math.min(1 + seg.start_col, len)
-      local e = math.min(1 + seg.end_col, len)
+      local s = math.min(seg.start_col, len)
+      local e = math.min(seg.end_col, len)
       if e > s then
         api.nvim_buf_set_extmark(self.buf, NS_INTRA, row, s, {
           end_row = row,
@@ -1938,6 +1950,11 @@ function Session:highlight_cursor_hunk()
         api.nvim_buf_set_extmark(self.buf, NS_CURSOR_INDENT, r, 0, {
           virt_text = { { indent, "Normal" } },
           virt_text_pos = "inline",
+          -- Diff rows already carry an inline +/- marker at col 0 (the full-line
+          -- NS mark, default priority 4096). Inline virt_text at the same
+          -- position orders by priority, so this pins the indent to the right of
+          -- the marker instead of leaving the order to mark-id chance.
+          priority = 4200,
         })
       end
     end
@@ -3407,10 +3424,9 @@ end
 -- populated from `git show ref:path`, with filetype inferred from the path.
 function Session:jump(row)
   if row == nil then row = self:cursor_row() end
-  -- Diff rows render as a one-byte +/-/space marker followed by the source
-  -- text, so the source column is the glean column shifted left by the marker.
-  local col = self:cursor_col()
-  col = col and math.max(0, col - 1) or 0
+  -- Diff rows hold the verbatim source text (the +/- marker is virtual), so the
+  -- glean column is already the source column.
+  local col = self:cursor_col() or 0
   local target = self.row_map[row]
   -- Summary-section rows navigate *within* the glean buffer rather than to the
   -- source file: a file row jumps to that file's header above, a comment row

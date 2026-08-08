@@ -135,7 +135,7 @@ for _, scope in ipairs({ "combined", "commits" }) do
   do
     local s = open(scope)
     local before = buftext(s)
-    h.assert_true(label .. "collapse: b body visible before", before:find("\n+B", 1, true) ~= nil)
+    h.assert_true(label .. "collapse: b body visible before", before:find("\nB", 1, true) ~= nil)
     s:toggle_collapse(dir_row(s, "src"))
     local after = buftext(s)
     h.assert_true(label .. "collapse: src/ closed chevron", after:find("▶ .*src/") ~= nil)
@@ -154,7 +154,7 @@ for _, scope in ipairs({ "combined", "commits" }) do
     h.assert_true(label .. "mark: seen header is indented beneath its file",
       buftext(s):find("\n    ▶ seen (1 hunks)", 1, true) ~= nil)
     h.assert_true(label .. "mark: root.txt untouched",
-      buftext(s):find("\n+R", 1, true) ~= nil)
+      buftext(s):find("\nR", 1, true) ~= nil)
     s:toggle_seen(dir_row(s, "src"))
     h.assert_true(label .. "mark: re-mark unmarks the whole directory",
       not seen_state(s, "src").any)

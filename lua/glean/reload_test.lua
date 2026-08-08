@@ -210,7 +210,7 @@ do
   live_write("top\n   \n  VALUE here\n")
   live_calls = {}
   mode:poll()
-  local semantic_row = row_with(mode, "+  VALUE here")
+  local semantic_row = row_with(mode, "  VALUE here")
   h.assert_true("ignore live: later semantic edit appears", semantic_row ~= nil)
   h.assert_eq("ignore live semantic: one exact poll diff",
     live_count(function(a) return head_diff(a, false) end), 1)
@@ -255,7 +255,7 @@ do
     mode._commit_patch_cache.exact.head, new_head)
   h.assert_eq("ignore live commit: ignored cache keyed to new HEAD",
     mode._commit_patch_cache["ignore-all-space"].head, new_head)
-  local committed_row = row_with(mode, "+  VALUE here")
+  local committed_row = row_with(mode, "  VALUE here")
   local committed_owner = mode:row_identity(mode.row_map[committed_row])
   h.assert_eq("ignore live commit: visible row belongs to new commit", committed_owner.sha, new_head)
 end
