@@ -3660,10 +3660,9 @@ do
   h.assert_true("command: Glean prs dispatches to PR view", prs_called)
 end
 
--- The +/- diff marker is inline virtual text, not buffer text, so the row holds
--- the verbatim source line. It must survive the async intra-line refinement,
--- which re-stamps the same full-line extmark by id (dropping the virt_text there
--- would silently un-align exactly the refined add/del rows).
+-- The +/- diff marker lives in the sign column of the hunk under the cursor,
+-- not in buffer text, so the row holds the verbatim source line. Rows without a
+-- marker (context, headers) keep the plain current-hunk bar.
 do
   local NS = api.nvim_get_namespaces()["glean_hl"]
   -- A partially-changed line pair, so intra-line refinement actually fires and
@@ -3680,7 +3679,7 @@ do
   end
   local s = glean.open({
     base = ir.shas[1], target = ir.shas[2], repo_root = ir.root, run = runi,
-    open_window = false, state_dir = vim.fn.tempname(),
+    open_window = true, state_dir = vim.fn.tempname(),
   })
   vim.wait(200, function() return false end)
   local function mark(row)
@@ -3691,9 +3690,13 @@ do
     end
     return {}
   end
-  local function marker(row)
-    local vt = mark(row).virt_text
-    return vt and vt[1][1]
+  local NS_CURSOR = api.nvim_get_namespaces()["glean_cursor_hl"]
+  local function sign(row)
+    for _, m in ipairs(api.nvim_buf_get_extmarks(
+        s.buf, NS_CURSOR, { row, 0 }, { row, -1 }, { details = true })) do
+      local d = m[4] or {}
+      if d.sign_text then return vim.trim(d.sign_text), d.sign_hl_group end
+    end
   end
   local add_row = find_row(s, function(_, line, t)
     return t and t.line and line == "value beta here"
@@ -3703,9 +3706,16 @@ do
   end)
   local ctx_row = find_row(s, function(_, line, t) return t and t.line and line == "keep" end)
   h.assert_eq("marker: intra-line refinement ran", mark(add_row).hl_group, "GleanAddText")
-  h.assert_eq("marker: add row keeps + after refinement", marker(add_row), "+")
-  h.assert_eq("marker: del row keeps - after refinement", marker(del_row), "-")
-  h.assert_eq("marker: context row is blank", marker(ctx_row), " ")
+  api.nvim_win_set_cursor(s.win or 0, { add_row + 1, 0 })
+  s._cursor_hunk_state = nil
+  s:highlight_cursor_hunk()
+  local add_sign, add_hl = sign(add_row)
+  local del_sign, del_hl = sign(del_row)
+  h.assert_eq("marker: add row signs +", add_sign, "+")
+  h.assert_eq("marker: add sign is add-colored", add_hl, "GleanAddText")
+  h.assert_eq("marker: del row signs -", del_sign, "-")
+  h.assert_eq("marker: del sign is del-colored", del_hl, "GleanDelText")
+  h.assert_eq("marker: context row keeps the hunk bar", (sign(ctx_row)), "▌")
   h.assert_true("marker: buffer text is the verbatim source line",
     api.nvim_buf_get_lines(s.buf, add_row, add_row + 1, false)[1] == "value beta here")
 end

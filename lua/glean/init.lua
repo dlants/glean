@@ -1191,10 +1191,10 @@ function Session:build()
     fn()
     sections[#sections + 1] = { key = key, lo = lo, hi = #lines }
   end
-  -- `virt` is an optional one-char diff marker (+/-) shown as inline virtual
-  -- text rather than buffer text, so the row's buffer content is the verbatim
-  -- source line: yanking, `0`/`^`/`w` motions and visual-block selection all
-  -- line up with the real file instead of being shifted by a marker column.
+  -- `virt` is an optional one-char diff marker (+/-). It is not buffer text, so
+  -- the row's content is the verbatim source line (yanking, `0`/`^`/`w` motions
+  -- and visual-block selection line up with the real file); it is surfaced in
+  -- the sign column, but only for the hunk under the cursor.
   local function emit(text, target, hl, virt)
     -- The buffer is a pure line-projection: every row must be a single line.
     -- Defend the `nvim_buf_set_lines` contract at the sole row-append site so a
@@ -1635,8 +1635,12 @@ function Session:render()
   -- generation invalidates the sticky-float guard so it re-evaluates below.
   self._render_gen = (self._render_gen or 0) + 1
   self.row_hl = {}
+  self.row_marker = {}
   for _, hl in ipairs(highlights) do
-    if not hl.start_col then self.row_hl[hl.row] = hl.hl end
+    if not hl.start_col then
+      self.row_hl[hl.row] = hl.hl
+      self.row_marker[hl.row] = hl.virt
+    end
   end
   local win = self.win
   local cur
@@ -1682,8 +1686,6 @@ function Session:render()
       end_col = 0,
       hl_group = hl.hl,
       hl_eol = true,
-      virt_text = hl.virt and { { hl.virt, hl.hl } } or nil,
-      virt_text_pos = hl.virt and "inline" or nil,
     })
     ids[#ids + 1] = id
     if hl.hl == "GleanAdd" or hl.hl == "GleanDel" then
@@ -1839,10 +1841,6 @@ function Session:apply_intraline(blocks, ranges)
       end_col = 0,
       hl_group = hl,
       hl_eol = true,
-      -- Re-stamping by id replaces the mark wholesale, so the inline +/- marker
-      -- has to be carried over or the refined rows lose it and misalign.
-      virt_text = mark.virt and { { mark.virt, hl } } or nil,
-      virt_text_pos = mark.virt and "inline" or nil,
     })
   end
   -- Rows/segments are captured from the render that produced `blocks`; an
@@ -1912,6 +1910,9 @@ end
 -- Shift the active hunk body to the right while keeping its header fixed, and
 -- retain the gutter bar as a secondary boundary cue. Inline virtual text keeps
 -- this display-only: row_map and the read-only buffer projection stay unchanged.
+-- Foreground-only variants, so the gutter marker reads as a colored glyph
+-- rather than a filled block the way the full-line diff groups would.
+local SIGN_HL = { GleanAdd = "GleanAddText", GleanDel = "GleanDelText" }
 function Session:highlight_cursor_hunk()
   if not (self.buf and api.nvim_buf_is_valid(self.buf)) then return end
   if not (self.win and api.nvim_win_is_valid(self.win)) then return end
@@ -1934,9 +1935,14 @@ function Session:highlight_cursor_hunk()
   end
   for r, o in pairs(self.row_map) do
     if same(o) then
+      -- The gutter doubles as the diff marker column for the active hunk: add/del
+      -- rows show a colored +/- there, every other row keeps the boundary bar.
+      local marker = self.row_marker and self.row_marker[r]
+      if marker == " " then marker = nil end
       api.nvim_buf_set_extmark(self.buf, NS_CURSOR, r, 0, {
-        sign_text = "▌",
-        sign_hl_group = "GleanCurrentHunk",
+        sign_text = marker or "▌",
+        sign_hl_group = marker and (SIGN_HL[self.row_hl[r]] or "GleanCurrentHunk")
+          or "GleanCurrentHunk",
         priority = 100,
       })
     end
@@ -1950,10 +1956,6 @@ function Session:highlight_cursor_hunk()
         api.nvim_buf_set_extmark(self.buf, NS_CURSOR_INDENT, r, 0, {
           virt_text = { { indent, "Normal" } },
           virt_text_pos = "inline",
-          -- Diff rows already carry an inline +/- marker at col 0 (the full-line
-          -- NS mark, default priority 4096). Inline virt_text at the same
-          -- position orders by priority, so this pins the indent to the right of
-          -- the marker instead of leaving the order to mark-id chance.
           priority = 4200,
         })
       end
