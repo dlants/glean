@@ -1097,7 +1097,7 @@ end
 --   commit header  → { commit } (no file/cfile/sec/hunk)
 --   seen section   → { ..., seen } (unseen hunks render bare, no section)
 --   file header    → { file|cfile } (no hunk/line)
---   hunk header    → { ..., hunk } (no line, no marker)
+--   hunk header    → { ..., hunk } (no line, no marker, no comment)
 function M.compute_ancestry(row_map, n)
   local ancestry = {}
   local commit_row, file_row, sec_row, hunk_row
@@ -1111,7 +1111,7 @@ function M.compute_ancestry(row_map, n)
         sec_row, hunk_row = row, nil
       elseif (t.file or t.cfile) and not t.hunk and not t.line then
         file_row, sec_row, hunk_row = row, nil, nil
-      elseif t.hunk and t.line == nil and t.marker == nil then
+      elseif t.hunk and t.line == nil and t.marker == nil and t.comment == nil then
         hunk_row = row
       end
     end
@@ -3021,6 +3021,31 @@ function Session:unmark_marker(target)
   self:perform({ kind = "seen", op = "unmark", ids = ids })
   self:render()
 end
+-- Unmark every seen line of the whole session (`U`): fold each commit (commit
+-- scope) or loaded file (combined scope) to its changed-line identities and
+-- unmark the seen ones, dropping their sticky overrides too. Files whose
+-- ownership is still loading contribute nothing, matching every other action.
+function Session:unmark_all()
+  local targets = {}
+  if self.scope == "commits" then
+    for ci in ipairs(self.commits or {}) do targets[#targets + 1] = { commit = ci } end
+  else
+    for fi, cf in ipairs(self.combined_files or {}) do
+      if self:owner_status(cf.path) == "loaded" then targets[#targets + 1] = { cfile = fi } end
+    end
+  end
+  local ids, sticky = {}, {}
+  for _, t in ipairs(targets) do
+    for _, id in ipairs(self:target_identities(t)) do
+      if self:id_seen(id) then ids[#ids + 1] = id end
+    end
+    for _, rec in ipairs(self:target_sticky(t)) do sticky[#sticky + 1] = rec end
+  end
+  if #ids == 0 and #sticky == 0 then return end
+  self:perform({ kind = "seen", op = "unmark", ids = ids, sticky = sticky })
+  self:render()
+end
+
 -- ---------------------------------------------------------------------------
 -- Comments — content-addressed records { anchor, content[], text } per path,
 -- re-anchored at render time (see resolve_comments / collect_comments).
@@ -3232,7 +3257,13 @@ function Session:open_comment_editor(initial, on_submit)
   vim.keymap.set("n", "<CR>", function() finish(true) end, { buffer = ebuf, nowait = true, silent = true })
   vim.keymap.set("n", "q", function() finish(false) end, { buffer = ebuf, nowait = true, silent = true })
   vim.keymap.set("n", "<C-c>", function() finish(false) end, { buffer = ebuf, silent = true })
-  vim.cmd("startinsert")
+  -- A new (empty) comment drops straight into insert; editing an existing one
+  -- starts in normal mode so the seeded text can be navigated first.
+  if initial and #initial > 0 then
+    pcall(api.nvim_win_set_cursor, ewin, { #seed, 0 })
+  else
+    vim.cmd("startinsert")
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -4042,6 +4073,7 @@ local function setup_keymaps(buf, session)
   })
   map("n", "=", function() session:toggle_collapse() end)
   map("n", "m", function() session:toggle_seen() end)
+  map("n", "U", function() session:unmark_all() end)
   map("x", "m", function()
     local srow = vim.fn.getpos("v")[2] - 1
     local erow = vim.fn.getpos(".")[2] - 1

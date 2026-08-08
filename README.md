@@ -126,6 +126,7 @@ header.
 
 - `m` (normal) — toggle seen on the hunk/file/directory/commit under the cursor; on a marker row/line, unmark that run
 - `m` (visual) — mark the selected lines seen
+- `U` (normal) — unmark everything in the session (undoable with `u`)
 - `ac` (visual / operator) — text object selecting the hunk under the cursor (e.g. `vac`)
 - `=` — toggle collapse (section, file, directory, commit, or marker row)
 - `c` (normal) — comment on the current line
