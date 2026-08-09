@@ -2062,21 +2062,31 @@ do
   h.assert_true("log view: listed", api.nvim_get_option_value("buflisted", { buf = view.buf }))
   h.assert_true("log view: read only",
     not api.nvim_get_option_value("modifiable", { buf = view.buf }))
-  h.assert_true("log view: newest first", lines[2]:find("c2: edit three + add g", 1, true) ~= nil)
-  h.assert_true("log view: next commit", lines[3]:find("c1: edit two", 1, true) ~= nil)
-  h.assert_eq("log view: row map", view.row_map[1], 1)
+  h.assert_true("log view: dirty row", lines[2]:find("uncommitted changes", 1, true) ~= nil)
+  h.assert_true("log view: newest first", lines[3]:find("c2: edit three + add g", 1, true) ~= nil)
+  h.assert_true("log view: next commit", lines[4]:find("c1: edit two", 1, true) ~= nil)
+  h.assert_eq("log view: dirty row map", view.row_map[1], 0)
+  h.assert_eq("log view: row map", view.row_map[2], 1)
 
-  local single = view:open_selected(1, 1)
+  local dirty = view:open_selected(1, 1)
+  h.assert_eq("log open dirty: base is HEAD", dirty.base, "HEAD")
+  h.assert_eq("log open dirty: target is worktree", dirty.target, glean.WORKTREE)
+
+  local dirty_range = view:open_selected(1, 2)
+  h.assert_eq("log open dirty range: base is newest parent", dirty_range.base, repo.shas[2])
+  h.assert_eq("log open dirty range: target is worktree", dirty_range.target, glean.WORKTREE)
+
+  local single = view:open_selected(2, 2)
   h.assert_eq("log open single: base is parent", single.base, repo.shas[2])
   h.assert_eq("log open single: target is commit", single.target, repo.shas[3])
   h.assert_eq("log open single: one commit", #single.commits, 1)
 
-  local range = view:open_selected(1, 2)
+  local range = view:open_selected(2, 3)
   h.assert_eq("log open range: base is oldest parent", range.base, repo.shas[1])
   h.assert_eq("log open range: target is newest", range.target, repo.shas[3])
   h.assert_eq("log open range: selected commits", #range.commits, 2)
 
-  local from_root = view:open_selected(1, 3)
+  local from_root = view:open_selected(2, 4)
   h.assert_true("log open root range: marked from root", from_root.from_root)
   h.assert_eq("log open root range: target is newest", from_root.target, repo.shas[3])
   h.assert_eq("log open root range: all commits", #from_root.commits, 3)

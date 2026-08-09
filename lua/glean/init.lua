@@ -4134,10 +4134,13 @@ LogView.__index = LogView
 function LogView:render()
   local repo = vim.fn.fnamemodify(self.git.repo_root, ":t")
   local lines = { "Glean log — " .. repo }
-  local row_map = { [0] = false }
+  -- Row 1 is the work tree itself (index 0), so a selection can span the dirty
+  -- state plus any number of commits below it.
+  local row_map = { [0] = false, [1] = 0 }
+  lines[2] = "dirty     uncommitted changes"
   for i, commit in ipairs(self.commits) do
     lines[#lines + 1] = commit.short_sha .. "  " .. commit.summary
-    row_map[i] = i
+    row_map[i + 1] = i
   end
   api.nvim_set_option_value("modifiable", true, { buf = self.buf })
   api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
@@ -4145,9 +4148,12 @@ function LogView:render()
   api.nvim_buf_set_extmark(self.buf, NS, 0, 0, {
     end_row = 1, hl_group = "GleanModeHeader", hl_eol = true,
   })
-  for row = 1, #self.commits do
+  api.nvim_buf_set_extmark(self.buf, NS, 1, 0, {
+    end_col = 5, hl_group = "GleanCommitHeader",
+  })
+  for row = 2, #self.commits + 1 do
     api.nvim_buf_set_extmark(self.buf, NS, row, 0, {
-      end_col = #self.commits[row].short_sha, hl_group = "GleanCommitHeader",
+      end_col = #self.commits[row - 1].short_sha, hl_group = "GleanCommitHeader",
     })
   end
   api.nvim_set_option_value("modifiable", false, { buf = self.buf })
@@ -4165,10 +4171,18 @@ function LogView:open_selected(srow, erow)
     end
   end
   if not first then return end
-  local newest = self.commits[first]
-  local oldest = self.commits[last]
-  local base = oldest.parents[1]
-  local from_root = base == nil
+  -- Index 0 is the work tree; when it is in the selection the review target is
+  -- the work tree and the range extends down to the oldest selected commit.
+  local dirty = first == 0
+  local newest = not dirty and self.commits[first] or nil
+  local oldest = last >= 1 and self.commits[last] or nil
+  local base, from_root
+  if oldest then
+    base = oldest.parents[1]
+    from_root = base == nil
+  else
+    base = "HEAD"
+  end
   if from_root then
     local err
     base, err = self.git:empty_tree()
@@ -4177,15 +4191,19 @@ function LogView:open_selected(srow, erow)
       return
     end
   end
-  local identifier = newest.short_sha
-  if first ~= last then identifier = oldest.short_sha .. ".." .. newest.short_sha end
+  local target = dirty and M.WORKTREE or newest.sha
+  local newest_id = dirty and "dirty" or newest.short_sha
+  local identifier = newest_id
+  if oldest and oldest ~= newest then
+    identifier = oldest.short_sha .. ".." .. newest_id
+  end
   return M.open({
     repo_root = self.git.repo_root,
     run = self.run,
     state_dir = self.state_dir,
     open_window = self.open_window,
     base = base,
-    target = newest.sha,
+    target = target,
     identifier = identifier,
     from_root = from_root,
   })
@@ -4229,6 +4247,13 @@ function M.open_log(opts)
     api.nvim_set_option_value("swapfile", false, { buf = buf })
     api.nvim_set_option_value("filetype", "glean", { buf = buf })
     log_buffers[repo_root] = buf
+    api.nvim_create_autocmd("BufReadCmd", {
+      buffer = buf,
+      callback = function()
+        local ok, err = pcall(M.open_log, { repo_root = repo_root, open_window = false })
+        if not ok then vim.notify(tostring(err):match("(glean: .*)") or tostring(err), vim.log.levels.ERROR) end
+      end,
+    })
     api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
       buffer = buf,
       callback = function()
@@ -4364,6 +4389,13 @@ function M.open_prs(opts)
     api.nvim_set_option_value("swapfile", false, { buf = buf })
     api.nvim_set_option_value("filetype", "glean", { buf = buf })
     pr_buffers[repo_root] = buf
+    api.nvim_create_autocmd("BufReadCmd", {
+      buffer = buf,
+      callback = function()
+        local ok, err = pcall(M.open_prs, { repo_root = repo_root, open_window = false })
+        if not ok then vim.notify(tostring(err):match("(glean: .*)") or tostring(err), vim.log.levels.ERROR) end
+      end,
+    })
     api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
       buffer = buf,
       callback = function()

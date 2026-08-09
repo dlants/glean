@@ -38,8 +38,10 @@ spawning a duplicate, so you can jump to a source file and return via the buffer
 list / `<C-^>`.
 
 `:Glean log` opens the current repository's first-parent history, newest first.
-Press `<CR>` on a commit to review it, or visually select a contiguous set of
-commits and press `<CR>` to review that range. The log and resulting reviews use
+Its first row is the dirty work tree. Press `<CR>` on a row to review it, or
+visually select a contiguous set of rows and press `<CR>` to review that range;
+including the dirty row makes the work tree the review target. The log and
+resulting reviews use
 the same persistent listed-buffer and window-reuse behavior as other Glean views.
 
 `:Glean prs` uses `gh pr list` to show currently open pull requests. Press `<CR>`
