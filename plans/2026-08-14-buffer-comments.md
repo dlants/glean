@@ -366,7 +366,7 @@ function M.redo(bufnr)
     `:edit`/`:write`/`:checktime` against a hermetic repo with a registered
     temp state dir.
 
-## authoring from any buffer
+## authoring from any buffer — DONE
 
 - Goal: leave, edit, reply to and delete comments from a normal file buffer, with a layered undo.
 - Work: extract `open_editor` out of `Session`; the `<Plug>` set plus optional `overlay_keymaps` prefix; `:GleanComment`; the action-shaped overlay stack with `u`/`<C-r>` fallthrough and `undotree().seq_last` wipe detection.
@@ -378,6 +378,30 @@ function M.redo(bufnr)
   - Undo: after a comment delete, `u` restores the comment and leaves the buffer text alone; a second `u` with an empty glean stack performs a real buffer undo; `<C-r>` mirrors both.
   - The stack is wiped by a novel edit but survives an undo/redo of buffer text — assert via `seq_last` staying put across `u`.
   - With no comments in the buffer, `u` is not mapped at all.
+- Done. Deviations / decisions:
+  - The mutation surface is `comments.apply(ctx, action, op)` / `comments.reverse(ctx, action)`
+    — the same action shape and op vocabulary as `Session:apply_comment`, taking
+    a context (not a bare dir, matching the stage-3 registry) and persisting +
+    announcing through `comments.persist`. `overlay.add/remove/set_reply` from
+    the plan's interface sketch are not separate entry points; the overlay's
+    `perform` pushes an action and applies it.
+  - `Store:remove_comment_record` now matches by `id` when the record carries
+    one. The overlay resolves (and rewrites) `lnum` in place, so lnum+content
+    matching alone could pick the wrong record of several on a line.
+  - `Session:open_comment_editor` is a two-line delegate to
+    `comments.open_editor(win, initial, on_submit)`; the body moved verbatim.
+  - `<Plug>` mappings are installed globally in `overlay.setup`; `u`/`<C-r>` and
+    the `TextChanged`/`TextChangedI` seq watcher are installed buffer-locally by
+    `activate`, called from `refresh` the first time a buffer is found to carry
+    comments — so an uncommented buffer really is untouched, and authoring into
+    one wires it up on the spot.
+  - `:Glean comment` (with `range = true` on the command) and a `complete`
+    function listing the subcommands; the dispatcher body stayed an if-chain.
+  - Provenance for a file-buffer selection is HEAD's sha with
+    `dirty = buffer modified or the path is dirty per `git status --porcelain``.
+  - Tests: the authoring half of `overlay_test.lua` works against its own
+    committed `author.txt` so it is independent of what the rendering tests left
+    behind (69 assertions in the suite).
 
 ## cross-surface sync
 

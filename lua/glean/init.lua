@@ -3349,45 +3349,7 @@ end
 -- (trimmed-of-empty) buffer text to `on_submit`; `q` or `<C-c>` cancels. The scratch buffer is
 -- wiped on close so nothing persists outside the review store.
 function Session:open_comment_editor(initial, on_submit)
-  local ebuf = api.nvim_create_buf(false, true)
-  api.nvim_set_option_value("buftype", "acwrite", { buf = ebuf })
-  api.nvim_set_option_value("bufhidden", "wipe", { buf = ebuf })
-  api.nvim_set_option_value("filetype", "markdown", { buf = ebuf })
-  pcall(api.nvim_buf_set_name, ebuf, "glean-comment://" .. ebuf)
-  local seed = (initial and #initial > 0) and initial or { "" }
-  api.nvim_buf_set_lines(ebuf, 0, -1, false, seed)
-
-  if self.win and api.nvim_win_is_valid(self.win) then
-    api.nvim_set_current_win(self.win)
-  end
-  vim.cmd("aboveleft split")
-  local ewin = api.nvim_get_current_win()
-  api.nvim_win_set_buf(ewin, ebuf)
-  api.nvim_win_set_height(ewin, math.max(5, math.min(15, #seed + 1)))
-
-  local done = false
-  local function finish(submit)
-    if done then return end
-    done = true
-    local text
-    if submit then
-      text = table.concat(api.nvim_buf_get_lines(ebuf, 0, -1, false), "\n")
-    end
-    if api.nvim_win_is_valid(ewin) then pcall(api.nvim_win_close, ewin, true) end
-    if submit and text and text:match("%S") then on_submit(text) end
-  end
-
-  api.nvim_create_autocmd("BufWriteCmd", { buffer = ebuf, callback = function() finish(true) end })
-  vim.keymap.set("n", "<CR>", function() finish(true) end, { buffer = ebuf, nowait = true, silent = true })
-  vim.keymap.set("n", "q", function() finish(false) end, { buffer = ebuf, nowait = true, silent = true })
-  vim.keymap.set("n", "<C-c>", function() finish(false) end, { buffer = ebuf, silent = true })
-  -- A new (empty) comment drops straight into insert; editing an existing one
-  -- starts in normal mode so the seeded text can be navigated first.
-  if initial and #initial > 0 then
-    pcall(api.nvim_win_set_cursor, ewin, { #seed, 0 })
-  else
-    vim.cmd("startinsert")
-  end
+  comments_mod.open_editor(self.win, initial, on_submit)
 end
 
 -- ---------------------------------------------------------------------------
@@ -4932,6 +4894,14 @@ function M.setup(opts)
   })
   api.nvim_create_user_command("Glean", function(o)
     local args = o.fargs
+    if args[1] == "comment" then
+      if o.range > 0 then
+        overlay.add_range(0, o.line1, o.line2)
+      else
+        overlay.add_at(0)
+      end
+      return
+    end
     if args[1] == "comments" then
       overlay.quickfix()
       vim.cmd("copen")
@@ -4966,7 +4936,13 @@ function M.setup(opts)
       return
     end
     M.open({ base = args[1], target = args[2] })
-  end, { nargs = "*" })
+  end, { nargs = "*", range = true, complete = function(lead)
+    local out = {}
+    for _, sub in ipairs({ "comment", "comments", "log", "prs", "pr", "branch" }) do
+      if sub:sub(1, #lead) == lead then out[#out + 1] = sub end
+    end
+    return out
+  end })
 end
 
 -- Internal helpers exposed for unit tests only.

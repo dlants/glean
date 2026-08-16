@@ -19,6 +19,9 @@ local M = {}
 local ns = api.nvim_create_namespace("glean_overlay")
 -- Per-buffer display mode: inline bodies (virt_lines) vs signs only.
 local inline = {}
+-- Buffers whose comment mappings/autocmds are installed (see `activate`).
+local active = {}
+local activate
 
 local EOL_WIDTH = 60
 
@@ -138,6 +141,7 @@ function M.refresh(bufnr)
   local groups = resolve_buffer(bufnr)
   if not groups then return end
   api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  activate(bufnr)
   local show_inline = inline[bufnr] == true
   for _, group in ipairs(groups) do stamp(bufnr, group, show_inline) end
 end
@@ -236,6 +240,218 @@ function M.quickfix(ctx)
   return items
 end
 
+-- ── Authoring ───────────────────────────────────────────────────────────────
+
+-- Undo state, layered on top of the buffer's own undo tree: a comment mutation
+-- changes no text, so it cannot occupy a slot in that tree. `seq` is the
+-- `undotree().seq_last` observed when the stacks were last touched; it grows
+-- only when a novel state is created (undo/redo/`g-` move `seq_cur` and leave
+-- it alone), which is what tells a fresh edit from a time-travel apart.
+local stacks = {}
+
+local function stack(bufnr)
+  local s = stacks[bufnr]
+  if not s then
+    s = { undo = {}, redo = {}, seq = vim.fn.undotree().seq_last }
+    stacks[bufnr] = s
+  end
+  return s
+end
+
+-- Wipe the comment stacks when the buffer's text has genuinely changed: a
+-- comment undo interleaved with text the user has since rewritten would restore
+-- a comment onto lines that no longer mean what they did.
+local function note_text_change(bufnr)
+  local s = stacks[bufnr]
+  if not s then return end
+  local seq = vim.fn.undotree().seq_last
+  if seq ~= s.seq then
+    s.undo, s.redo, s.seq = {}, {}, seq
+  end
+end
+
+local function perform(bufnr, ctx, action)
+  note_text_change(bufnr)
+  comments.apply(ctx, action)
+  local s = stack(bufnr)
+  s.undo[#s.undo + 1] = action
+  s.redo = {}
+  M.refresh(bufnr)
+end
+
+-- `u` in a commented buffer undoes glean actions first, then falls through to
+-- the buffer's own undo — the same rule the glean buffer follows.
+function M.undo(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  note_text_change(bufnr)
+  local s = stack(bufnr)
+  local a = table.remove(s.undo)
+  if not a then
+    vim.cmd("undo")
+    return false
+  end
+  local ctx = buf_target(bufnr)
+  if ctx then comments.reverse(ctx, a) end
+  s.redo[#s.redo + 1] = a
+  M.refresh(bufnr)
+  return true
+end
+
+function M.redo(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  note_text_change(bufnr)
+  local s = stack(bufnr)
+  local a = table.remove(s.redo)
+  if not a then
+    vim.cmd("redo")
+    return false
+  end
+  local ctx = buf_target(bufnr)
+  if ctx then comments.apply(ctx, a) end
+  s.undo[#s.undo + 1] = a
+  M.refresh(bufnr)
+  return true
+end
+
+-- Provenance of a selection read out of a file buffer: the commit the file
+-- content came from, flagged dirty when the working tree (or the buffer) has
+-- since diverged from it.
+local function file_origin(ctx, path, bufnr)
+  local handle = git.new({ repo_root = ctx.repo_root })
+  local head = (handle:rev_parse("HEAD") or ""):match("^%x+") or nil
+  local status = handle:run({ "status", "--porcelain", "--", path })
+  local dirty = vim.bo[bufnr].modified or (status ~= nil and status:match("%S") ~= nil)
+  if not head then return { sha = require("glean").WORKTREE, dirty = true } end
+  return { sha = head, dirty = dirty and true or false }
+end
+
+-- A file-buffer authoring target: the contiguous run [srow, erow], captured as
+-- post-image ("add") entries — a file view never sees a deletion.
+local function capture(bufnr, srow, erow)
+  local ctx, path = buf_target(bufnr)
+  if not ctx then
+    vim.notify("glean: not inside a git repository", vim.log.levels.WARN)
+    return nil
+  end
+  local lines = api.nvim_buf_get_lines(bufnr, srow - 1, erow, false)
+  if #lines == 0 then return nil end
+  local content = {}
+  for i, text in ipairs(lines) do content[i] = { text = text, kind = "add" } end
+  return {
+    ctx = ctx, path = path, lnum = srow, content = content,
+    origin = file_origin(ctx, path, bufnr),
+  }
+end
+
+function M.add_range(bufnr, srow, erow)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  if srow > erow then srow, erow = erow, srow end
+  local ct = capture(bufnr, srow, erow)
+  if not ct then return end
+  comments.open_editor(api.nvim_get_current_win(), {}, function(text)
+    perform(bufnr, ct.ctx, {
+      kind = "comment", op = "add", path = ct.path,
+      record = { lnum = ct.lnum, content = ct.content, text = text, origin = ct.origin },
+    })
+  end)
+end
+
+function M.add_at(bufnr, lnum)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  lnum = lnum or api.nvim_win_get_cursor(0)[1]
+  M.add_range(bufnr, lnum, lnum)
+end
+
+-- Run `fn` on the cursor line's comment, asking which one when several resolve
+-- to the same line.
+local function with_record(bufnr, lnum, prompt, fn)
+  local records = M.at(bufnr, lnum)
+  if #records == 0 then
+    vim.notify("glean: no comment on this line", vim.log.levels.INFO)
+    return
+  end
+  if #records == 1 then return fn(records[1]) end
+  local choices = {}
+  for _, r in ipairs(records) do choices[#choices + 1] = first_line(r.text) end
+  vim.ui.select(choices, { prompt = prompt }, function(_, idx)
+    if idx then fn(records[idx]) end
+  end)
+end
+
+local function snapshot(record)
+  return { id = record.id, lnum = record.lnum, content = record.content,
+    text = record.text, reply = record.reply, origin = record.origin }
+end
+
+function M.delete_at(bufnr, lnum)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  lnum = lnum or api.nvim_win_get_cursor(0)[1]
+  local ctx, path = buf_target(bufnr)
+  if not ctx then return end
+  with_record(bufnr, lnum, "glean: delete comment", function(record)
+    perform(bufnr, ctx, {
+      kind = "comment", op = "remove", path = path, record = snapshot(record),
+    })
+  end)
+end
+
+function M.edit_at(bufnr, lnum)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  lnum = lnum or api.nvim_win_get_cursor(0)[1]
+  local ctx, path = buf_target(bufnr)
+  if not ctx then return end
+  with_record(bufnr, lnum, "glean: edit comment", function(record)
+    local old = snapshot(record)
+    comments.open_editor(api.nvim_get_current_win(),
+      vim.split(record.text or "", "\n", { plain = true }), function(text)
+        if text == old.text then return end
+        local new = snapshot(record)
+        new.text = text
+        perform(bufnr, ctx, {
+          kind = "comment", op = "edit", path = path, old_record = old, record = new,
+        })
+      end)
+  end)
+end
+
+-- The human's side of the agent conversation: replies live in the same slot the
+-- agent writes to, so replying twice replaces.
+function M.reply_at(bufnr, lnum)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  lnum = lnum or api.nvim_win_get_cursor(0)[1]
+  local ctx, path = buf_target(bufnr)
+  if not ctx then return end
+  with_record(bufnr, lnum, "glean: reply to comment", function(record)
+    local old = snapshot(record)
+    comments.open_editor(api.nvim_get_current_win(),
+      vim.split(record.reply or "", "\n", { plain = true }), function(text)
+        perform(bufnr, ctx, {
+          kind = "comment", op = "reply", path = path, record = old,
+          reply = text, old_reply = old.reply,
+        })
+      end)
+  end)
+end
+
+-- Jump to the next (1) or previous (-1) comment by resolved position.
+function M.jump(bufnr, direction)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  local groups = resolve_buffer(bufnr) or {}
+  if #groups == 0 then return nil end
+  local cur = api.nvim_win_get_cursor(0)[1]
+  local best
+  for _, group in ipairs(groups) do
+    if direction >= 0 and group.lnum > cur then
+      if not best or group.lnum < best then best = group.lnum end
+    elseif direction < 0 and group.lnum < cur then
+      if not best or group.lnum > best then best = group.lnum end
+    end
+  end
+  if not best then return nil end
+  api.nvim_win_set_cursor(0, { best, 0 })
+  return best
+end
+
 -- Refresh every loaded buffer whose comments live under `dir`.
 local function refresh_dir(dir)
   for _, bufnr in ipairs(api.nvim_list_bufs()) do
@@ -246,8 +462,67 @@ local function refresh_dir(dir)
   end
 end
 
+-- Buffer-local wiring, installed the first time a buffer is found to carry
+-- comments. `u`/`<C-r>` are static from then on and fall through to the
+-- buffer's own undo when the glean stack is empty; installing and removing them
+-- as the stack fills would race with the very keypress that empties it.
+function activate(bufnr)
+  if active[bufnr] then return end
+  active[bufnr] = true
+  vim.keymap.set("n", "u", function() M.undo(bufnr) end,
+    { buffer = bufnr, nowait = true, silent = true })
+  vim.keymap.set("n", "<C-r>", function() M.redo(bufnr) end,
+    { buffer = bufnr, nowait = true, silent = true })
+  api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    buffer = bufnr,
+    group = api.nvim_create_augroup("GleanOverlayBuf" .. bufnr, { clear = true }),
+    callback = function() note_text_change(bufnr) end,
+  })
+end
+
+-- `<Plug>` mappings only: a file buffer is the user's editing surface, so glean
+-- claims no key unless the user asks for it via `overlay_keymaps`.
+local PLUGS = {
+  { "(glean-comment)", { "n", "x" }, function()
+    local mode = api.nvim_get_mode().mode
+    if mode:match("^[vV\22]") then
+      api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+      M.add_range(0, vim.fn.line("'<"), vim.fn.line("'>"))
+    else
+      M.add_at(0)
+    end
+  end },
+  { "(glean-comment-show)", { "n" }, function() M.show(0) end },
+  { "(glean-comment-edit)", { "n" }, function() M.edit_at(0) end },
+  { "(glean-comment-delete)", { "n" }, function() M.delete_at(0) end },
+  { "(glean-comment-reply)", { "n" }, function() M.reply_at(0) end },
+  { "(glean-comment-next)", { "n" }, function() M.jump(0, 1) end },
+  { "(glean-comment-prev)", { "n" }, function() M.jump(0, -1) end },
+  { "(glean-comment-toggle)", { "n" }, function() M.toggle(0) end },
+}
+
+local PREFIXED = {
+  { "(glean-comment)", "c", { "n", "x" } },
+  { "(glean-comment-show)", "s", { "n" } },
+  { "(glean-comment-edit)", "e", { "n" } },
+  { "(glean-comment-delete)", "d", { "n" } },
+  { "(glean-comment-reply)", "r", { "n" } },
+  { "(glean-comment-next)", "n", { "n" } },
+  { "(glean-comment-prev)", "p", { "n" } },
+  { "(glean-comment-toggle)", "t", { "n" } },
+}
+
 function M.setup(cfg)
   M.config = vim.tbl_extend("force", M.config or {}, cfg or {})
+  for _, spec in ipairs(PLUGS) do
+    vim.keymap.set(spec[2], "<Plug>" .. spec[1], spec[3], { silent = true })
+  end
+  local prefix = M.config.overlay_keymaps
+  if type(prefix) == "string" and prefix ~= "" then
+    for _, spec in ipairs(PREFIXED) do
+      vim.keymap.set(spec[3], prefix .. spec[2], "<Plug>" .. spec[1], { silent = true })
+    end
+  end
   local group = api.nvim_create_augroup("GleanOverlay", { clear = true })
   api.nvim_create_autocmd({ "BufReadPost", "FileChangedShellPost", "BufWritePost" }, {
     group = group,

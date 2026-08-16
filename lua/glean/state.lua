@@ -598,6 +598,11 @@ function Store:remove_comment_record(path, record)
   if not list then return end
   for i = #list, 1, -1 do
     local r = list[i]
+    local by_id = record.id ~= nil and r.id == record.id
+    if by_id then
+      table.remove(list, i)
+      return
+    end
     if r.lnum == record.lnum and r.text == record.text and content_eq(r.content, record.content) then
       table.remove(list, i)
       return

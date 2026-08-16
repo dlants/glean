@@ -116,6 +116,84 @@ function M.for_path(ctx, path)
   return M.store(ctx):comments_for(path)
 end
 
+-- Apply one comment action against a context's store and persist it. `op`
+-- overrides the action's own op, which is how a reverse is expressed (the
+-- "un…" ops). Mirrors Session:apply_comment so a file buffer and the review
+-- buffer share one mutation vocabulary.
+function M.apply(ctx, a, op)
+  local store = M.store(ctx)
+  op = op or a.op or "add"
+  if op == "add" then
+    store:add_comment_record(a.path, a.record)
+  elseif op == "remove" then
+    store:remove_comment_record(a.path, a.record)
+  elseif op == "edit" then
+    store:remove_comment_record(a.path, a.old_record)
+    store:add_comment_record(a.path, a.record)
+  elseif op == "unedit" then
+    store:remove_comment_record(a.path, a.record)
+    store:add_comment_record(a.path, a.old_record)
+  elseif op == "reply" then
+    store:set_comment_reply(a.path, a.record, a.reply)
+  elseif op == "unreply" then
+    store:set_comment_reply(a.path, a.record, a.old_reply)
+  end
+  M.persist(ctx, a.path)
+end
+
+local REVERSE = { add = "remove", remove = "add", edit = "unedit", reply = "unreply" }
+
+function M.reverse(ctx, a)
+  M.apply(ctx, a, REVERSE[a.op or "add"])
+end
+
+-- Open an ephemeral, multi-line comment editor in a split above `win` (the
+-- current window when nil), seeded with `initial` lines. `:w` or `<CR>`
+-- (normal mode) submits the buffer text to `on_submit`; `q` or `<C-c>`
+-- cancels. The scratch buffer is wiped on close so nothing persists outside
+-- the review store.
+function M.open_editor(win, initial, on_submit)
+  local api = vim.api
+  local ebuf = api.nvim_create_buf(false, true)
+  api.nvim_set_option_value("buftype", "acwrite", { buf = ebuf })
+  api.nvim_set_option_value("bufhidden", "wipe", { buf = ebuf })
+  api.nvim_set_option_value("filetype", "markdown", { buf = ebuf })
+  pcall(api.nvim_buf_set_name, ebuf, "glean-comment://" .. ebuf)
+  local seed = (initial and #initial > 0) and initial or { "" }
+  api.nvim_buf_set_lines(ebuf, 0, -1, false, seed)
+
+  if win and api.nvim_win_is_valid(win) then api.nvim_set_current_win(win) end
+  vim.cmd("aboveleft split")
+  local ewin = api.nvim_get_current_win()
+  api.nvim_win_set_buf(ewin, ebuf)
+  api.nvim_win_set_height(ewin, math.max(5, math.min(15, #seed + 1)))
+
+  local done = false
+  local function finish(submit)
+    if done then return end
+    done = true
+    local text
+    if submit then
+      text = table.concat(api.nvim_buf_get_lines(ebuf, 0, -1, false), "\n")
+    end
+    if api.nvim_win_is_valid(ewin) then pcall(api.nvim_win_close, ewin, true) end
+    if submit and text and text:match("%S") then on_submit(text) end
+  end
+
+  api.nvim_create_autocmd("BufWriteCmd", { buffer = ebuf, callback = function() finish(true) end })
+  vim.keymap.set("n", "<CR>", function() finish(true) end, { buffer = ebuf, nowait = true, silent = true })
+  vim.keymap.set("n", "q", function() finish(false) end, { buffer = ebuf, nowait = true, silent = true })
+  vim.keymap.set("n", "<C-c>", function() finish(false) end, { buffer = ebuf, silent = true })
+  -- A new (empty) comment drops straight into insert; editing an existing one
+  -- starts in normal mode so the seeded text can be navigated first.
+  if initial and #initial > 0 then
+    pcall(api.nvim_win_set_cursor, ewin, { #seed, 0 })
+  else
+    vim.cmd("startinsert")
+  end
+  return ebuf, ewin
+end
+
 -- Persist the comment shard and announce the change to the other surfaces.
 function M.persist(ctx, path)
   M.store(ctx):save_commit(ctx.wt_shard)

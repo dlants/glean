@@ -138,6 +138,26 @@ comments is left completely untouched.
 `:Glean comments` dumps every comment in the repo into the quickfix list,
 resolved against the working tree, with unresolvable ones marked `(outdated)`.
 
+You can also leave comments from any file. `:Glean comment` comments on the
+cursor line and `:'<,'>Glean comment` on a range, both opening the same
+ephemeral editor the review buffer uses. Because a file buffer is your editing
+surface, glean claims no key in it by default and ships `<Plug>` mappings
+instead:
+
+- `<Plug>(glean-comment)` — comment on the line (normal) or the selection (visual)
+- `<Plug>(glean-comment-show)` — float the cursor line's comments
+- `<Plug>(glean-comment-edit)` / `<Plug>(glean-comment-delete)` / `<Plug>(glean-comment-reply)`
+- `<Plug>(glean-comment-next)` / `<Plug>(glean-comment-prev)` — jump by resolved position
+- `<Plug>(glean-comment-toggle)` — inline bodies versus signs only
+
+Setting `overlay = { overlay_keymaps = "<leader>c" }` wires the defaults under a
+prefix (`c`, `s`, `e`, `d`, `r`, `n`, `p`, `t`).
+
+In a buffer that carries comments, `u` and `<C-r>` undo and redo glean's comment
+actions first and fall through to the buffer's own undo once there are none —
+the same rule the review buffer follows. A comment mutation changes no text, so
+it never enters the buffer's undo tree; a novel edit wipes the comment stack.
+
 ## Keymaps (inside the glean buffer)
 
 - `m` (normal) — toggle seen on the hunk/file/directory/commit under the cursor; on a marker row/line, unmark that run
