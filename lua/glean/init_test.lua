@@ -3935,4 +3935,75 @@ do
   h.assert_eq("off-diff: api reports the file line", api_by_text["off diff note"].lnum, 12)
   h.assert_eq("off-diff: api keeps outdated", api_by_text["gone note"].state, "outdated")
 end
+-- Cross-surface sync: the comment shard on disk is the single serialization
+-- point, and `GleanCommentsChanged` tells the other surface to re-read it. A
+-- comment authored in a file buffer shows up in an open review and vice versa,
+-- with no reopening and no id collisions.
+do
+  local overlay = require("glean.overlay")
+  local comments_mod = require("glean.comments")
+  local srepo = testutil.make_repo({
+    { msg = "base", files = { ["s.txt"] = "one\ntwo\n" } },
+    { msg = "edit", files = { ["s.txt"] = "one\ntwo\nthree\n" } },
+  })
+  local function runs(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = srepo.root, env = srepo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local sdir = vim.fn.tempname()
+  local s = glean.open({
+    base = srepo.shas[1], target = srepo.shas[2], repo_root = srepo.root, run = runs,
+    open_window = true, state_dir = sdir,
+  })
+  overlay.setup()
+  local sctx = comments_mod.register(srepo.root, sdir, s.wt_shard)
+  local function body() return table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n") end
+
+  -- file surface -> open review.
+  local rstore = comments_mod.store(sctx)
+  local from_file = {
+    lnum = 3, content = { { text = "three", kind = "add" } }, text = "from the file",
+  }
+  rstore:add_comment_record("s.txt", from_file)
+  comments_mod.persist(sctx, "s.txt")
+  h.assert_true("sync: file-authored comment lands in the open review",
+    body():find("from the file", 1, true) ~= nil)
+
+  -- open review -> file buffer.
+  vim.cmd("edit! " .. srepo.root .. "/s.txt")
+  local fbuf = api.nvim_get_current_buf()
+  local ns = api.nvim_create_namespace("glean_overlay")
+  local function signs()
+    local out = {}
+    for _, m in ipairs(api.nvim_buf_get_extmarks(fbuf, ns, 0, -1, { details = true })) do
+      if m[4].sign_text then out[#out + 1] = m end
+    end
+    return out
+  end
+  h.assert_eq("sync: the file shows the comment it authored", #signs(), 1)
+  local from_review = {
+    lnum = 1, content = { { text = "one", kind = "context" } }, text = "from the review",
+  }
+  s:perform({ kind = "comment", op = "add", path = "s.txt", record = from_review })
+  h.assert_eq("sync: review-authored comment reaches the open file buffer", #signs(), 2)
+
+  -- Ids are minted off the shared shard, so two surfaces authoring in sequence
+  -- never collide.
+  local ids = {}
+  for _, r in ipairs(comments_mod.for_path(sctx, "s.txt")) do ids[r.id] = (ids[r.id] or 0) + 1 end
+  local distinct = 0
+  for _, n in pairs(ids) do
+    h.assert_eq("sync: id used once", n, 1)
+    distinct = distinct + 1
+  end
+  h.assert_eq("sync: two distinct ids", distinct, 2)
+
+  -- A session undo is a comment mutation like any other: the overlay follows it.
+  s:undo()
+  h.assert_eq("sync: undo in the review removes the sign in the file", #signs(), 1)
+  h.assert_true("sync: undo leaves the file-authored comment alone",
+    body():find("from the file", 1, true) ~= nil)
+end
 h.finish()

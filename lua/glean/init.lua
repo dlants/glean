@@ -2284,6 +2284,25 @@ function Session:apply_wt_unmark(path, ids)
   self.store:set_seen_records(path, kept)
 end
 
+-- Persist the comment shard and tell every other surface (file overlays, other
+-- sessions) that it moved. `source` names this session so its own listener can
+-- ignore the echo; the shard on disk stays the single serialization point.
+function Session:persist_comments(path)
+  self.store:save_commit(self.store.wt_shard)
+  comments_mod.invalidate(self.state_dir)
+  api.nvim_exec_autocmds("User", {
+    pattern = "GleanCommentsChanged",
+    data = { dir = self.state_dir, path = path, source = "session:" .. tostring(self.id) },
+  })
+end
+
+-- Re-read the comment shard another surface just wrote, so this session's store
+-- (and the ids it mints) reflect the change, then repaint.
+function Session:reload_comments()
+  self.store:read_shard(self.store.wt_shard)
+  if api.nvim_buf_is_valid(self.buf) then self:render() end
+end
+
 function Session:apply_comment(a, op)
   if op == "add" then
     self.store:add_comment_record(a.path, a.record)
@@ -2300,7 +2319,7 @@ function Session:apply_comment(a, op)
   elseif op == "unreply" then
     self.store:set_comment_reply(a.path, a.record, a.old_reply)
   end
-  self.store:save_commit(self.store.wt_shard)
+  self:persist_comments(a.path)
 end
 
 function Session:apply_comments(a, op)
@@ -2311,7 +2330,7 @@ function Session:apply_comments(a, op)
       self.store:add_comment_record(item.path, item.record)
     end
   end
-  self.store:save_commit(self.store.wt_shard)
+  self:persist_comments(a.records[1] and a.records[1].path)
 end
 
 -- Set a collapse key (nil clears it -> default) and mirror onto the model field
@@ -4607,6 +4626,20 @@ function M.open(opts)
     })
     api.nvim_create_autocmd("WinClosed", {
       callback = function() vim.schedule(sync_active) end,
+    })
+    -- Another surface (a file overlay, another session) wrote the shared
+    -- comment shard: re-read it and repaint, so a comment left in a file shows
+    -- up here without reopening.
+    api.nvim_create_autocmd("User", {
+      pattern = "GleanCommentsChanged",
+      callback = function(args)
+        local s = sessions[key]
+        if not (s and api.nvim_buf_is_valid(buf)) then return true end
+        local data = args.data or {}
+        if data.dir ~= s.state_dir then return end
+        if data.source == "session:" .. tostring(s.id) then return end
+        s:reload_comments()
+      end,
     })
     api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
       buffer = buf,

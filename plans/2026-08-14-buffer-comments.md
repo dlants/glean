@@ -403,7 +403,7 @@ function M.redo(bufnr)
     committed `author.txt` so it is independent of what the rendering tests left
     behind (69 assertions in the suite).
 
-## cross-surface sync
+## cross-surface sync — DONE
 
 - Goal: a comment left in a file shows up in an open glean buffer and vice versa, without reopening.
 - Work: the `GleanCommentsChanged` event, `comments.invalidate`, the session listener that re-reads the shard and re-renders, the overlay listener.
@@ -412,6 +412,27 @@ function M.redo(bufnr)
   - The reverse updates an already-open file buffer.
   - Ids do not collide when both surfaces author into the same repo in sequence.
   - A session mutation followed by `u` is reflected in the overlay.
+- Done. Deviations / decisions:
+  - The session half is `Session:persist_comments(path)` (save the shard,
+    `comments.invalidate(self.state_dir)`, fire `GleanCommentsChanged` with
+    `source = "session:<id>"`) and `Session:reload_comments()` (re-read the
+    comment shard, re-render). `apply_comment` / `apply_comments` route their
+    save through the former, so every session-side mutation — including undo and
+    redo, which go through the same apply path — announces itself.
+  - The session's listener is a `User GleanCommentsChanged` autocmd registered
+    once per review buffer in `M.open` (next to the visibility autocmds; it
+    returns `true` to delete itself when the buffer is gone). It ignores events
+    for another state dir and its own `source`, so the echo is not a re-render
+    loop.
+  - The overlay's listener and `comments.invalidate` already landed in stage 3;
+    nothing there changed.
+  - Ids need no extra machinery: `comment_seq` lives in the shard, the session
+    re-reads it on the registry's event, and the registry store is invalidated on
+    the session's, so whichever surface mints next sees the other's maximum.
+  - Tests: one block at the end of `init_test.lua` (own hermetic repo, its own
+    registered context sharing the session's state dir and `wt_shard`) covering
+    both directions, distinct ids across surfaces, and a session `u` clearing the
+    sign in the open file buffer.
 
 ## api and docs
 
