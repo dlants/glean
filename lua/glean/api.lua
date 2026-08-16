@@ -81,10 +81,15 @@ function M.comments(session, opts)
   opts = opts or {}
   local s = M.session(session)
   local out = {}
+  local summary = s:collect_comments()
+  local state_by_id = {}
+  for _, list in pairs(summary.by_path) do
+    for _, e in ipairs(list) do state_by_id[e.id] = e end
+  end
   for _, pair in ipairs(s:comment_file_pairs()) do
-    local path = pair.exact.path
+    local path = pair.exact and pair.exact.path or pair.path
     if not opts.path or opts.path == path then
-      local flat = glean.flatten_diff_lines(pair.exact)
+      local flat = pair.exact and glean.flatten_diff_lines(pair.exact) or {}
       local texts = {}
       for i, dl in ipairs(flat) do texts[i] = dl.text end
       local rows = {}
@@ -96,6 +101,12 @@ function M.comments(session, opts)
         local dl = loc.index and flat[loc.index] or nil
         local side = record_side(rec)
         local lnum = dl and (side == "old" and dl.old_lnum or dl.new_lnum) or nil
+        -- A record that misses the diff but matches the working-tree file is
+        -- live and correctly located; report its file line rather than nothing.
+        local summary_entry = state_by_id[rec.id]
+        local rstate = summary_entry and summary_entry.state
+          or (loc.outdated and "outdated" or "diff")
+        if rstate == "file" then lnum = summary_entry.file_lnum end
         rows[#rows + 1] = {
           order = order,
           position = loc.index or rec.lnum or 0,
@@ -109,7 +120,8 @@ function M.comments(session, opts)
             content = comments_mod.diff_projection(rec),
             code = table.concat(comments_mod.diff_projection(rec), "\n"),
             origin = rec.origin,
-            outdated = loc.outdated,
+            state = rstate,
+            outdated = rstate == "outdated",
           },
         }
       end

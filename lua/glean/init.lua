@@ -1037,7 +1037,7 @@ end
 
 -- Enumerate exact canonical files and their active display counterparts. Hidden
 -- exact files remain present here so their comments stay discoverable.
-function Session:comment_file_pairs()
+function Session:diff_file_pairs()
   local pairs_out = {}
   if self.scope == "combined" then
     for _, exact in ipairs(self.canonical_files or {}) do
@@ -1071,33 +1071,81 @@ function Session:comment_file_pairs()
   return pairs_out
 end
 
+-- The working-tree lines of `path`, memoized per render. nil when the file is
+-- absent — an off-diff comment on a deleted file is simply outdated.
+function Session:wt_file_lines(path)
+  self._wt_lines = self._wt_lines or {}
+  local cached = self._wt_lines[path]
+  if cached ~= nil then
+    return cached ~= false and cached or nil
+  end
+  local abs = self.git.repo_root .. "/" .. path
+  local lines = false
+  if vim.fn.filereadable(abs) == 1 then
+    local ok, read = pcall(vim.fn.readfile, abs)
+    if ok then lines = read end
+  end
+  self._wt_lines[path] = lines
+  return lines ~= false and lines or nil
+end
+-- Every path a comment can live on: the diff's files, plus every path the store
+-- holds comments for. A comment on a file this review does not touch still gets
+-- a summary group, so no comment is ever invisible.
+function Session:comment_file_pairs()
+  local pairs_out = self:diff_file_pairs()
+  local seen = {}
+  for _, pair in ipairs(pairs_out) do seen[pair.exact.path] = true end
+  for _, path in ipairs(self.store:comment_paths()) do
+    if not seen[path] then
+      pairs_out[#pairs_out + 1] = { path = path }
+    end
+  end
+  return pairs_out
+end
+-- Every comment record in the repo, grouped by path, each classified into one
+-- of three states: "diff" (it anchors in this review's diff), "file" (it misses
+-- the diff but matches the working-tree file, so it is live and correctly
+-- located, just on lines the review does not touch) and "outdated" (neither).
 function Session:collect_comments()
   local best = {}
+  local function rank(e)
+    if e.outdated then return 0 end
+    if e.state == "file" then return 1 end
+    return e.hidden and 2 or 3
+  end
   for _, pair in ipairs(self:comment_file_pairs()) do
-    local flat = flatten_diff_lines(pair.exact)
+    local path = pair.exact and pair.exact.path or pair.path
+    local flat = pair.exact and flatten_diff_lines(pair.exact) or {}
     local texts = {}
     for i, dl in ipairs(flat) do texts[i] = dl.text end
-    for _, rec in ipairs(self.store:comments_for(pair.exact.path)) do
+    for _, rec in ipairs(self.store:comments_for(path)) do
       local loc = comments_mod.locate(rec, texts, flat_lnum_of(flat))
       local canonical_dl = loc.index and flat[loc.index] or nil
       local display_ord = canonical_dl and pair.display
         and line_ordinal(pair.display, canonical_dl) or nil
       local first = (rec.content or {})[1]
+      local file_lnum
+      if loc.outdated and #comments_mod.file_projection(rec) > 0 then
+        local wt = self:wt_file_lines(path)
+        if wt then
+          local floc = comments_mod.locate(rec, wt, nil, "file")
+          if not floc.outdated then file_lnum = floc.lnum end
+        end
+      end
       local entry = {
         id = rec.id, reply = rec.reply, origin = rec.origin,
         lnum = rec.lnum, content = rec.content, line = first and first.text or "",
         display_lnum = canonical_dl and (canonical_dl.new_lnum or canonical_dl.old_lnum),
-        outdated = loc.outdated,
+        file_lnum = file_lnum,
+        state = (not loc.outdated) and "diff" or (file_lnum and "file" or "outdated"),
+        outdated = loc.outdated and file_lnum == nil,
         hidden = not loc.outdated and display_ord == nil and self.ignore_whitespace,
         text = rec.text,
       }
-      local path = pair.exact.path
       local rkey = comment_key(rec)
       best[path] = best[path] or {}
       local prev = best[path][rkey]
-      local rank = entry.outdated and 0 or (entry.hidden and 1 or 2)
-      local prev_rank = prev and (prev.outdated and 0 or (prev.hidden and 1 or 2)) or -1
-      if rank > prev_rank then best[path][rkey] = entry end
+      if not prev or rank(entry) > rank(prev) then best[path][rkey] = entry end
     end
   end
   local order, by_path = {}, {}
@@ -1106,7 +1154,8 @@ function Session:collect_comments()
     local list = {}
     for _, entry in pairs(recs) do list[#list + 1] = entry end
     table.sort(list, function(a, b)
-      return (a.display_lnum or a.lnum or 0) < (b.display_lnum or b.lnum or 0)
+      return (a.display_lnum or a.file_lnum or a.lnum or 0)
+        < (b.display_lnum or b.file_lnum or b.lnum or 0)
     end)
     by_path[path] = list
   end
@@ -1203,6 +1252,8 @@ function Session:build()
   -- Worktree seen-marks are resolved positionally against the live diff; the
   -- per-path ord cache is rebuilt each render since the diff may have changed.
   self._wt_seen = {}
+  -- Working-tree reads backing off-diff comment resolution, likewise per-render.
+  self._wt_lines = {}
   local lines = {}
   local row_map = {}
   local highlights = {}
@@ -1543,12 +1594,14 @@ function Session:build()
       for _, e in ipairs(summary.by_path[path]) do
         local loc = e.outdated and "(outdated)"
           or e.hidden and "(hidden)"
+          or e.state == "file" and ("file L%d"):format(e.file_lnum)
           or (e.display_lnum and ("L%d"):format(e.display_lnum) or "L?")
         -- The comment record carried so `dd`/`i`/`e` act on it directly, plus
         -- `summary_comment` so `<CR>` expands its hunk and jumps to it above.
         local c = {
           path = path, id = e.id, lnum = e.lnum, content = e.content, text = e.text,
           reply = e.reply, origin = e.origin, outdated = e.outdated, hidden = e.hidden,
+          state = e.state, file_lnum = e.file_lnum,
         }
         local ctarget = { comment = c, summary_comment = { path = path } }
         local tag = ("[%d]"):format(e.id)
@@ -3403,8 +3456,26 @@ end
 -- `<CR>` on a summary comment row: expand the file, its seen section, and every
 -- marker run hiding its line, then park the cursor on the comment in the diff
 -- (falling back to the file header when the comment is outdated / not shown).
+-- Open the working-tree file at `lnum` in the glean window, the way `jump`
+-- opens a live post-image line. Returns the absolute path, or nil if unreadable.
+function Session:open_comment_file(path, lnum)
+  local abs = self.git.repo_root .. "/" .. path
+  if vim.fn.filereadable(abs) ~= 1 then return nil end
+  if self.win and api.nvim_win_is_valid(self.win) then
+    api.nvim_set_current_win(self.win)
+  end
+  vim.cmd("edit " .. vim.fn.fnameescape(abs))
+  local n = api.nvim_buf_line_count(0)
+  pcall(api.nvim_win_set_cursor, 0, { math.max(1, math.min(lnum, n)), 0 })
+  return abs
+end
 function Session:reveal_summary_comment(c)
   if not c then return end
+  -- An off-diff comment has no row in the review: it is anchored in the file
+  -- itself, so `<CR>` opens the file there.
+  if c.state == "file" and c.file_lnum then
+    return self:open_comment_file(c.path, c.file_lnum)
+  end
   if c.hidden and self.ignore_whitespace then
     self._reveal_comment_after_refresh = {
       path = c.path, lnum = c.lnum, content = c.content, text = c.text,

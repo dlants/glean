@@ -291,7 +291,7 @@ function M.redo(bufnr)
   - `origin` round-trips and is ignored by every resolution path: a record with a bogus `origin` resolves identically to one without.
   - `origin` is stamped correctly per scope — commit scope stamps the row's commit; a worktree row stamps `{ sha = WORKTREE, dirty = true }`; combined scope stamps the last commit touching the path with `dirty = false`, and flips to `dirty = true` once that path is dirtied.
 
-## summary section covers every comment
+## summary section covers every comment — DONE
 
 - Goal: every comment in the repo is listed in the summary, including comments on unchanged lines and on files outside the review, with the three states distinguished.
 - Work: widen `comment_file_pairs` to the union of diff paths and store paths; add the memoized working-tree read and the state-2 attempt to `collect_comments`; render the `"file"` state with its line; `<CR>` on such a row opens the file there; carry `state` through `api.comments`.
@@ -301,6 +301,28 @@ function M.redo(bufnr)
   - `<CR>` on an off-diff summary row opens the file buffer at that line.
   - Content in neither diff nor file is `"outdated"`, at the row whose `new_lnum` is nearest `lnum` — check it lands sensibly after hunks above it grow.
   - Summary counts and rollups include off-diff comments.
+- Done. Deviations / decisions:
+  - `Session:comment_file_pairs` now wraps the old body, renamed
+    `Session:diff_file_pairs`; store-only paths are appended as `{ path = p }`
+    pairs with no `exact`/`display`, and `collect_comments` / `api.comments`
+    tolerate a pathless pair (empty flattened diff). `Store:comment_paths()` is
+    new in `state.lua`.
+  - Off-diff resolution reads the working tree through `Session:wt_file_lines`,
+    memoized per render (cleared in `build()` next to `_wt_seen`).
+  - Summary entries gain `state` ("diff" | "file" | "outdated") and `file_lnum`;
+    `outdated` now means "not resolvable anywhere" (a file-state record is no
+    longer flagged outdated). `hidden` is unchanged. Rank order for the
+    per-record best entry: diff > hidden > file > outdated.
+  - The file state renders as `file L%d` in the summary; `<CR>` routes through
+    the new `Session:open_comment_file(path, lnum)`, which edits the working-tree
+    file in the glean window and clamps the cursor.
+  - `api.comments` reports `state` and, for the file state, the file line as
+    `lnum`; it derives both from `collect_comments` keyed by record id rather
+    than duplicating the working-tree read.
+  - Tests: one new block at the end of `init_test.lua` (own hermetic repo)
+    covering unchanged-line and outside-the-review comments, the outdated
+    fallback landing in the diff, summary counts, the `<CR>`-opens-the-file path
+    and the api's `state`/`lnum`.
 
 ## read-only overlay
 

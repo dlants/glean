@@ -3856,4 +3856,83 @@ do
   h.assert_true("marker: buffer text is the verbatim source line",
     api.nvim_buf_get_lines(s.buf, add_row, add_row + 1, false)[1] == "value beta here")
 end
+-- Off-diff comments: the summary is the union of the review's files and every
+-- path the store holds comments for, so a comment on an unchanged line — or on
+-- a file the review does not touch at all — is still listed, resolved against
+-- the working-tree file rather than the diff.
+do
+  local lines = {}
+  for i = 1, 12 do lines[i] = "l" .. i end
+  local before = table.concat(lines, "\n") .. "\n"
+  lines[5] = "L5"
+  local after = table.concat(lines, "\n") .. "\n"
+  local orepo = testutil.make_repo({
+    { msg = "base", files = { ["a.txt"] = before, ["other.txt"] = "solo one\nsolo two\n" } },
+    { msg = "edit", files = { ["a.txt"] = after } },
+  })
+  local function runo(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = orepo.root, env = orepo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local s = glean.open({
+    base = orepo.shas[1], target = orepo.shas[2], repo_root = orepo.root, run = runo,
+    open_window = true, state_dir = vim.fn.tempname(),
+  })
+  -- l12 is in the file but outside the diff's context window.
+  s.store:add_comment_record("a.txt", {
+    lnum = 12, content = { { text = "l12", kind = "add" } }, text = "off diff note",
+  })
+  -- other.txt is not part of the review at all.
+  s.store:add_comment_record("other.txt", {
+    lnum = 2, content = { { text = "solo two", kind = "add" } }, text = "outside note",
+  })
+  -- Neither the diff nor the file has this content.
+  s.store:add_comment_record("a.txt", {
+    lnum = 4, content = { { text = "vanished", kind = "add" } }, text = "gone note",
+  })
+  s.store:save_commit(state.COMMENTS_ID)
+  s:render()
+  local summary = s:collect_comments()
+  local by_text = {}
+  for _, list in pairs(summary.by_path) do
+    for _, e in ipairs(list) do by_text[e.text] = e end
+  end
+  h.assert_eq("off-diff: unchanged line is file-state", by_text["off diff note"].state, "file")
+  h.assert_eq("off-diff: resolved to its file line", by_text["off diff note"].file_lnum, 12)
+  h.assert_eq("off-diff: file outside the review is listed",
+    by_text["outside note"].state, "file")
+  h.assert_true("off-diff: unreviewed path gets a summary group",
+    summary.by_path["other.txt"] ~= nil)
+  h.assert_eq("off-diff: unmatched content stays outdated", by_text["gone note"].state, "outdated")
+  local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("off-diff: summary counts every comment",
+    joined:find("comments (3)", 1, true) ~= nil)
+  h.assert_true("off-diff: file state renders its line",
+    joined:find("file L12", 1, true) ~= nil)
+  h.assert_true("off-diff: unreviewed path header rendered",
+    joined:find("\n▾ other.txt", 1, true) ~= nil)
+  -- The outdated fallback is the diff row whose new_lnum is nearest the hint.
+  local grow = find_row(s, function(_, _, t)
+    return t and t.comment and not t.summary_comment and t.comment.text == "gone note"
+  end)
+  h.assert_true("off-diff: outdated comment falls back into the diff", grow ~= nil)
+  -- <CR> on an off-diff summary row leaves the glean buffer for the file.
+  local srow = find_row(s, function(_, _, t)
+    return t and t.summary_comment and t.comment.text == "off diff note"
+  end)
+  h.assert_true("off-diff: summary row present", srow ~= nil)
+  s:jump(srow)
+  h.assert_true("off-diff: <CR> opens the file",
+    api.nvim_buf_get_name(0):sub(-6) == "/a.txt")
+  h.assert_eq("off-diff: <CR> lands on the resolved line",
+    api.nvim_win_get_cursor(0)[1], 12)
+  local rows = require("glean.api").comments(s.id)
+  local api_by_text = {}
+  for _, e in ipairs(rows) do api_by_text[e.text] = e end
+  h.assert_eq("off-diff: api reports the file state", api_by_text["off diff note"].state, "file")
+  h.assert_eq("off-diff: api reports the file line", api_by_text["off diff note"].lnum, 12)
+  h.assert_eq("off-diff: api keeps outdated", api_by_text["gone note"].state, "outdated")
+end
 h.finish()

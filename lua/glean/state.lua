@@ -625,6 +625,16 @@ function Store:set_comment_reply(path, record, reply)
   return nil
 end
 
+-- Every path with at least one comment record, sorted.
+function Store:comment_paths()
+  local c = self.data[self.wt_shard]
+  local out = {}
+  for path, list in pairs((c and c.comments) or {}) do
+    if #list > 0 then out[#out + 1] = path end
+  end
+  table.sort(out)
+  return out
+end
 -- All comment records for `path` (possibly empty).
 function Store:comments_for(path)
   local c = self.data[self.wt_shard]
