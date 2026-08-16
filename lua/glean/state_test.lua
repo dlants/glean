@@ -84,7 +84,8 @@ do
 
   -- resolve finds the closest single occurrence of a trivial block.
   local diff = { "alpha", "}", "beta", "}", "gamma" }
-  h.assert_eq("seen-block: trivial resolves to closest one", state.resolve({ "}" }, 4, diff), 4)
+  h.assert_eq("seen-block: trivial resolves to closest one",
+    state.resolve({ "}" }, diff, nil, 4), 4)
 
   -- set_seen_records replaces; an empty list prunes the path entry.
   s:set_seen_records("f.txt", {})
@@ -149,8 +150,8 @@ do
   local dir = vim.fn.tempname()
   local s = state.new({ dir = dir })
   s:load({ "shaA" })
-  s:add_comment_record("f.txt", { anchor = 3, content = { "two" }, text = "single" })
-  s:add_comment_record("f.txt", { anchor = 5, content = { "a", "b" }, text = "multi" })
+  s:add_comment_record("f.txt", { lnum = 3, content = { { text = "two", kind = "add" } }, text = "single" })
+  s:add_comment_record("f.txt", { lnum = 5, content = { { text = "a", kind = "add" }, { text = "b", kind = "add" } }, text = "multi" })
   s:save_commit(state.COMMENTS_ID)
 
   -- Reload a committed-range review that does NOT list the comments shard id.
@@ -158,41 +159,71 @@ do
   s2:load({ "shaA", "shaB" })
   local list = s2:comments_for("f.txt")
   h.assert_eq("comments: count after reload", #list, 2)
-  h.assert_eq("comments: single content", list[1].content[1], "two")
+  h.assert_eq("comments: single content", list[1].content[1].text, "two")
   h.assert_eq("comments: single text", list[1].text, "single")
   h.assert_eq("comments: multi content len", #list[2].content, 2)
-  h.assert_eq("comments: multi second line", list[2].content[2], "b")
-  h.assert_eq("comments: multi anchor", list[2].anchor, 5)
+  h.assert_eq("comments: multi second line", list[2].content[2].text, "b")
+  h.assert_eq("comments: multi lnum", list[2].lnum, 5)
 
   -- remove drops exactly one record (matched by anchor/content/text).
-  s2:remove_comment_record("f.txt", { anchor = 3, content = { "two" }, text = "single" })
+  s2:remove_comment_record("f.txt", { lnum = 3, content = { { text = "two", kind = "add" } }, text = "single" })
   local after = s2:comments_for("f.txt")
   h.assert_eq("comments: count after remove", #after, 1)
   h.assert_eq("comments: survivor", after[1].text, "multi")
 
   -- unknown path is empty.
   h.assert_eq("comments: empty path", #s2:comments_for("other.txt"), 0)
+  -- A mixed-kind selection (with a deletion's pre-image number and provenance)
+  -- round-trips byte-for-byte through save/load.
+  s2:add_comment_record("f.txt", {
+    lnum = 7,
+    content = {
+      { text = "kept", kind = "context" },
+      { text = "removed", kind = "del", old_lnum = 42 },
+      { text = "added", kind = "add" },
+    },
+    text = "mixed", origin = { sha = "abc123", dirty = true },
+  })
+  s2:save_commit(state.COMMENTS_ID)
+  local s3 = state.new({ dir = dir })
+  s3:load({})
+  local reloaded = s3:comments_for("f.txt")
+  local mixed = reloaded[#reloaded]
+  h.assert_eq("comments: mixed kind round-trips", mixed.content[2].kind, "del")
+  h.assert_eq("comments: mixed old_lnum round-trips", mixed.content[2].old_lnum, 42)
+  h.assert_eq("comments: mixed context kind", mixed.content[1].kind, "context")
+  h.assert_eq("comments: origin sha round-trips", mixed.origin.sha, "abc123")
+  h.assert_eq("comments: origin dirty round-trips", mixed.origin.dirty, true)
 end
 
 -- Resolution helper: closest consecutive block match.
 do
   local diff = { "alpha", "beta", "gamma", "beta", "delta" }
   -- single occurrence resolves to its index.
-  h.assert_eq("resolve: single occurrence", state.resolve({ "gamma" }, 1, diff), 3)
+  h.assert_eq("resolve: single occurrence", state.resolve({ "gamma" }, diff, nil, 1), 3)
   -- multiple occurrences resolve to the one closest to anchor.
-  h.assert_eq("resolve: closest to anchor (low)", state.resolve({ "beta" }, 1, diff), 2)
-  h.assert_eq("resolve: closest to anchor (high)", state.resolve({ "beta" }, 5, diff), 4)
+  h.assert_eq("resolve: closest to anchor (low)", state.resolve({ "beta" }, diff, nil, 1), 2)
+  h.assert_eq("resolve: closest to anchor (high)", state.resolve({ "beta" }, diff, nil, 5), 4)
   -- tie on distance picks the lower index.
-  h.assert_eq("resolve: tie picks lower", state.resolve({ "beta" }, 3, diff), 2)
+  h.assert_eq("resolve: tie picks lower", state.resolve({ "beta" }, diff, nil, 3), 2)
   -- multi-line block matches only when consecutive.
-  h.assert_eq("resolve: consecutive block", state.resolve({ "alpha", "beta" }, 1, diff), 1)
-  h.assert_eq("resolve: non-consecutive nil", state.resolve({ "alpha", "gamma" }, 1, diff), nil)
+  h.assert_eq("resolve: consecutive block", state.resolve({ "alpha", "beta" }, diff, nil, 1), 1)
+  h.assert_eq("resolve: non-consecutive nil", state.resolve({ "alpha", "gamma" }, diff, nil, 1), nil)
   -- a deletion's text present in diff_texts resolves; absent content is nil.
   local withdel = { "ctx", "-removed", "ctx2" }
-  h.assert_eq("resolve: deletion text", state.resolve({ "-removed" }, 2, withdel), 2)
-  h.assert_eq("resolve: absent content nil", state.resolve({ "missing" }, 1, diff), nil)
+  h.assert_eq("resolve: deletion text", state.resolve({ "-removed" }, withdel, nil, 2), 2)
+  h.assert_eq("resolve: absent content nil", state.resolve({ "missing" }, diff, nil, 1), nil)
   -- empty content is nil.
-  h.assert_eq("resolve: empty content nil", state.resolve({}, 1, diff), nil)
+  h.assert_eq("resolve: empty content nil", state.resolve({}, diff, nil, 1), nil)
+  -- Tiebreaking happens in `lnum_of` space, not index space: a candidate early
+  -- in the sequence but late in the file loses to a later, nearer one.
+  local lnums = { 100, 101, 5, 6 }
+  local dup = { "x", "y", "x", "y" }
+  local lnum_of = function(i) return lnums[i] end
+  h.assert_eq("resolve: nearest by lnum, not index",
+    state.resolve({ "x" }, dup, lnum_of, 5), 3)
+  h.assert_eq("resolve: nearest by lnum picks the far index",
+    state.resolve({ "x" }, dup, lnum_of, 99), 1)
 end
 -- Seen-block records round-trip on the worktree shard, and a mark fully undone
 -- (set to empty) restores the shard JSON byte-identically.
@@ -248,7 +279,7 @@ end
 do
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
-  local rec = { anchor = 1, content = { "x" }, text = "hi" }
+  local rec = { lnum = 1, content = { { text = "x", kind = "add" } }, text = "hi" }
 
   local a = state.new({ dir = dir, wt_shard = "WORKTREE/a" })
   a:load({})
@@ -294,8 +325,8 @@ do
   local dir = vim.fn.tempname()
   local s = state.new({ dir = dir })
   s:load({ state.COMMENTS_ID })
-  s:add_comment_record("f.txt", { anchor = 1, content = { "a" }, text = "one" })
-  s:add_comment_record("g.txt", { anchor = 2, content = { "b" }, text = "two" })
+  s:add_comment_record("f.txt", { lnum = 1, content = { { text = "a", kind = "add" } }, text = "one" })
+  s:add_comment_record("g.txt", { lnum = 2, content = { { text = "b", kind = "add" } }, text = "two" })
   local id1 = s:comments_for("f.txt")[1].id
   local id2 = s:comments_for("g.txt")[1].id
   h.assert_eq("ids: monotonic", id2, id1 + 1)
@@ -314,7 +345,7 @@ do
   h.assert_true("reply: unrelated record keeps nil reply",
     s2:comments_for("g.txt")[1].reply == nil)
   -- A fresh id after reload never collides with a persisted one.
-  s2:add_comment_record("f.txt", { anchor = 3, content = { "c" }, text = "three" })
+  s2:add_comment_record("f.txt", { lnum = 3, content = { { text = "c", kind = "add" } }, text = "three" })
   h.assert_eq("ids: seq resumes past reload", s2:comments_for("f.txt")[2].id, id2 + 1)
   -- Clearing a reply (undo of a reply) restores the unanswered state.
   s2:set_comment_reply("f.txt", { id = id1 }, nil)
@@ -329,10 +360,10 @@ do
   local shard = {
     worktree = true, files = {},
     comments = {
-      ["b.txt"] = { { anchor = 1, content = { "x" }, text = "bee" } },
+      ["b.txt"] = { { lnum = 1, content = { { text = "x", kind = "add" } }, text = "bee" } },
       ["a.txt"] = {
-        { anchor = 1, content = { "y" }, text = "one" },
-        { anchor = 2, content = { "z" }, text = "two" },
+        { lnum = 1, content = { { text = "y", kind = "add" } }, text = "one" },
+        { lnum = 2, content = { { text = "z", kind = "add" } }, text = "two" },
       },
     },
   }
@@ -348,7 +379,7 @@ do
   local s2 = state.new({ dir = dir })
   s2:load({ state.COMMENTS_ID })
   h.assert_eq("migrate: ids stable on second load", s2:comments_for("a.txt")[2].id, 2)
-  s2:add_comment_record("a.txt", { anchor = 9, content = { "w" }, text = "new" })
+  s2:add_comment_record("a.txt", { lnum = 9, content = { { text = "w", kind = "add" } }, text = "new" })
   h.assert_eq("migrate: seq seeded past max", s2:comments_for("a.txt")[3].id, 4)
 end
 h.finish()

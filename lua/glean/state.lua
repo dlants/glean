@@ -113,12 +113,16 @@ function M.line_hash(text)
   return vim.fn.sha256(text)
 end
 
--- Pure re-anchoring helper. Given a comment's captured `content` block (a list
--- of line texts), the `anchor` ordinal it was authored against, and the current
--- flattened `diff_texts` sequence, return the start index of the closest
--- consecutive match (all-or-nothing), or nil if the block does not appear.
+-- Pure re-anchoring helper. Given a block of `needles` (line texts), the
+-- `haystack` sequence to search, a mapping from a haystack index to the line
+-- number that index sits at (`lnum_of`), and the `anchor_lnum` the block was
+-- authored against, return the start index of the closest consecutive match
+-- (all-or-nothing), or nil if the block does not appear. Distance is measured
+-- in `lnum_of` space, so callers choose the coordinate system the tiebreak
+-- happens in (identity for plain ordinals, post-image line for a diff).
 -- Ties on distance pick the lower index.
-function M.resolve(content, anchor, diff_texts)
+function M.resolve(needles, haystack, lnum_of, anchor_lnum)
+  local content, diff_texts = needles, haystack
   local n = #content
   if n == 0 then
     return nil
@@ -133,7 +137,8 @@ function M.resolve(content, anchor, diff_texts)
       end
     end
     if match then
-      local dist = math.abs(i - anchor)
+      local l = lnum_of and lnum_of(i) or i
+      local dist = l and math.abs(l - (anchor_lnum or 0)) or math.huge
       if not best_dist or dist < best_dist then
         best, best_dist = i, dist
       end
@@ -526,9 +531,11 @@ end
 
 -- ── Content-addressed comments ──────────────────────────────────────────────
 -- All comments live in the always-loaded COMMENTS_ID shard under a top-level
--- `comments` map keyed by path. Each record is { anchor, content = {...}, text }:
--- `content` is the captured line text(s) (one entry per commented line),
--- `anchor` the authoring line (a tiebreak / outdated fallback), `text` the body.
+-- `comments` map keyed by path. Each record is { lnum, content = {...}, text,
+-- origin }: `content` is the captured selection, one annotated entry per line
+-- ({ text, kind, old_lnum? }); `lnum` the post-image authoring line (a tiebreak
+-- / outdated fallback, never a coordinate); `text` the body; `origin` the
+-- { sha, dirty } the selection was read from (provenance only).
 -- Comments are re-anchored by content at render time, independent of any commit.
 
 function Store:comments_commit()
@@ -559,26 +566,31 @@ function Store:add_comment_record(path, record)
   local list = c.comments[path]
   list[#list + 1] = {
     id = record.id or self:next_comment_id(),
-    anchor = record.anchor,
+    lnum = record.lnum,
     content = record.content,
     text = record.text,
     reply = record.reply,
+    origin = record.origin,
   }
 end
 
+-- Two captured selections are equal when their annotated entries agree on text,
+-- kind and (for deletions) pre-image line.
 local function content_eq(a, b)
   if type(a) ~= "table" or type(b) ~= "table" or #a ~= #b then
     return false
   end
   for i = 1, #a do
-    if a[i] ~= b[i] then
+    local x, y = a[i], b[i]
+    if type(x) ~= "table" or type(y) ~= "table"
+      or x.text ~= y.text or x.kind ~= y.kind or x.old_lnum ~= y.old_lnum then
       return false
     end
   end
   return true
 end
 
--- Remove the last comment for `path` matching the given record by anchor,
+-- Remove the last comment for `path` matching the given record by lnum,
 -- content[] and text. Used to reverse an add; no-op if none match.
 function Store:remove_comment_record(path, record)
   local c = self.data[self.wt_shard]
@@ -586,7 +598,7 @@ function Store:remove_comment_record(path, record)
   if not list then return end
   for i = #list, 1, -1 do
     local r = list[i]
-    if r.anchor == record.anchor and r.text == record.text and content_eq(r.content, record.content) then
+    if r.lnum == record.lnum and r.text == record.text and content_eq(r.content, record.content) then
       table.remove(list, i)
       return
     end
@@ -603,7 +615,7 @@ function Store:set_comment_reply(path, record, reply)
   for i = #list, 1, -1 do
     local r = list[i]
     local match = record.id and r.id == record.id
-      or (not record.id and r.anchor == record.anchor and r.text == record.text
+      or (not record.id and r.lnum == record.lnum and r.text == record.text
         and content_eq(r.content, record.content))
     if match then
       r.reply = reply

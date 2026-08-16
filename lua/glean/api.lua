@@ -10,6 +10,7 @@
 -- what `Session` already does.
 local glean = require("glean.init")
 local state = require("glean.state")
+local comments_mod = require("glean.comments")
 local M = {}
 -- The open reviews, in id order. Purely descriptive: no lua objects cross the
 -- boundary, only the fields needed to pick one.
@@ -60,6 +61,18 @@ local function line_position(dl)
   if dl.kind == "del" then return dl.old_lnum, "old" end
   return dl.new_lnum, "new"
 end
+
+-- The side a record was captured on: pre-image only when every captured line is
+-- a deletion, post-image otherwise. Derived from the record's own annotations,
+-- so it holds whether or not the record still resolves.
+local function record_side(rec)
+  local entries = rec.content or {}
+  if #entries == 0 then return "new" end
+  for _, e in ipairs(entries) do
+    if e.kind ~= "del" then return "new" end
+  end
+  return "old"
+end
 -- Every comment in the review, flattened and read-only. Walks the exact
 -- canonical files (so comments in whitespace-hidden files stay visible) and
 -- re-anchors each record against the current diff. Order is deterministic:
@@ -76,12 +89,16 @@ function M.comments(session, opts)
       for i, dl in ipairs(flat) do texts[i] = dl.text end
       local rows = {}
       for order, rec in ipairs(s.store:comments_for(path)) do
-        local start = state.resolve(rec.content, rec.anchor, texts)
-        local dl = flat[start or rec.anchor]
-        local lnum, side = line_position(dl)
+        local loc = comments_mod.locate(rec, texts, function(i)
+          local dl = flat[i]
+          return dl and dl.new_lnum or nil
+        end)
+        local dl = loc.index and flat[loc.index] or nil
+        local side = record_side(rec)
+        local lnum = dl and (side == "old" and dl.old_lnum or dl.new_lnum) or nil
         rows[#rows + 1] = {
           order = order,
-          position = start or rec.anchor or 0,
+          position = loc.index or rec.lnum or 0,
           entry = {
             id = rec.id,
             path = path,
@@ -89,9 +106,10 @@ function M.comments(session, opts)
             side = side,
             text = rec.text,
             reply = rec.reply,
-            content = rec.content,
-            code = table.concat(rec.content, "\n"),
-            outdated = start == nil,
+            content = comments_mod.diff_projection(rec),
+            code = table.concat(comments_mod.diff_projection(rec), "\n"),
+            origin = rec.origin,
+            outdated = loc.outdated,
           },
         }
       end

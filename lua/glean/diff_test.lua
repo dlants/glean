@@ -34,11 +34,32 @@ do
   h.assert_eq("modify: l1 old_lnum", lines[1].old_lnum, 1)
   h.assert_eq("modify: l2 del", lines[2].kind, "del")
   h.assert_eq("modify: l2 old_lnum", lines[2].old_lnum, 2)
-  h.assert_eq("modify: l2 no new_lnum", lines[2].new_lnum, nil)
+  -- A deletion occupies a real post-image slot: the line it sat immediately
+  -- before. Comment anchoring resolves in that space, so it must be total.
+  h.assert_eq("modify: l2 del post-image slot", lines[2].new_lnum, 2)
   h.assert_eq("modify: l3 add", lines[3].kind, "add")
   h.assert_eq("modify: l3 new_lnum", lines[3].new_lnum, 2)
   h.assert_eq("modify: l3 no old_lnum", lines[3].old_lnum, nil)
   h.assert_eq("modify: l4 context new_lnum", lines[4].new_lnum, 3)
+end
+
+-- A run of deletions all sit in the same post-image slot: the line they were
+-- removed from before, which does not advance as the run is consumed.
+do
+  local text = table.concat({
+    "diff --git a/foo.txt b/foo.txt",
+    "--- a/foo.txt",
+    "+++ b/foo.txt",
+    "@@ -1,4 +1,2 @@",
+    " one",
+    "-two",
+    "-three",
+    " four",
+  }, "\n")
+  local lines = diff.parse(text)[1].hunks[1].lines
+  h.assert_eq("del run: first del post-image slot", lines[2].new_lnum, 2)
+  h.assert_eq("del run: second del same slot", lines[3].new_lnum, 2)
+  h.assert_eq("del run: context after run", lines[4].new_lnum, 2)
 end
 
 -- Added file: kind=add, new_lnums increment from 1.

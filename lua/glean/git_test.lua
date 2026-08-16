@@ -425,7 +425,7 @@ do
   local ignored_files = wgit:combined_diff(wbase, wtarget, nil, true)
   local ignored = changed(ignored_files)
   h.assert_eq("ignore semantics: only semantic pair remains", table.concat(ignored, "\n"),
-    "ws.txt|del|5||semantic old\nws.txt|add||5|semantic new")
+    "ws.txt|del|5|5|semantic old\nws.txt|add||5|semantic new")
 
   local async_files
   wgit:combined_diff_async(wbase, wtarget, true, function(files) async_files = files end)
@@ -458,12 +458,12 @@ do
   h.assert_true("ignore semantics: exact worktree includes whitespace edits", #worktree_exact > 2)
   h.assert_eq("ignore semantics: ignored worktree keeps semantic pair",
     table.concat(worktree_ignored, "\n"),
-    "ws.txt|del|5||semantic new\nws.txt|add||5|semantic worktree")
+    "ws.txt|del|5|5|semantic new\nws.txt|add||5|semantic worktree")
 
   local to_worktree = changed(wgit:diff_to_worktree(wbase, nil, true))
   h.assert_eq("ignore semantics: ignored base-to-worktree keeps semantic pair",
     table.concat(to_worktree, "\n"),
-    "ws.txt|del|5||semantic old\nws.txt|add||5|semantic worktree")
+    "ws.txt|del|5|5|semantic old\nws.txt|add||5|semantic worktree")
   local untracked_after = wgit:untracked()
   h.assert_eq("ignore semantics: untracked synthesis unchanged",
     vim.inspect(untracked_after), vim.inspect(untracked_before))

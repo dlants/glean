@@ -397,7 +397,7 @@ do
   h.assert_true("visual: target captured", ct ~= nil)
   h.assert_true("visual: multi-line content", #ct.content >= 2)
   for _, c in ipairs(ct.content) do
-    h.assert_true("visual: content excludes decoration", c:find("@@", 1, true) == nil)
+    h.assert_true("visual: content excludes decoration", c.text:find("@@", 1, true) == nil)
   end
   s:add_comment(ct, "block note")
   h.assert_eq("visual: one comment stored", #s.store:comments_for("f.txt"), 1)
@@ -409,13 +409,138 @@ do
   h.assert_eq("visual: rendered inline once", inline, 1)
 end
 
+-- Authoring captures annotated content, a post-image anchor and provenance.
+-- Combined scope stamps the last commit touching the path.
+do
+  local dir = vim.fn.tempname()
+  local s = open({ state_dir = dir }) -- combined
+  local addrow = find_row(s, function(_, line, t)
+    return t and t.cfile and t.line and line == "TWO"
+  end)
+  local add_ct = s:comment_target(addrow)
+  h.assert_eq("author: add kind", add_ct.content[1].kind, "add")
+  h.assert_eq("author: add text", add_ct.content[1].text, "TWO")
+  h.assert_eq("author: add post-image lnum", add_ct.lnum, 2)
+  h.assert_true("author: add carries no pre-image number",
+    add_ct.content[1].old_lnum == nil)
+  h.assert_eq("author: combined origin is the last commit touching the path",
+    add_ct.origin.sha, repo.shas[3])
+  h.assert_eq("author: clean combined origin is not dirty", add_ct.origin.dirty, false)
+
+  local delrow = find_row(s, function(_, line, t)
+    return t and t.cfile and t.line and line == "two"
+  end)
+  local del_ct = s:comment_target(delrow)
+  h.assert_eq("author: del kind", del_ct.content[1].kind, "del")
+  h.assert_eq("author: del keeps its pre-image number", del_ct.content[1].old_lnum, 2)
+  h.assert_eq("author: del anchors at the slot it was removed from",
+    del_ct.lnum, 2)
+
+  local ctxrow = find_row(s, function(_, line, t)
+    return t and t.cfile and t.line and line == "one"
+  end)
+  local ctx_ct = s:comment_target(ctxrow)
+  h.assert_eq("author: context kind", ctx_ct.content[1].kind, "context")
+  h.assert_eq("author: context lnum", ctx_ct.lnum, 1)
+
+  -- A visual span over the whole hunk keeps every kind in order and anchors on
+  -- its first non-del line.
+  local hrow = find_row(s, function(_, line, t)
+    return t and t.cfile and t.hunk and not t.line and line:find("@@", 1, true)
+  end)
+  local span = s:visual_comment_target(hrow, hrow + 5)
+  local kinds = {}
+  for i, e in ipairs(span.content) do kinds[i] = e.kind end
+  h.assert_true("author: visual span spans kinds", #span.content >= 2)
+  h.assert_eq("author: visual span anchors on its first non-del line", span.lnum, 1)
+  h.assert_true("author: visual span kinds are diff kinds",
+    table.concat(kinds, ","):find("add", 1, true) ~= nil)
+end
+
+-- Commit scope stamps the row's own commit; the synthetic worktree commit is
+-- recorded as dirty.
+do
+  local dir = vim.fn.tempname()
+  local s = open({ state_dir = dir, scope = "commits" })
+  local row = find_row(s, function(_, line, t)
+    return t and t.commit and t.line and line == "TWO"
+  end)
+  local ct = s:comment_target(row)
+  h.assert_eq("author: commit-scope origin is the row's commit",
+    ct.origin.sha, repo.shas[2])
+  h.assert_eq("author: commit-scope origin is clean", ct.origin.dirty, false)
+end
+
+-- A dirty work tree: a row in the synthetic worktree commit is stamped
+-- WORKTREE/dirty in commit scope, and combined scope keeps the owning commit but
+-- flags the path as dirty.
+do
+  local wtr = testutil.make_repo({
+    { msg = "base", files = { ["o.txt"] = "a\nb\n" } },
+    { msg = "c1: b->B", files = { ["o.txt"] = "a\nB\n" } },
+  })
+  local f = assert(io.open(wtr.root .. "/o.txt", "w"))
+  f:write("a\nB\nDIRTY\n"); f:close()
+  local function runo(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = wtr.root, env = wtr.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local function openo(scope)
+    return glean.open({
+      base = wtr.shas[1], target = glean.WORKTREE, repo_root = wtr.root, run = runo,
+      open_window = false, state_dir = vim.fn.tempname(), scope = scope,
+    })
+  end
+  local sc = openo("commits")
+  local wrow = find_row(sc, function(_, line, t)
+    return t and t.commit == #sc.commits and t.line and line == "DIRTY"
+  end)
+  h.assert_true("origin: found the uncommitted row", wrow ~= nil)
+  local wct = sc:comment_target(wrow)
+  h.assert_eq("origin: worktree row is the worktree commit",
+    wct.origin.sha, glean.WORKTREE)
+  h.assert_eq("origin: worktree row is dirty", wct.origin.dirty, true)
+
+  local sb = openo("combined")
+  local brow = find_row(sb, function(_, line, t)
+    return t and t.cfile and t.line and line == "B"
+  end)
+  local bct = sb:comment_target(brow)
+  h.assert_eq("origin: combined keeps the owning commit", bct.origin.sha, wtr.shas[2])
+  h.assert_eq("origin: combined flags the dirty path", bct.origin.dirty, true)
+end
+
+-- `origin` is provenance, never a resolution input: a record naming a commit
+-- that does not exist resolves exactly like one with no origin at all.
+do
+  local dir = vim.fn.tempname()
+  local s = open({ state_dir = dir })
+  s.store:add_comment_record("f.txt", {
+    lnum = 1, content = { { text = "TWO", kind = "add" } }, text = "bogus origin",
+    origin = { sha = "0000000000000000000000000000000000000000", dirty = false },
+  })
+  s.store:save_commit(state.COMMENTS_ID)
+  s:render()
+  local row = find_row(s, function(_, _, t)
+    return t and t.comment and t.comment.text == "bogus origin"
+  end)
+  h.assert_true("origin: bogus provenance still anchors", row ~= nil)
+  h.assert_true("origin: bogus provenance is not outdated",
+    s.row_map[row].comment.outdated == false)
+  h.assert_eq("origin: survives the round trip through the store",
+    s.store:comments_for("f.txt")[1].origin.sha,
+    "0000000000000000000000000000000000000000")
+end
+
 -- Re-anchoring: a comment resolves by content even when its stored anchor is
 -- stale (renders inline, not outdated); when its content is gone it renders
 -- outdated and is listed in the summary.
 do
   local dir = vim.fn.tempname()
   local s = open({ state_dir = dir }) -- combined
-  s.store:add_comment_record("f.txt", { anchor = 1, content = { "TWO" }, text = "moved note" })
+  s.store:add_comment_record("f.txt", { lnum = 1, content = { { text = "TWO", kind = "add" } }, text = "moved note" })
   s.store:save_commit(state.COMMENTS_ID)
   s:render()
   local inline = find_row(s, function(_, line, t)
@@ -423,7 +548,8 @@ do
   end)
   h.assert_true("reanchor: resolves by content", inline ~= nil)
   h.assert_true("reanchor: not outdated", s.row_map[inline].comment.outdated == false)
-  s.store:add_comment_record("f.txt", { anchor = 2, content = { "VANISHED" }, text = "gone note" })
+  s.store:add_comment_record("f.txt", { lnum = 2, content = { { text = "VANISHED", kind = "add" } },
+    text = "gone note" })
   s.store:save_commit(state.COMMENTS_ID)
   s:render()
   local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
@@ -462,7 +588,8 @@ do
   end)
   s:add_comment_at(twrow, "live note")
   -- outdated comment: a record whose content no longer appears in any diff line.
-  s.store:add_comment_record("f.txt", { anchor = 99, content = { "ZZZ gone" }, text = "stale note" })
+  s.store:add_comment_record("f.txt", { lnum = 99, content = { { text = "ZZZ gone", kind = "add" } },
+    text = "stale note" })
   s.store:save_commit(state.COMMENTS_ID)
   s:render()
 
@@ -3624,14 +3751,14 @@ do
   h.assert_true("whitespace comments: navigation restores exact mode",
     not s.ignore_whitespace)
   h.assert_eq("whitespace comments: navigation lands on original repeated anchor",
-    revealed and revealed.comment and revealed.comment.anchor, hidden_target.anchor)
+    revealed and revealed.comment and revealed.comment.lnum, hidden_target.lnum)
   h.assert_true("whitespace state: ignored-mode semantic mark survives exact restore",
     s:id_seen(semantic_id))
 
   local restored_space = find_row(s, function(row, line, t)
     local target = t and t.line and line == "   " and s.row_hl[row] == "GleanAdd"
       and s:comment_target(row) or nil
-    return target and target.anchor == hidden_target.anchor
+    return target and target.lnum == hidden_target.lnum
   end)
   h.assert_true("whitespace comments: suppressed row returns unchanged", restored_space ~= nil)
   s:mark_visual_range(restored_space, restored_space)

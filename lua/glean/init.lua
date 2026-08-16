@@ -34,6 +34,7 @@ local diff_mod = require("glean.diff")
 local state_mod = require("glean.state")
 local lineage = require("glean.lineage")
 local intraline = require("glean.intraline")
+local comments_mod = require("glean.comments")
 local M = {}
 local api = vim.api
 
@@ -967,7 +968,7 @@ function Session:wt_seen_ords(path)
   local texts = self:wt_flat_texts(path)
   if texts then
     for _, rec in ipairs(self.store:seen_records(path)) do
-      local start = state_mod.resolve(rec.content, rec.anchor, texts)
+      local start = state_mod.resolve(rec.content, texts, nil, rec.anchor)
       if start then
         for k = 0, #rec.content - 1 do set[start + k] = true end
       end
@@ -977,6 +978,28 @@ function Session:wt_seen_ords(path)
   return set
 end
 
+-- The lnum-of mapping for a flattened diff-line list: every diff line (adds,
+-- context and — since a deletion occupies a real post-image slot — deletions)
+-- reports its post-image line, so comment resolution tiebreaks in that space.
+local function flat_lnum_of(flat)
+  return function(i)
+    local dl = flat[i]
+    return dl and dl.new_lnum or nil
+  end
+end
+-- The display ordinal whose post-image line is nearest `lnum` — the slot an
+-- outdated comment falls back to. Unlike a stored ordinal this stays sensible
+-- as hunks above it grow or shrink.
+local function nearest_ord(file, lnum)
+  local best, best_dist
+  for i, dl in ipairs(flatten_diff_lines(file)) do
+    if dl.new_lnum then
+      local dist = math.abs(dl.new_lnum - (lnum or 0))
+      if not best_dist or dist < best_dist then best, best_dist = i, dist end
+    end
+  end
+  return best
+end
 -- Resolve comments in canonical exact space, then map the canonical anchor line
 -- into this display file. A canonical match with no displayed counterpart is
 -- hidden by whitespace mode, not outdated.
@@ -986,32 +1009,30 @@ function Session:resolve_comments(file)
   if #exact_flat == 0 then return {} end
   local exact_texts = {}
   for i, dl in ipairs(exact_flat) do exact_texts[i] = dl.text end
+  local lnum_of = flat_lnum_of(exact_flat)
   local by_ord = {}
   for _, rec in ipairs(self.store:comments_for(file.path)) do
-    local start = state_mod.resolve(rec.content, rec.anchor, exact_texts)
-    if start then
-      local display_ord = line_ordinal(file, exact_flat[start])
-      if display_ord then
-        by_ord[display_ord] = by_ord[display_ord] or {}
-        by_ord[display_ord][#by_ord[display_ord] + 1] = {
-          path = file.path, id = rec.id, anchor = rec.anchor, content = rec.content,
-          text = rec.text, reply = rec.reply, outdated = false, hidden = false,
-        }
-      end
+    local loc = comments_mod.locate(rec, exact_texts, lnum_of)
+    local ord
+    if not loc.outdated then
+      ord = line_ordinal(file, exact_flat[loc.index])
     else
-      local ord = math.max(1, math.min(rec.anchor or 1, #flatten_diff_lines(file)))
+      ord = nearest_ord(file, rec.lnum) or 1
+    end
+    if ord then
       by_ord[ord] = by_ord[ord] or {}
       by_ord[ord][#by_ord[ord] + 1] = {
-        path = file.path, id = rec.id, anchor = rec.anchor, content = rec.content,
-        text = rec.text, reply = rec.reply, outdated = true, hidden = false,
+        path = file.path, id = rec.id, lnum = rec.lnum, content = rec.content,
+        text = rec.text, reply = rec.reply, origin = rec.origin,
+        outdated = loc.outdated, hidden = false,
       }
     end
   end
   return by_ord
 end
-
 local function comment_key(rec)
-  return tostring(rec.anchor) .. "\0" .. table.concat(rec.content, "\n") .. "\0" .. rec.text
+  return tostring(rec.lnum) .. "\0"
+    .. table.concat(comments_mod.diff_projection(rec), "\n") .. "\0" .. rec.text
 end
 
 -- Enumerate exact canonical files and their active display counterparts. Hidden
@@ -1057,15 +1078,17 @@ function Session:collect_comments()
     local texts = {}
     for i, dl in ipairs(flat) do texts[i] = dl.text end
     for _, rec in ipairs(self.store:comments_for(pair.exact.path)) do
-      local start = state_mod.resolve(rec.content, rec.anchor, texts)
-      local canonical_dl = flat[start or rec.anchor]
-      local display_ord = start and pair.display and line_ordinal(pair.display, canonical_dl) or nil
+      local loc = comments_mod.locate(rec, texts, flat_lnum_of(flat))
+      local canonical_dl = loc.index and flat[loc.index] or nil
+      local display_ord = canonical_dl and pair.display
+        and line_ordinal(pair.display, canonical_dl) or nil
+      local first = (rec.content or {})[1]
       local entry = {
-        id = rec.id, reply = rec.reply,
-        anchor = rec.anchor, content = rec.content, line = rec.content[1] or "",
-        lnum = canonical_dl and (canonical_dl.new_lnum or canonical_dl.old_lnum),
-        outdated = start == nil,
-        hidden = start ~= nil and display_ord == nil and self.ignore_whitespace,
+        id = rec.id, reply = rec.reply, origin = rec.origin,
+        lnum = rec.lnum, content = rec.content, line = first and first.text or "",
+        display_lnum = canonical_dl and (canonical_dl.new_lnum or canonical_dl.old_lnum),
+        outdated = loc.outdated,
+        hidden = not loc.outdated and display_ord == nil and self.ignore_whitespace,
         text = rec.text,
       }
       local path = pair.exact.path
@@ -1082,7 +1105,9 @@ function Session:collect_comments()
     order[#order + 1] = path
     local list = {}
     for _, entry in pairs(recs) do list[#list + 1] = entry end
-    table.sort(list, function(a, b) return (a.anchor or 0) < (b.anchor or 0) end)
+    table.sort(list, function(a, b)
+      return (a.display_lnum or a.lnum or 0) < (b.display_lnum or b.lnum or 0)
+    end)
     by_path[path] = list
   end
   table.sort(order)
@@ -1518,12 +1543,12 @@ function Session:build()
       for _, e in ipairs(summary.by_path[path]) do
         local loc = e.outdated and "(outdated)"
           or e.hidden and "(hidden)"
-          or (e.lnum and ("L%d"):format(e.lnum) or "L?")
+          or (e.display_lnum and ("L%d"):format(e.display_lnum) or "L?")
         -- The comment record carried so `dd`/`i`/`e` act on it directly, plus
         -- `summary_comment` so `<CR>` expands its hunk and jumps to it above.
         local c = {
-          path = path, id = e.id, anchor = e.anchor, content = e.content, text = e.text,
-          reply = e.reply, outdated = e.outdated, hidden = e.hidden,
+          path = path, id = e.id, lnum = e.lnum, content = e.content, text = e.text,
+          reply = e.reply, origin = e.origin, outdated = e.outdated, hidden = e.hidden,
         }
         local ctarget = { comment = c, summary_comment = { path = path } }
         local tag = ("[%d]"):format(e.id)
@@ -3047,13 +3072,50 @@ function Session:unmark_all()
 end
 
 -- ---------------------------------------------------------------------------
--- Comments — content-addressed records { anchor, content[], text } per path,
--- re-anchored at render time (see resolve_comments / collect_comments).
+-- Comments — content-addressed records { lnum, content[], text, origin } per
+-- path, re-anchored at render time (see resolve_comments / collect_comments).
+-- `content` entries are annotated ({ text, kind, old_lnum? }) so the same record
+-- resolves against a diff (every entry) or a plain file (the non-del entries).
 -- ---------------------------------------------------------------------------
-
--- The single-line authoring target for a row: { path, anchor, content = {text} },
--- or nil if the row is not a literal diff line. `anchor` is the row's flattened
--- diff-line ordinal (the tiebreak / outdated fallback); `content` its text.
+-- One captured selection entry from a diff line. `old_lnum` rides along on
+-- deletions only — the sole pre-image number, scoped to the entry it describes.
+local function comment_entry(dl)
+  local e = { text = dl.text, kind = dl.kind }
+  if dl.kind == "del" then e.old_lnum = dl.old_lnum end
+  return e
+end
+-- The record's post-image anchor: the new-file line of the first non-del entry,
+-- or — for a del-only selection — the post-image line the deleted text sat
+-- immediately before (which `diff.lua` records on del lines too).
+local function comment_lnum(dls)
+  for _, dl in ipairs(dls) do
+    if dl.kind ~= "del" then return dl.new_lnum end
+  end
+  return dls[1] and dls[1].new_lnum or nil
+end
+-- Provenance of a captured selection: the commit (plus a dirty flag for
+-- uncommitted edits) the reviewer read `content` and `lnum` from. Never used for
+-- resolution — it only tells a later reader which version was being looked at.
+function Session:comment_origin(target, path)
+  if self.scope == "commits" then
+    local commit = target and target.commit and self.commits[target.commit]
+    if not commit or commit.sha == M.WORKTREE then
+      return { sha = M.WORKTREE, dirty = true }
+    end
+    return { sha = commit.sha, dirty = false }
+  end
+  local sha
+  for _, commit in ipairs(self.commits or {}) do
+    if commit.sha ~= M.WORKTREE and file_with_path(commit.files, path) then
+      sha = commit.sha
+    end
+  end
+  local dirty = (self.worktree and self:file_for_path(path) ~= nil) or false
+  if not sha then return { sha = M.WORKTREE, dirty = true } end
+  return { sha = sha, dirty = dirty }
+end
+-- The single-line authoring target for a row: { path, lnum, content, origin },
+-- or nil if the row is not a literal diff line.
 function Session:comment_target(row)
   local target = self.row_map[row]
   if not target or not target.line or target.pending then return nil end
@@ -3061,16 +3123,17 @@ function Session:comment_target(row)
   if not file then return nil end
   local dl = file.hunks[target.hunk].lines[target.line]
   local exact = self:canonical_file(file)
-  local anchor = line_ordinal(exact, dl)
-  if not anchor then return nil end
-  return { path = file.path, anchor = anchor, content = { dl.text } }
+  if not line_ordinal(exact, dl) then return nil end
+  return {
+    path = file.path, lnum = comment_lnum({ dl }), content = { comment_entry(dl) },
+    origin = self:comment_origin(target, file.path),
+  }
 end
-
 -- The visual-span authoring target: the contiguous run of literal diff-line rows
 -- within one file (decoration rows excluded; capture stops at the first ordinal
--- gap), as { path, anchor, content[] }. nil if the span covers no diff rows.
+-- gap), as { path, lnum, content[], origin }. nil if the span covers no diff rows.
 function Session:visual_comment_target(srow, erow)
-  local path, anchor, content, prev_ord
+  local path, dls, prev_ord, first_target = nil, {}, nil, nil
   for row = srow, erow do
     local t = self.row_map[row]
     if t and t.line and not t.pending then
@@ -3080,9 +3143,10 @@ function Session:visual_comment_target(srow, erow)
         local ord = self:canonical_ordinal(file, dl)
         if not ord then break end
         if not path then
-          path, anchor, content, prev_ord = file.path, ord, { dl.text }, ord
+          path, prev_ord, first_target = file.path, ord, t
+          dls = { dl }
         elseif file.path == path and ord == prev_ord + 1 then
-          content[#content + 1] = dl.text
+          dls[#dls + 1] = dl
           prev_ord = ord
         else
           break
@@ -3091,7 +3155,12 @@ function Session:visual_comment_target(srow, erow)
     end
   end
   if not path then return nil end
-  return { path = path, anchor = anchor, content = content }
+  local content = {}
+  for i, dl in ipairs(dls) do content[i] = comment_entry(dl) end
+  return {
+    path = path, lnum = comment_lnum(dls), content = content,
+    origin = self:comment_origin(first_target, path),
+  }
 end
 
 -- Add a comment record (undoable) from an authoring target + body text.
@@ -3099,7 +3168,7 @@ function Session:add_comment(ct, text)
   if not ct or not text or text == "" then return end
   self:perform({
     kind = "comment", op = "add", path = ct.path,
-    record = { anchor = ct.anchor, content = ct.content, text = text },
+    record = { lnum = ct.lnum, content = ct.content, text = text, origin = ct.origin },
   })
   self:render()
 end
@@ -3127,8 +3196,8 @@ function Session:delete_comment_at(row)
     if not c then return end
     self:perform({
       kind = "comment", op = "remove", path = c.path,
-      record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text,
-        reply = c.reply },
+      record = { id = c.id, lnum = c.lnum, content = c.content, text = c.text,
+        reply = c.reply, origin = c.origin },
     })
     self:render()
   end
@@ -3158,8 +3227,8 @@ function Session:delete_comment_under(row)
   if not c then return end
   self:perform({
     kind = "comment", op = "remove", path = c.path,
-    record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text,
-        reply = c.reply },
+    record = { id = c.id, lnum = c.lnum, content = c.content, text = c.text,
+        reply = c.reply, origin = c.origin },
   })
   self:render()
 end
@@ -3174,14 +3243,14 @@ function Session:delete_comments_visual_range(srow, erow)
     local t = self.row_map[row]
     local c = t and t.summary_comment and t.comment
     if c then
-      local key = c.path .. "\0" .. tostring(c.anchor) .. "\0"
-        .. table.concat(c.content, "\n") .. "\0" .. c.text
+      local key = c.path .. "\0" .. tostring(c.lnum) .. "\0"
+        .. table.concat(comments_mod.diff_projection(c), "\n") .. "\0" .. c.text
       if not seen[key] then
         seen[key] = true
         records[#records + 1] = {
           path = c.path,
-          record = { id = c.id, anchor = c.anchor, content = c.content,
-            text = c.text, reply = c.reply },
+          record = { id = c.id, lnum = c.lnum, content = c.content,
+            text = c.text, reply = c.reply, origin = c.origin },
         }
       end
     end
@@ -3200,10 +3269,10 @@ function Session:edit_comment_under(row)
     if text == c.text then return end
     self:perform({
       kind = "comment", op = "edit", path = c.path,
-      old_record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text,
-        reply = c.reply },
-      record = { id = c.id, anchor = c.anchor, content = c.content, text = text,
-        reply = c.reply },
+      old_record = { id = c.id, lnum = c.lnum, content = c.content, text = c.text,
+        reply = c.reply, origin = c.origin },
+      record = { id = c.id, lnum = c.lnum, content = c.content, text = text,
+        reply = c.reply, origin = c.origin },
     })
     self:render()
   end)
@@ -3215,7 +3284,8 @@ function Session:set_comment_reply(c, text)
   if not c then return end
   self:perform({
     kind = "comment", op = "reply", path = c.path,
-    record = { id = c.id, anchor = c.anchor, content = c.content, text = c.text },
+    record = { id = c.id, lnum = c.lnum, content = c.content, text = c.text,
+      origin = c.origin },
     reply = text, old_reply = c.reply,
   })
   self:render()
@@ -3286,7 +3356,7 @@ function Session:comment_row(c)
   local best
   for r, t in pairs(self.row_map) do
     local rc = t and not t.summary_comment and t.comment
-    if rc and rc.path == c.path and rc.anchor == c.anchor and rc.text == c.text
+    if rc and rc.path == c.path and rc.lnum == c.lnum and rc.text == c.text
         and (not best or r < best) then best = r end
   end
   return best
@@ -3337,7 +3407,7 @@ function Session:reveal_summary_comment(c)
   if not c then return end
   if c.hidden and self.ignore_whitespace then
     self._reveal_comment_after_refresh = {
-      path = c.path, anchor = c.anchor, content = c.content, text = c.text,
+      path = c.path, lnum = c.lnum, content = c.content, text = c.text,
     }
     self:set_ignore_whitespace(false)
     return

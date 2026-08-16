@@ -54,8 +54,8 @@ end
 local ids
 do
   local s = open()
-  s.store:add_comment_record("f.txt", { anchor = 1, content = { "TWO" }, text = "on two" })
-  s.store:add_comment_record("g.txt", { anchor = 1, content = { "gee" }, text = "on gee" })
+  s.store:add_comment_record("f.txt", { lnum = 1, content = { { text = "TWO", kind = "add" } }, text = "on two" })
+  s.store:add_comment_record("g.txt", { lnum = 1, content = { { text = "gee", kind = "add" } }, text = "on gee" })
   s.store:save_commit(s.store.wt_shard)
   s:render()
   local list = gapi.comments()
@@ -108,7 +108,7 @@ end
 do
   local s = open()
   s.store:add_comment_record("f.txt",
-    { anchor = 1, content = { "NOT IN THE DIFF" }, text = "stale" })
+    { lnum = 1, content = { { text = "NOT IN THE DIFF", kind = "add" } }, text = "stale" })
   s.store:save_commit(s.store.wt_shard)
   local list = gapi.comments(nil, { path = "f.txt" })
   local stale

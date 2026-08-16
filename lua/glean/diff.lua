@@ -106,7 +106,7 @@ function M.parse(text)
         new_lnum = new_lnum + 1
       elseif marker == "-" then
         hunk.lines[#hunk.lines + 1] =
-          { kind = "del", text = body, old_lnum = old_lnum }
+          { kind = "del", text = body, old_lnum = old_lnum, new_lnum = new_lnum }
         old_lnum = old_lnum + 1
       elseif marker == " " then
         hunk.lines[#hunk.lines + 1] =
