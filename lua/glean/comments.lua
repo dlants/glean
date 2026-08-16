@@ -1,6 +1,10 @@
 -- Comment records: a selection of lines, annotated per entry, resolvable
 -- against either a diff (all entries) or a plain file (non-deleted entries).
--- Pure: no nvim API, no IO.
+--
+-- The projection/resolution half is pure. The bottom half is a process-wide
+-- registry of comment stores keyed by state dir + worktree shard, so surfaces
+-- with no review session (a file overlay) read and write the same on-disk shard
+-- a session does.
 local state = require("glean.state")
 
 local M = {}
@@ -47,6 +51,78 @@ function M.locate(record, lines, lnum_of, projection)
     end
   end
   return { index = nil, lnum = best_lnum or anchor, fallback = best, outdated = true }
+end
+
+-- ── Repo context + store registry ───────────────────────────────────────────
+
+local contexts, roots, stores = {}, {}, {}
+
+-- Contexts are keyed by the fully resolved repo root, so a path reached through
+-- a symlink (macOS `/var` → `/private/var`) finds the same registration.
+local function canon(path) return vim.fs.normalize(vim.fn.resolve(path)) end
+
+-- Seed the context for a repo root, bypassing discovery. A test/config seam:
+-- everything else derives the same triple from `glean.repo_state_dir` /
+-- `glean.wt_shard`.
+function M.register(repo_root, dir, wt_shard)
+  contexts[canon(repo_root)] = { repo_root = repo_root, dir = dir, wt_shard = wt_shard }
+  return contexts[canon(repo_root)]
+end
+
+-- The { repo_root, dir, wt_shard } a buffer's comments live under, or nil when
+-- the buffer is not a file inside a git repo. Memoized per directory (the
+-- upward `.git` walk) and per repo root (the git calls behind the state dir), so
+-- the gate on a hot autocmd is a table lookup.
+function M.context(bufnr)
+  local git = require("glean.git")
+  local name = vim.api.nvim_buf_get_name(bufnr or 0)
+  if name == "" or name:match("^%w%w+://") then return nil end
+  local dirname = vim.fs.dirname(name)
+  local root = roots[dirname]
+  if root == nil then
+    root = git.discover_repo_root(name) or false
+    roots[dirname] = root
+  end
+  if not root then return nil end
+  local ctx = contexts[canon(root)]
+  if not ctx then
+    local glean = require("glean")
+    local handle = git.new({ repo_root = root })
+    ctx = M.register(root, glean.repo_state_dir(handle), glean.wt_shard(handle))
+  end
+  return ctx
+end
+
+-- The Store for a context, with only the comment shard loaded.
+function M.store(ctx)
+  local key = ctx.dir .. "\0" .. ctx.wt_shard
+  local store = stores[key]
+  if not store then
+    store = state.new({ dir = ctx.dir, wt_shard = ctx.wt_shard })
+    store:load({})
+    stores[key] = store
+  end
+  return store
+end
+
+-- Drop every memoized store for a state dir, so the next read comes off disk.
+function M.invalidate(dir)
+  for key in pairs(stores) do
+    if key:sub(1, #dir + 1) == dir .. "\0" then stores[key] = nil end
+  end
+end
+
+function M.for_path(ctx, path)
+  return M.store(ctx):comments_for(path)
+end
+
+-- Persist the comment shard and announce the change to the other surfaces.
+function M.persist(ctx, path)
+  M.store(ctx):save_commit(ctx.wt_shard)
+  vim.api.nvim_exec_autocmds("User", {
+    pattern = "GleanCommentsChanged",
+    data = { dir = ctx.dir, path = path, source = "registry" },
+  })
 end
 
 return M

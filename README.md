@@ -124,6 +124,20 @@ visual `d` deletes all selected comments as one undoable action, and
 parks the cursor on the comment above; on a file row it jumps to that file's
 header.
 
+### Comments in ordinary files
+Comments are not tied to the review buffer. Opening any file in the repo shows
+its comments as a `💬` sign on the resolved line, with the comment's first line
+as dimmed end-of-line text; `require("glean.overlay").show()` floats the full
+body and any agent reply, and `require("glean.overlay").toggle()` switches
+between signs only and inline bodies. Positions are never tracked — every
+comment is re-resolved by content whenever the buffer is read, written or
+reloaded from disk (so an agent rewriting the file works exactly like your own
+edits), and a comment that moved has its new line persisted. A file with no
+comments is left completely untouched.
+
+`:Glean comments` dumps every comment in the repo into the quickfix list,
+resolved against the working tree, with unresolvable ones marked `(outdated)`.
+
 ## Keymaps (inside the glean buffer)
 
 - `m` (normal) — toggle seen on the hunk/file/directory/commit under the cursor; on a marker row/line, unmark that run

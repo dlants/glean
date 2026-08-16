@@ -35,6 +35,7 @@ local state_mod = require("glean.state")
 local lineage = require("glean.lineage")
 local intraline = require("glean.intraline")
 local comments_mod = require("glean.comments")
+local overlay = require("glean.overlay")
 local M = {}
 local api = vim.api
 
@@ -4898,6 +4899,8 @@ local function setup_highlights()
   api.nvim_set_hl(0, "GleanSeen", { link = "NonText", default = true })
   api.nvim_set_hl(0, "GleanComment", { link = "WarningMsg", default = true })
   api.nvim_set_hl(0, "GleanCommentId", { link = "Number", default = true })
+  api.nvim_set_hl(0, "GleanCommentOutdated", { link = "NonText", default = true })
+  api.nvim_set_hl(0, "GleanCommentLine", { link = "CursorLine", default = true })
   api.nvim_set_hl(0, "GleanCommentReply", { link = "Comment", default = true })
   api.nvim_set_hl(0, "GleanModeHeader", { link = "Title", default = true })
   -- The "--- unseen ---" divider is meant to pop, not blend in.
@@ -4922,12 +4925,18 @@ end
 function M.setup(opts)
   M.config = vim.tbl_extend("force", M.config, opts or {})
   setup_highlights()
+  overlay.setup(M.config.overlay)
   api.nvim_create_autocmd("ColorScheme", {
     group = api.nvim_create_augroup("GleanHighlights", { clear = true }),
     callback = setup_highlights,
   })
   api.nvim_create_user_command("Glean", function(o)
     local args = o.fargs
+    if args[1] == "comments" then
+      overlay.quickfix()
+      vim.cmd("copen")
+      return
+    end
     if args[1] == "log" then
       M.open_log()
       return

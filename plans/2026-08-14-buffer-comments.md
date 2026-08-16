@@ -324,7 +324,7 @@ function M.redo(bufnr)
     fallback landing in the diff, summary counts, the `<CR>`-opens-the-file path
     and the api's `state`/`lnum`.
 
-## read-only overlay
+## read-only overlay — DONE
 
 - Goal: opening any file in the repo shows its comments as signs and EOL text, with a float on demand; no authoring yet.
 - Work: `overlay.lua` cold-start resolve, sign / EOL / float / `virt_lines`-toggle rendering, the commented-path gate, the autocmd group, resolve on every buffer event, the `:Glean comments` quickfix.
@@ -338,6 +338,33 @@ function M.redo(bufnr)
   - A del-only record produces no extmarks.
   - A file with no comments creates no extmarks, no buffer-local state and no mappings.
   - The float shows the body and the agent reply; the `virt_lines` toggle adds and removes inline bodies without disturbing the signs.
+- Done. Deviations / decisions:
+  - The store registry lives in `comments.lua` as planned but is keyed by a
+    **context** (`{ repo_root, dir, wt_shard }`), not a bare dir: the comment
+    shard is branch-scoped (`glean.wt_shard`), so `M.store(ctx)` /
+    `M.for_path(ctx, path)` / `M.persist(ctx, path)` all take the context.
+    `M.context(bufnr)` memoizes the upward `.git` walk per directory and the
+    context per (resolved) repo root, keyed through `vim.fn.resolve` so a
+    symlinked root (`/var` → `/private/var`) hits one registration.
+    `M.register(root, dir, wt_shard)` is the test/config seam.
+  - `comments.persist` writes the shard and fires `GleanCommentsChanged` with
+    `source = "registry"`; the overlay's listener skips `invalidate` for its own
+    writes, since aliasing a stale in-memory store is worse than the re-read.
+    (The session half of that event is stage 5.)
+  - `git.relpath(repo_root, abs)` added, retrying against fully resolved paths.
+  - Rendering: `💬` sign (`GleanComment`, or the new `GleanCommentOutdated` when
+    every record on the line is outdated), EOL virt text `#id <first line>` with
+    `(+N more)` for a shared line and an `(outdated)` suffix, the new
+    `GleanCommentLine` across a multi-line run, and `virt_lines` bodies behind
+    `overlay.toggle`. `overlay.show` builds its own float (body + `↳` reply),
+    closed on the next `CursorMoved`/`BufLeave`/`InsertEnter`.
+  - `:Glean comments` runs `overlay.quickfix()` then `copen`; the dispatcher was
+    left as its if-chain (the table + completion refactor belongs with the rest
+    of the command growth in stage 4).
+  - No `<Plug>` mappings, no `u`/`<C-r>` handling and no authoring yet — stage 4.
+  - Tests: `overlay_test.lua` (29 assertions), driven through real
+    `:edit`/`:write`/`:checktime` against a hermetic repo with a registered
+    temp state dir.
 
 ## authoring from any buffer
 

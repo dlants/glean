@@ -18,6 +18,21 @@ function M.discover_repo_root(path)
   return nil
 end
 
+-- `abs` expressed relative to `repo_root`, or nil when it lies outside. Symlink
+-- differences between the two (macOS `/var` vs `/private/var`) are reconciled by
+-- retrying against fully resolved paths.
+function M.relpath(repo_root, abs)
+  if not repo_root or not abs or abs == "" then return nil end
+  local function under(root, path)
+    if path:sub(1, #root + 1) ~= root .. "/" then return nil end
+    return path:sub(#root + 2)
+  end
+  local root = vim.fs.normalize(repo_root)
+  local path = vim.fs.normalize(abs)
+  return under(root, path)
+    or under(vim.fs.normalize(vim.fn.resolve(repo_root)), vim.fs.normalize(vim.fn.resolve(abs)))
+end
+
 local Git = {}
 Git.__index = Git
 
