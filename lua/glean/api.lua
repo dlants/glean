@@ -73,13 +73,133 @@ local function record_side(rec)
   end
   return "old"
 end
+-- ---------------------------------------------------------------------------
+-- Repo mode — the same surface with no review open.
+--
+-- A comment record lives in the repo's store, not in a review, so listing,
+-- authoring and replying work whether or not a session exists. Repo mode
+-- resolves each record against the working-tree file (the file projection);
+-- session mode additionally resolves against the diff. Ids, bodies and `side`
+-- are the same either way — they come off the record.
+-- ---------------------------------------------------------------------------
+
+-- The { repo_root, dir, wt_shard } comments live under for `repo` (a path
+-- inside the repository; the cwd when nil). Errors — never a silent empty
+-- list — when the path is not in a git work tree.
+local function repo_context(repo)
+  local ctx = comments_mod.context_for_path(repo or vim.fn.getcwd())
+  if not ctx then
+    error(("glean: %s is not inside a git repository")
+      :format(tostring(repo or vim.fn.getcwd())), 0)
+  end
+  return ctx
+end
+
+-- Resolve a call's target: a live Session, or a repo context when the caller
+-- named a repo (`{ repo = ... }` in the session slot) or no review is open.
+local function target(session)
+  if type(session) == "table" and session.buf == nil then
+    if session.session ~= nil then return M.session(session.session), nil end
+    return nil, repo_context(session.repo)
+  end
+  if session ~= nil then return M.session(session), nil end
+  local live = glean.live_sessions()
+  if #live == 1 then return live[1], nil end
+  if #live == 0 then return nil, repo_context(nil) end
+  return M.session(nil), nil
+end
+
+-- The working-tree lines of a repo-relative path, or nil when it is gone.
+local function wt_lines(ctx, path)
+  local full = ctx.repo_root .. "/" .. path
+  if vim.fn.filereadable(full) ~= 1 then return nil end
+  return vim.fn.readfile(full)
+end
+
+-- Provenance of content read out of the working tree: HEAD, flagged dirty when
+-- that path has uncommitted changes — the same statement the file overlay makes.
+local function repo_origin(ctx, path)
+  local handle = require("glean.git").new({ repo_root = ctx.repo_root })
+  local head = (handle:rev_parse("HEAD") or ""):match("^%x+") or nil
+  if not head then return { sha = glean.WORKTREE, dirty = true } end
+  local status = handle:run({ "status", "--porcelain", "--", path })
+  return { sha = head, dirty = (status ~= nil and status:match("%S") ~= nil) or false }
+end
+
+local function entry_for(path, rec, lnum, rstate)
+  return {
+    id = rec.id,
+    path = path,
+    lnum = lnum,
+    side = record_side(rec),
+    text = rec.text,
+    reply = rec.reply,
+    content = comments_mod.diff_projection(rec),
+    code = table.concat(comments_mod.diff_projection(rec), "\n"),
+    origin = rec.origin,
+    state = rstate,
+    outdated = rstate == "outdated",
+  }
+end
+
+-- Set (or clear, with nil) the agent reply on a comment addressed by id in a
+-- repo, with no review open. Persisted and announced through the same registry
+-- path a file overlay writes on, so an open glean buffer picks it up.
+local function set_repo_reply(ctx, id, text)
+  local store = comments_mod.store(ctx)
+  for _, path in ipairs(store:comment_paths()) do
+    for _, rec in ipairs(store:comments_for(path)) do
+      if rec.id == id then
+        comments_mod.apply(ctx, {
+          kind = "comment", op = "reply", path = path, record = rec, reply = text,
+        })
+        return true
+      end
+    end
+  end
+  error(("glean: no comment with id %s in %s"):format(tostring(id), ctx.repo_root), 0)
+end
+-- Every comment in the repo, resolved against the working tree. A record whose
+-- file projection still matches is "file" (live, at that line); one that does
+-- not — including a del-only selection, which has no file position at all — is
+-- "outdated" at its last known line.
+local function repo_comments(ctx, opts)
+  local store = comments_mod.store(ctx)
+  local out = {}
+  for _, path in ipairs(store:comment_paths()) do
+    if not opts.path or opts.path == path then
+      local lines = wt_lines(ctx, path)
+      local rows = {}
+      for order, rec in ipairs(store:comments_for(path)) do
+        local lnum, rstate = rec.lnum or 1, "outdated"
+        if lines and #comments_mod.file_projection(rec) > 0 then
+          local loc = comments_mod.locate(rec, lines, nil, "file")
+          if not loc.outdated then lnum, rstate = loc.lnum, "file" end
+        end
+        rows[#rows + 1] = { order = order, lnum = lnum, entry = entry_for(path, rec, lnum, rstate) }
+      end
+      table.sort(rows, function(a, b)
+        if a.lnum ~= b.lnum then return a.lnum < b.lnum end
+        return a.order < b.order
+      end)
+      for _, row in ipairs(rows) do
+        if not (opts.unanswered and row.entry.reply ~= nil) then
+          out[#out + 1] = row.entry
+        end
+      end
+    end
+  end
+  return out
+end
+
 -- Every comment in the review, flattened and read-only. Walks the exact
 -- canonical files (so comments in whitespace-hidden files stay visible) and
 -- re-anchors each record against the current diff. Order is deterministic:
 -- file order, then anchored position, then authoring order.
 function M.comments(session, opts)
-  opts = opts or {}
-  local s = M.session(session)
+  opts = opts or (type(session) == "table" and session) or {}
+  local s, ctx = target(session)
+  if ctx then return repo_comments(ctx, opts) end
   local out = {}
   local summary = s:collect_comments()
   local state_by_id = {}
@@ -110,19 +230,7 @@ function M.comments(session, opts)
         rows[#rows + 1] = {
           order = order,
           position = loc.index or rec.lnum or 0,
-          entry = {
-            id = rec.id,
-            path = path,
-            lnum = lnum,
-            side = side,
-            text = rec.text,
-            reply = rec.reply,
-            content = comments_mod.diff_projection(rec),
-            code = table.concat(comments_mod.diff_projection(rec), "\n"),
-            origin = rec.origin,
-            state = rstate,
-            outdated = rstate == "outdated",
-          },
+          entry = entry_for(path, rec, lnum, rstate),
         }
       end
       table.sort(rows, function(a, b)
@@ -289,11 +397,50 @@ function M.mark(session, sel, seen)
   return { hunks = #sels, lines = #changed }
 end
 
+-- Author a comment with no review open: `{ repo, path, lnum, end_lnum, text }`.
+-- `path` is repo-relative and `lnum`/`end_lnum` are working-tree line numbers,
+-- so an agent comments on what it just read off disk. The captured lines are
+-- the record's identity, exactly as a human selection would be; the api can
+-- only add post-image ("add") entries, since a file has no deleted lines.
+-- Returns the new comment id.
+function M.add_comment(opts)
+  opts = opts or {}
+  if type(opts.path) ~= "string" or opts.path == "" then
+    error("glean: add_comment requires a repo-relative path", 0)
+  end
+  if type(opts.text) ~= "string" or not opts.text:match("%S") then
+    error("glean: add_comment requires a non-empty text", 0)
+  end
+  local ctx = repo_context(opts.repo)
+  local lines = wt_lines(ctx, opts.path)
+  if not lines then
+    error(("glean: %s is not a readable file in %s"):format(opts.path, ctx.repo_root), 0)
+  end
+  local first = opts.lnum or 1
+  local last = opts.end_lnum or first
+  if first > last then first, last = last, first end
+  if first < 1 or last > #lines then
+    error(("glean: lines %d..%d are outside %s (%d lines)")
+      :format(first, last, opts.path, #lines), 0)
+  end
+  local content = {}
+  for i = first, last do content[#content + 1] = { text = lines[i], kind = "add" } end
+  local store = comments_mod.store(ctx)
+  local id = store:next_comment_id()
+  comments_mod.apply(ctx, {
+    kind = "comment", op = "add", path = opts.path,
+    record = { id = id, lnum = first, content = content, text = opts.text,
+      origin = repo_origin(ctx, opts.path) },
+  })
+  return id
+end
+
+
 -- The stored record for `id` in this review, plus its path, or an error naming
 -- the id. Never a silent no-op: an unknown id is a caller bug.
 local function find_record(s, id)
   for _, pair in ipairs(s:comment_file_pairs()) do
-    local path = pair.exact.path
+    local path = pair.exact and pair.exact.path or pair.path
     for _, rec in ipairs(s.store:comments_for(path)) do
       if rec.id == id then
         return vim.tbl_extend("force", rec, { path = path })
@@ -310,14 +457,16 @@ function M.reply(session, id, text)
   if type(text) ~= "string" or text == "" then
     error("glean: reply text must be a non-empty string", 0)
   end
-  local s = M.session(session)
+  local s, ctx = target(session)
+  if ctx then return set_repo_reply(ctx, id, text) end
   s:set_comment_reply(find_record(s, id), text)
   return true
 end
 
 -- Clear the agent reply on a comment (a no-op reply-to-nil, still undoable).
 function M.unreply(session, id)
-  local s = M.session(session)
+  local s, ctx = target(session)
+  if ctx then return set_repo_reply(ctx, id, nil) end
   s:set_comment_reply(find_record(s, id), nil)
   return true
 end

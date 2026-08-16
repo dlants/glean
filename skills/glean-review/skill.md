@@ -12,19 +12,37 @@ numbers, so each call is self-contained and there is no handle to keep.
 
 ## The model
 
+Comments live in the repository, not in the review, so every call below also
+works with **no review open** — address the repo instead of a session.
+
 A comment has exactly two slots:
 
-- `text` — the human's words. **You never write this.** There is no api to add,
-  edit or delete a comment; that is the human's buffer, and their keymaps.
+- `text` — the human's words. **You never edit or delete this.** You may leave
+  your *own* comment with `add_comment`, but a human's comment is theirs.
 - `reply` — your answer. At most one per comment, and replying again replaces
   the previous one, so re-running over the same review is idempotent. `reply`
   is `nil` when the comment is unanswered — that is your work queue.
 
-Each comment also reports `id`, `path`, `lnum`, `side` (`"new"` for
-adds/context, `"old"` for deletions), `content` (the diff-line block captured
-when the comment was written, as a list), `code` (the same block joined), and
-`outdated` (true when that block no longer matches the diff, i.e. the code moved
-out from under the comment — say so in your reply rather than guessing).
+Each comment also reports `id`, `path`, `lnum` (where it currently resolves),
+`side` (`"new"` for adds/context, `"old"` when every captured line is a
+deletion), `content` (the block of lines captured when the comment was written,
+as a list), `code` (the same block joined), `state`, `outdated` and `origin`.
+
+`state` is where the comment resolves right now:
+
+- `"diff"` — its lines are in the review's diff; `lnum` is the diff-side line.
+- `"file"` — its lines are not in the diff but are in the working-tree file;
+  `lnum` is the file line. The comment is live and correctly located, just on
+  lines this review does not touch. (Repo-mode calls, which have no diff,
+  report `"file"` for everything that still matches.)
+- `"outdated"` — the block matches neither, i.e. the code moved out from under
+  the comment. `lnum` is only the last place it was seen; say so in your reply
+  rather than guessing. `outdated` is the boolean form of this state.
+
+`origin` is `{ sha, dirty }`: which version of the file the human was looking at
+when they wrote the comment. `dirty = true` means "that commit plus uncommitted
+edits". When a comment is outdated, `origin.sha` is what to `git show` to see
+the code they meant.
 
 ## Recovering ids from a paste
 
@@ -71,6 +89,31 @@ return require("glean.api").reply("g1", 7, "Yes — the guard is needed because 
 ```lua
 return require("glean.api").unreply("g1", 7)
 ```
+
+With no review open — or to address a repo rather than a review — pass
+`{ repo = "/path/to/repo" }` in the session slot (`repo` defaults to the cwd):
+
+```lua
+local api = require("glean.api")
+api.comments({ repo = "/path/to/repo", unanswered = true })
+api.reply({ repo = "/path/to/repo" }, 7, "...")
+api.unreply({ repo = "/path/to/repo" }, 7)
+```
+
+Leave your own comment on a file, with or without a review open. `path` is
+repo-relative and `lnum`/`end_lnum` are working-tree line numbers, so comment on
+what you just read off disk. The captured lines become the comment's identity,
+so it follows the code as it moves. Returns the new comment id:
+
+```lua
+return require("glean.api").add_comment({
+  repo = "/path/to/repo", path = "lua/glean/init.lua", lnum = 51, end_lnum = 53,
+  text = "This retries forever if the remote is down.",
+})
+```
+
+Your comment shows up as a `💬` sign in the human's file buffer and in any open
+review. Use it sparingly, for findings they asked for — it is their review queue.
 
 Replies are undoable (`u` in the review buffer), persist to glean's store, and
 re-render immediately, so the human watches your answers land live.
@@ -126,11 +169,13 @@ progress, not yours.
 
 Every call errors loudly rather than no-opping:
 
-- no review open → open one with `:Glean` (ask the human; do not try to open it
-  yourself, you should answer exactly what they are looking at).
+- no review open and no `repo` → the call falls back to the repo containing the
+  cwd; if that is not a git work tree it errors. Do not open a review yourself —
+  ask the human, so you answer exactly what they are looking at.
 - several reviews open and no `session` → the error lists the candidate ids with
   their repo and range; pick one.
-- unknown comment id → re-list with `comments()`; ids are per review.
+- unknown comment id → re-list with `comments()`; ids are per repo.
+- `add_comment` with an unknown path, an out-of-range line or empty text errors.
 - `reply` with an empty or non-string text errors; use `unreply` to clear.
 
 ## Working a review

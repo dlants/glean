@@ -434,7 +434,7 @@ function M.redo(bufnr)
     both directions, distinct ids across surfaces, and a session `u` clearing the
     sign in the open file buffer.
 
-## api and docs
+## api and docs — DONE
 
 - Goal: agents can list and author comments with no review open.
 - Work: session-free `api.comments{ repo, path }` and `api.add_comment{...}`; `api.reply` resolving ids through the repo store; session-scoped functions delegate. `api.comments` reports `state` and the resolved line, and derives `side` from the record's annotations rather than inspecting the resolved `DiffLine` (api.lua:60). It also reports `origin` verbatim, so an agent can distinguish a comment written against the current file from one written against an older version, and can fetch that blob itself when the two disagree. Update the skill and README.
@@ -443,3 +443,35 @@ function M.redo(bufnr)
   - `reply` by id works with no session open and persists.
   - Session-scoped and repo-scoped calls agree on ids, bodies and `side` for the same repo.
   - `origin` survives to the api output unchanged, including `dirty`.
+- Done. Deviations / decisions:
+  - A repo is addressed by passing `{ repo = <path> }` in the *session* slot
+    (`api.comments{ repo, path }`, `api.reply({ repo = … }, id, text)`), rather
+    than by a separate set of functions: one `target(session)` helper resolves
+    the slot to a live `Session` or, when the caller named a repo — or no review
+    is open — to a `comments.context_for_path` context (cwd when `repo` is nil,
+    erroring when that is not a work tree). `{ session = id }` in the same slot
+    picks a session explicitly.
+  - `comments.context_for_path(path)` is new; `comments.context(bufnr)` is now a
+    two-line delegate to it, so the api and the overlay share the discovery and
+    the memoized registry.
+  - Repo mode resolves each record against the working-tree file only, so its
+    `state` is `"file"` or `"outdated"` (never `"diff"`) and `lnum` is the file
+    line. Session mode is unchanged. Both build their entries through one
+    `entry_for`, so `id`/`text`/`side`/`content`/`code`/`origin` agree by
+    construction.
+  - `api.reply`/`unreply` keep the session path (undoable with `u`, re-renders)
+    and only delegate to the repo store when there is no session to route
+    through; the repo path writes via `comments.apply`, so an open review picks
+    it up through `GleanCommentsChanged`.
+  - `api.add_comment{ repo, path, lnum, end_lnum, text }` captures the
+    working-tree lines as `kind = "add"` entries (a file has no deletions),
+    stamps `origin` as HEAD + `dirty` from `git status --porcelain -- <path>`,
+    and returns the new id. It errors on an unknown path, an out-of-range line
+    range or empty text. There is still no api to edit or delete a comment.
+  - Fixed `find_record` to tolerate the pathless (store-only) file pairs stage 2
+    introduced.
+  - `api_test.lua`: the "no session errors" block became a repo-mode block, and
+    a new block at the end covers repo listing/state/side/filters, authoring,
+    session-free reply/unreply, error cases, `origin` round-tripping and
+    session-vs-repo agreement. The suite registers its temp state dir with
+    `comments.register` so both surfaces share one store.

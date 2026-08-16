@@ -74,10 +74,17 @@ end
 -- upward `.git` walk) and per repo root (the git calls behind the state dir), so
 -- the gate on a hot autocmd is a table lookup.
 function M.context(bufnr)
-  local git = require("glean.git")
   local name = vim.api.nvim_buf_get_name(bufnr or 0)
   if name == "" or name:match("^%w%w+://") then return nil end
-  local dirname = vim.fs.dirname(name)
+  return M.context_for_path(name)
+end
+
+-- The same, for a filesystem path (a file or a directory) rather than a buffer:
+-- how a session-free caller — the api — names a repo.
+function M.context_for_path(path)
+  local git = require("glean.git")
+  local name = vim.fs.normalize(vim.fn.fnamemodify(path, ":p"))
+  local dirname = vim.fn.isdirectory(name) == 1 and name or vim.fs.dirname(name)
   local root = roots[dirname]
   if root == nil then
     root = git.discover_repo_root(name) or false

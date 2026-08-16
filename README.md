@@ -153,10 +153,22 @@ instead:
 Setting `overlay = { overlay_keymaps = "<leader>c" }` wires the defaults under a
 prefix (`c`, `s`, `e`, `d`, `r`, `n`, `p`, `t`).
 
+
 In a buffer that carries comments, `u` and `<C-r>` undo and redo glean's comment
 actions first and fall through to the buffer's own undo once there are none —
 the same rule the review buffer follows. A comment mutation changes no text, so
 it never enters the buffer's undo tree; a novel edit wipes the comment stack.
+### Agents
+
+`require("glean.api")` is the programmatic surface. Comments live in the
+repository rather than in a review, so `comments`, `add_comment`, `reply` and
+`unreply` work with or without a review open: pass a session id, or
+`{ repo = "/path/to/repo" }` in the same slot (defaulting to the cwd). Each
+listed comment reports where it currently resolves (`state` is `"diff"`,
+`"file"` or `"outdated"`) and the `origin` it was written against
+(`{ sha, dirty }`). `skills/glean-review/skill.md` documents the surface for
+agents.
+
 
 ## Keymaps (inside the glean buffer)
 

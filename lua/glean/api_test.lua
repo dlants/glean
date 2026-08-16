@@ -26,6 +26,11 @@ local repo, run = make({
 })
 local base, target = repo.shas[1], repo.shas[2]
 local state_dir = vim.fn.tempname()
+-- Repo mode reads and writes the same store the session does, so the two
+-- surfaces must be pointed at the same state dir and comment shard.
+local comments_mod = require("glean.comments")
+comments_mod.register(repo.root, state_dir,
+  glean.wt_shard(require("glean.git").new({ repo_root = repo.root })))
 local function open(o)
   o = o or {}
   return glean.open({
@@ -41,13 +46,16 @@ end
 local function wipe(s)
   vapi.nvim_buf_delete(s.buf, { force = true })
 end
--- No session open: every entry point errors with a message naming the fix.
+-- No session open: a repo-addressed call answers off the repo store, and a
+-- path outside any repository errors rather than answering emptily.
 do
-  local ok, err = pcall(gapi.comments)
-  h.assert_true("no session: comments errors", not ok)
-  h.assert_true("no session: message names the fix",
-    tostring(err):find(":Glean", 1, true) ~= nil, tostring(err))
   h.assert_eq("no session: sessions is empty", #gapi.sessions(), 0)
+  h.assert_eq("no session: repo has no comments yet",
+    #gapi.comments({ repo = repo.root }), 0)
+  local ok, err = pcall(gapi.comments, { repo = "/" })
+  h.assert_true("no session: non-repo errors", not ok)
+  h.assert_true("no session: message names the path",
+    tostring(err):find("git repository", 1, true) ~= nil, tostring(err))
 end
 -- Listing: comments on two files come back in file/ordinal order with the
 -- correct path, line and text; ids appear verbatim in the rendered buffer.
@@ -212,12 +220,14 @@ do
   wipe(reopened)
 end
 
--- The api can never author or destroy a human comment: reply is the only write.
+-- The api can author (`add_comment`) and answer (`reply`) comments, but never
+-- edits or destroys a human's own.
 do
   h.assert_true("surface: no add", gapi.add == nil)
   h.assert_true("surface: no delete", gapi.delete == nil)
   h.assert_true("surface: no remove", gapi.remove == nil)
   h.assert_true("surface: no edit", gapi.edit == nil)
+  h.assert_true("surface: add_comment exists", type(gapi.add_comment) == "function")
   h.assert_true("surface: reply exists", type(gapi.reply) == "function")
   h.assert_true("surface: unreply exists", type(gapi.unreply) == "function")
 end
@@ -346,6 +356,88 @@ do
   h.assert_true("hunks: bad mode message",
     tostring(err3):find("nope", 1, true) ~= nil, tostring(err3))
   wipe(hs)
+end
+
+-- Repo mode: the same surface with no review open.
+do
+  h.assert_eq("repo: no sessions left", #gapi.sessions(), 0)
+  comments_mod.invalidate(state_dir)
+  local list = gapi.comments({ repo = repo.root })
+  h.assert_true("repo: lists the store's records", #list >= 3, #list)
+  local by_text = {}
+  for _, c in ipairs(list) do by_text[c.text] = c end
+  h.assert_eq("repo: anchored against the working tree", by_text["on two"].state, "file")
+  h.assert_eq("repo: resolved file line", by_text["on two"].lnum, 2)
+  h.assert_eq("repo: side from the record", by_text["on two"].side, "new")
+  h.assert_eq("repo: unresolvable is outdated", by_text["stale"].state, "outdated")
+  h.assert_eq("repo: outdated flag", by_text["stale"].outdated, true)
+  h.assert_eq("repo: reply persisted from the session", by_text["on gee"].reply, "final answer")
+  h.assert_eq("repo: path filter", #gapi.comments({ repo = repo.root, path = "g.txt" }), 1)
+  h.assert_eq("repo: unanswered filter drops the answered one",
+    #gapi.comments({ repo = repo.root, path = "g.txt", unanswered = true }), 0)
+
+  -- Authoring with no review open.
+  local new_id = gapi.add_comment({
+    repo = repo.root, path = "f.txt", lnum = 3, text = "from an agent",
+  })
+  local authored
+  for _, c in ipairs(gapi.comments({ repo = repo.root })) do
+    if c.id == new_id then authored = c end
+  end
+  h.assert_true("add_comment: listed", authored ~= nil)
+  h.assert_eq("add_comment: content is the file line", authored.code, "three")
+  h.assert_eq("add_comment: anchored", authored.state, "file")
+  h.assert_eq("add_comment: lnum", authored.lnum, 3)
+  h.assert_eq("add_comment: side", authored.side, "new")
+  h.assert_eq("add_comment: origin sha is HEAD", authored.origin.sha, target)
+  h.assert_eq("add_comment: origin clean", authored.origin.dirty, false)
+  h.assert_true("add_comment: fresh id", new_id > ids[1])
+  local multi = gapi.add_comment({
+    repo = repo.root, path = "f.txt", lnum = 1, end_lnum = 2, text = "a range",
+  })
+  local ok_path = pcall(gapi.add_comment, { repo = repo.root, path = "nope.txt", text = "x" })
+  h.assert_true("add_comment: unknown path errors", not ok_path)
+  local ok_range = pcall(gapi.add_comment,
+    { repo = repo.root, path = "f.txt", lnum = 99, text = "x" })
+  h.assert_true("add_comment: out-of-range errors", not ok_range)
+  local ok_text = pcall(gapi.add_comment, { repo = repo.root, path = "f.txt", text = "  " })
+  h.assert_true("add_comment: empty text errors", not ok_text)
+
+  -- Reply by id with no session, persisted to disk.
+  gapi.reply({ repo = repo.root }, new_id, "agent answering itself")
+  comments_mod.invalidate(state_dir)
+  local reread
+  for _, c in ipairs(gapi.comments({ repo = repo.root })) do
+    if c.id == new_id then reread = c end
+  end
+  h.assert_eq("repo reply: persisted", reread.reply, "agent answering itself")
+  h.assert_eq("repo reply: origin survives the round trip", reread.origin.sha, target)
+  local ok_id = pcall(gapi.reply, { repo = repo.root }, 99999, "nope")
+  h.assert_true("repo reply: unknown id errors", not ok_id)
+  gapi.unreply({ repo = repo.root }, new_id)
+  local cleared
+  for _, c in ipairs(gapi.comments({ repo = repo.root })) do
+    if c.id == new_id then cleared = c end
+  end
+  h.assert_true("repo unreply: cleared", cleared.reply == nil)
+
+  -- Session-scoped and repo-scoped calls agree on the records themselves.
+  local s = open()
+  local session_list = gapi.comments(s.id)
+  local repo_list = gapi.comments({ repo = repo.root })
+  local sess_by_id = {}
+  for _, c in ipairs(session_list) do sess_by_id[c.id] = c end
+  h.assert_eq("agree: same count", #session_list, #repo_list)
+  for _, c in ipairs(repo_list) do
+    local other = sess_by_id[c.id]
+    h.assert_true("agree: id present in both " .. c.id, other ~= nil)
+    h.assert_eq("agree: text " .. c.id, other.text, c.text)
+    h.assert_eq("agree: side " .. c.id, other.side, c.side)
+    h.assert_eq("agree: code " .. c.id, other.code, c.code)
+  end
+  h.assert_eq("agree: the multi-line record is two lines",
+    sess_by_id[multi] and #sess_by_id[multi].content, 2)
+  wipe(s)
 end
 
 h.finish()
