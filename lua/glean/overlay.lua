@@ -138,9 +138,12 @@ end
 function M.refresh(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
   if not api.nvim_buf_is_loaded(bufnr) then return end
-  local groups = resolve_buffer(bufnr)
-  if not groups then return end
+  local groups, ctx = resolve_buffer(bufnr)
+  if not ctx then return end
+  -- Clear before the emptiness check: removing a buffer's last comment must
+  -- take its marks with it.
   api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  if not groups or #groups == 0 then return end
   activate(bufnr)
   local show_inline = inline[bufnr] == true
   for _, group in ipairs(groups) do stamp(bufnr, group, show_inline) end
@@ -279,6 +282,13 @@ local function perform(bufnr, ctx, action)
   M.refresh(bufnr)
 end
 
+-- Step the buffer's own undo tree, reporting whether anything moved.
+local function text_step(cmd)
+  local before = vim.fn.undotree().seq_cur
+  pcall(vim.cmd, cmd)
+  return vim.fn.undotree().seq_cur ~= before
+end
+
 -- `u` in a commented buffer undoes glean actions first, then falls through to
 -- the buffer's own undo — the same rule the glean buffer follows.
 function M.undo(bufnr)
@@ -287,7 +297,8 @@ function M.undo(bufnr)
   local s = stack(bufnr)
   local a = table.remove(s.undo)
   if not a then
-    vim.cmd("undo")
+    text_step("undo")
+    M.refresh(bufnr)
     return false
   end
   local ctx = buf_target(bufnr)
@@ -297,21 +308,27 @@ function M.undo(bufnr)
   return true
 end
 
+-- The mirror image: the buffer's own redo goes first and glean actions follow,
+-- so redo replays the undos in the reverse of the order they were taken. The
+-- buffer's undo tree is its own record of what is left to redo; only when it
+-- has nothing does a glean action come back.
 function M.redo(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
   note_text_change(bufnr)
-  local s = stack(bufnr)
-  local a = table.remove(s.redo)
-  if not a then
-    vim.cmd("redo")
+  if text_step("redo") then
+    M.refresh(bufnr)
     return false
   end
+  local s = stack(bufnr)
+  local a = table.remove(s.redo)
+  if not a then return false end
   local ctx = buf_target(bufnr)
   if ctx then comments.apply(ctx, a) end
   s.undo[#s.undo + 1] = a
   M.refresh(bufnr)
   return true
 end
+
 
 -- Provenance of a selection read out of a file buffer: the commit the file
 -- content came from, flagged dirty when the working tree (or the buffer) has

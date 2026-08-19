@@ -347,6 +347,52 @@ do
   h.assert_true("wipe: the comment itself survives", kept)
 end
 
+-- Undoing an authoring action from the buffer it was authored in: the editor
+-- split is the current buffer when the action is performed, so the stack must
+-- be keyed to the file buffer's own undo state, not whatever was focused.
+do
+  write_file("undo.txt", "red\ngreen\nblue\n")
+  repo.run({ "add", "--", "undo.txt" })
+  repo.run({ "commit", "-q", "-m", "undo" })
+  local buf = edit("undo.txt")
+  api.nvim_win_set_cursor(0, { 2, 0 })
+  author(function() overlay.add_at(buf, 2) end, "about green")
+  h.assert_eq("author-undo: rendered", #sign_marks(buf), 1)
+  h.assert_eq("author-undo: handled by glean", overlay.undo(buf), true)
+  h.assert_eq("author-undo: record removed", #store():comments_for("undo.txt"), 0)
+  h.assert_eq("author-undo: sign gone", #sign_marks(buf), 0)
+  h.assert_eq("author-undo: redo handled by glean", overlay.redo(buf), true)
+  h.assert_eq("author-undo: record back", #store():comments_for("undo.txt"), 1)
+  h.assert_eq("author-undo: sign back", #sign_marks(buf), 1)
+end
+
+-- Redo replays the undos in reverse order: text edited, then a comment left,
+-- undone twice, must redo the text first and the comment second.
+do
+  local buf = edit("undo.txt")
+  api.nvim_buf_set_lines(buf, 0, 0, false, { "typed" })
+  author(function() overlay.add_at(buf, 2) end, "about the order")
+  local function has_comment()
+    for _, r in ipairs(store():comments_for("undo.txt")) do
+      if r.text == "about the order" then return true end
+    end
+    return false
+  end
+  local function first_line()
+    return api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+  end
+  overlay.undo(buf)
+  h.assert_true("order: comment undone first", not has_comment())
+  overlay.undo(buf)
+  h.assert_true("order: text undone second", first_line() ~= "typed")
+
+  overlay.redo(buf)
+  h.assert_eq("order: text redone first", first_line(), "typed")
+  h.assert_true("order: comment not back yet", not has_comment())
+  overlay.redo(buf)
+  h.assert_true("order: comment redone second", has_comment())
+end
+
 -- Outside a git repo authoring is a clean no-op with a notification.
 do
   local outside = vim.fn.tempname()
