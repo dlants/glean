@@ -932,6 +932,36 @@ do
   h.assert_true("stage3 fall-through: whole hunk seen", joined:find(" seen (", 1, true) ~= nil)
   h.assert_eq("stage3 fall-through: all lines seen",
     #s4.store:seen_ranges(csha, "m.txt"), 1)
+
+  -- `M` on any row of a partially-marked hunk unmarks the whole hunk.
+  local s5 = glean.open({
+    base = mrepo.shas[1], target = csha, repo_root = mrepo.root,
+    run = mrun, open_window = false, state_dir = vim.fn.tempname(), scope = "commits",
+  })
+  s5:mark_visual_range(lrow(s5, "L1"), lrow(s5, "L2"))
+  h.assert_eq("stage3 unmark-hunk: marked first", #s5.store:seen_ranges(csha, "m.txt"), 1)
+  s5:unmark_hunk(lrow(s5, "L3"))
+  joined = table.concat(api.nvim_buf_get_lines(s5.buf, 0, -1, false), "\n")
+  h.assert_true("stage3 unmark-hunk: marker gone", joined:find("marked", 1, true) == nil)
+  h.assert_eq("stage3 unmark-hunk: store empty", #s5.store:seen_ranges(csha, "m.txt"), 0)
+
+  -- `M` on a fully seen hunk (from its seen-section header row) revives it.
+  local s6 = glean.open({
+    base = mrepo.shas[1], target = csha, repo_root = mrepo.root,
+    run = mrun, open_window = false, state_dir = vim.fn.tempname(), scope = "commits",
+  })
+  s6:toggle_seen(lrow(s6, "L1"))
+  h.assert_eq("stage3 unmark-hunk: seen after m", #s6.store:seen_ranges(csha, "m.txt"), 1)
+  s6:toggle_collapse(find_row(s6, function(_, _, t) return t and t.seen end))
+  local seen_hunk_row = find_row(s6, function(_, _, t)
+    return t and t.hunk and not t.line and t.sec == "seen"
+  end)
+  s6:unmark_hunk(seen_hunk_row)
+  h.assert_eq("stage3 unmark-hunk: revived", #s6.store:seen_ranges(csha, "m.txt"), 0)
+  s6:undo()
+  h.assert_eq("stage3 unmark-hunk: undo restores", #s6.store:seen_ranges(csha, "m.txt"), 1)
+  s6:redo()
+  h.assert_eq("stage3 unmark-hunk: redo re-unmarks", #s6.store:seen_ranges(csha, "m.txt"), 0)
 end
 
 -- Stage 3 — identity-only action layer: marking a hunk addresses only its

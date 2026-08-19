@@ -2257,7 +2257,7 @@ function Session:apply_wt_unmark(path, ids)
   local texts = self:wt_flat_texts(path) or {}
   local kept = {}
   for _, rec in ipairs(self.store:seen_records(path)) do
-    local start = state_mod.resolve(rec.content, rec.anchor, texts)
+    local start = state_mod.resolve(rec.content, texts, nil, rec.anchor)
     if not start then
       kept[#kept + 1] = { anchor = rec.anchor, content = rec.content }
     else
@@ -3117,6 +3117,30 @@ function Session:unmark_marker(target)
   end
   if #ids == 0 then return end
   self:perform({ kind = "seen", op = "unmark", ids = ids })
+  self:render()
+end
+-- Unmark every seen line of the hunk under the cursor (`M`), whatever row of it
+-- the cursor sits on (line, marker or hunk header). Sticky overrides for the
+-- hunk's lines are dropped too, so the hunk returns to a fully virgin state.
+function Session:unmark_hunk(row)
+  if row == nil then row = self:cursor_row() end
+  local target = self.row_map[row]
+  if not target or target.pending or not target.hunk then return end
+  local ht
+  if self.scope == "commits" then
+    if not (target.commit and target.file) then return end
+    ht = { commit = target.commit, file = target.file, hunk = target.hunk }
+  else
+    if not target.cfile then return end
+    ht = { cfile = target.cfile, hunk = target.hunk }
+  end
+  local ids = {}
+  for _, id in ipairs(self:target_identities(ht)) do
+    if self:id_seen(id) then ids[#ids + 1] = id end
+  end
+  local sticky = self:target_sticky(ht)
+  if #ids == 0 and #sticky == 0 then return end
+  self:perform({ kind = "seen", op = "unmark", ids = ids, sticky = sticky })
   self:render()
 end
 -- Unmark every seen line of the whole session (`U`): fold each commit (commit
@@ -4196,7 +4220,7 @@ local function setup_keymaps(buf, session)
   })
   map("n", "=", function() session:toggle_collapse() end)
   map("n", "m", function() session:toggle_seen() end)
-  map("n", "U", function() session:unmark_all() end)
+  map("n", "M", function() session:unmark_hunk() end)  map("n", "U", function() session:unmark_all() end)
   map("x", "m", function()
     local srow = vim.fn.getpos("v")[2] - 1
     local erow = vim.fn.getpos(".")[2] - 1
