@@ -260,4 +260,19 @@ do
   h.assert_eq("ignore live commit: visible row belongs to new commit", committed_owner.sha, new_head)
 end
 
+-- `:e` (BufReadCmd) is a hard reset: the old session is torn down and a fresh
+-- one takes over the same buffer with the same content.
+do
+  local s = open()
+  local buf = s.buf
+  local before = api.nvim_buf_get_lines(buf, 0, -1, false)
+  local fresh = glean.reset(s)
+  h.assert_true("reset: new session object", fresh ~= s)
+  h.assert_eq("reset: same buffer", fresh.buf, buf)
+  h.assert_eq("reset: same review id", fresh.id, s.id)
+  h.assert_eq("reset: content repainted",
+    table.concat(api.nvim_buf_get_lines(buf, 0, -1, false), "\n"), table.concat(before, "\n"))
+  api.nvim_buf_delete(buf, { force = true })
+end
+
 h.finish()

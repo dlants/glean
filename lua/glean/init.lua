@@ -4600,6 +4600,30 @@ function M.live_sessions()
   end)
   return out
 end
+-- Rebuild `session` from scratch in its own buffer: stop its background work,
+-- wipe the painted state, and re-open with the options it was created from.
+function M.reset(session)
+  local opts = session.open_opts
+  if not opts then return end
+  local buf = session.buf
+  session:stop_live()
+  session:close_sticky()
+  local row = session.win and api.nvim_win_is_valid(session.win)
+    and api.nvim_win_get_cursor(session.win)[1] or nil
+  for _, ns in ipairs({ NS, NS_INTRA, NS_CURSOR, NS_CURSOR_INDENT, NS_STICKY }) do
+    api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  end
+  api.nvim_set_option_value("modifiable", true, { buf = buf })
+  api.nvim_buf_set_lines(buf, 0, -1, false, {})
+  api.nvim_set_option_value("modifiable", false, { buf = buf })
+  local fresh = M.open(opts)
+  if row and fresh.win and api.nvim_win_is_valid(fresh.win) then
+    pcall(api.nvim_win_set_cursor, fresh.win,
+      { math.min(row, api.nvim_buf_line_count(buf)), 0 })
+  end
+  return fresh
+end
+
 function M.open(opts)
   assert(opts and opts.base and opts.target, "glean.open requires base and target")
   local repo_root = opts.repo_root
@@ -4640,6 +4664,18 @@ function M.open(opts)
       if not s then return end
       if #vim.fn.win_findbuf(buf) > 0 then s:resume() else s:suspend() end
     end
+    -- `:e` in a review is a hard reset: tear down the session and rebuild it
+    -- from the same options against a blank buffer, so a wedged render or stale
+    -- extmark state recovers without reopening the review.
+    api.nvim_create_autocmd("BufReadCmd", {
+      buffer = buf,
+      callback = function()
+        local s = sessions[key]
+        if not s then return end
+        local ok, err = pcall(M.reset, s)
+        if not ok then vim.notify(tostring(err):match("(glean: .*)") or tostring(err), vim.log.levels.ERROR) end
+      end,
+    })
     api.nvim_create_autocmd("BufWinEnter", {
       buffer = buf,
       callback = sync_active,
@@ -4701,6 +4737,7 @@ function M.open(opts)
 
   local session = setmetatable({
     id = session_id_for(key),
+    open_opts = opts,
     git = git,
     store = store,
     base = opts.base,
