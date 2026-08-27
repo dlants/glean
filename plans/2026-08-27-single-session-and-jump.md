@@ -229,6 +229,20 @@ Deviations from the design as written:
 
 ## jump into the review
 
+**Status: done** (commit "Stage 2: jump into the review").
+
+Deviations from the design as written:
+- `goto_source_line`'s per-row scoring is factored into `Session:row_post_lnum(target)`, which
+  resolves a row's post-image line number (a deletion borrows the next surviving line's `new_lnum`
+  in its hunk, so it is only ever picked on an exact match).
+- The deferred request rides in as `M.open(opts.jump)` rather than being assigned after
+  `open_dirty` returns, since the render can complete inside `open`. The render consumer stores the
+  landed row in `session._jump_row`, which `jump_to_review` returns (there is no window to read a
+  cursor from when `open_window = false`).
+- `jump_to_review` forwards its whole `opts` to `open_dirty`, so tests can inject `run`,
+  `repo_root`, `state_dir`, and `open_window`.
+- `:Glean jump` is documented in README's "Opening" section.
+
 - Goal: `:Glean jump` from a file buffer parks the cursor on that file+line inside the review,
   expanding collapsed files, seen sections, dir rows, and seen-run markers as needed; with no live
   session it first opens the default review.

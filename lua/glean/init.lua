@@ -3499,6 +3499,61 @@ function Session:reveal_summary_comment(c)
   return r
 end
 
+-- The post-image line number a review row stands for, used to match a row
+-- against a source-file line. A deletion has no post-image line of its own, so
+-- it takes the line number of the following surviving line in its hunk: it is
+-- then only ever picked when the requested line is exactly there.
+function Session:row_post_lnum(target)
+  local file = target and target.line and self:row_file(target)
+  local hunk = file and file.hunks[target.hunk]
+  if not hunk then return nil end
+  for i = target.line, #hunk.lines do
+    local dl = hunk.lines[i]
+    if dl.new_lnum then return dl.new_lnum end
+  end
+  return nil
+end
+-- Park the cursor on the review row showing post-image line `lnum` of `path`,
+-- expanding whatever hides it (the file, its seen section, enclosing dir rows,
+-- and any seen-run marker in the file). Degrades to the nearest reviewed line
+-- in the file, then the file header. Returns the row (0-indexed), or nil when
+-- the file is not part of the review.
+function Session:goto_source_line(path, lnum)
+  if not self:file_header_row(path) then return nil end
+  self:expand_path(path)
+  self:render()
+  local changed = false
+  for _, t in pairs(self.row_map) do
+    if t.marker then
+      local f = self:row_file(t)
+      if f and f.path == path then
+        local a = self:collapse_action(t)
+        if a and self.collapse[a.key] ~= false then
+          self.collapse[a.key] = false
+          changed = true
+        end
+      end
+    end
+  end
+  if changed then self:render() end
+  local best, best_score
+  for r, t in pairs(self.row_map) do
+    local f = t and t.line and self:row_file(t)
+    if f and f.path == path then
+      local post = self:row_post_lnum(t)
+      if post then
+        local score = math.abs(post - lnum)
+        if not best_score or score < best_score or (score == best_score and r < best) then
+          best, best_score = r, score
+        end
+      end
+    end
+  end
+  local row = best or self:file_header_row(path)
+  if row then self:restore_cursor(row) end
+  return row
+end
+
 -- Jump-to-source (Stage 5).
 -- ---------------------------------------------------------------------------
 
@@ -3991,6 +4046,11 @@ function Session:refresh_model(hints)
     if reveal then
       self._reveal_comment_after_refresh = nil
       self:reveal_summary_comment(reveal)
+    end
+    local jump = self._jump_after_refresh
+    if jump then
+      self._jump_after_refresh = nil
+      self._jump_row = self:goto_source_line(jump.path, jump.lnum)
     end
   end)
 end
@@ -4765,6 +4825,9 @@ function M.open(opts)
     redo_stack = {},
   }, Session)
   current.session = session
+  -- A jump requested at open time is consumed by the render that follows the
+  -- (possibly asynchronous) initial model load.
+  session._jump_after_refresh = opts.jump
   session:apply_collapse()
 
   local open_window = opts.open_window ~= false
@@ -4814,6 +4877,44 @@ function M.open_dirty(opts)
     repo_root = repo_root, base = review_base, target = target,
     identifier = identifier,
   }))
+end
+-- From a work-tree file buffer, show the review at the current file + line,
+-- opening the default (`:Glean`) review when there is none. The model may still
+-- be loading, in which case the request is stashed and consumed by the render
+-- that follows. Returns the review row, or nil when the file is not reviewed.
+function M.jump_to_review(opts)
+  opts = opts or {}
+  local bufnr = opts.bufnr or api.nvim_get_current_buf()
+  local name = api.nvim_buf_get_name(bufnr)
+  local lnum = opts.lnum or api.nvim_win_get_cursor(0)[1]
+  local session = M.current_session()
+  local repo_root = opts.repo_root
+    or (session and session.git.repo_root)
+    or resolve_repo_root(name)
+  local path = repo_root and git_mod.relpath(repo_root, name)
+  if not path then
+    vim.notify("glean: not a file in the repo", vim.log.levels.WARN)
+    return nil
+  end
+  local row
+  if session then
+    if session.open_opts and session.open_opts.open_window ~= false then
+      session.win = show_buffer_in_window(session.buf)
+    end
+    row = session:goto_source_line(path, lnum)
+  else
+    -- The model may still be loading: the request rides along and the render
+    -- that finishes the load consumes it.
+    session = M.open_dirty(vim.tbl_extend("force", opts, {
+      jump = { path = path, lnum = lnum },
+    }))
+    if session._jump_after_refresh then return nil end
+    row = session._jump_row
+  end
+  if not row then
+    vim.notify("glean: " .. path .. " is not part of the review", vim.log.levels.WARN)
+  end
+  return row
 end
 local function github_pr_repo(url)
   if type(url) ~= "string" then return nil end
@@ -4997,6 +5098,10 @@ function M.setup(opts)
       vim.cmd("copen")
       return
     end
+    if args[1] == "jump" then
+      M.jump_to_review()
+      return
+    end
     if args[1] == "log" then
       M.open_log()
       return
@@ -5028,7 +5133,7 @@ function M.setup(opts)
     M.open({ base = args[1], target = args[2] })
   end, { nargs = "*", range = true, complete = function(lead)
     local out = {}
-    for _, sub in ipairs({ "comment", "comments", "log", "prs", "pr", "branch" }) do
+    for _, sub in ipairs({ "comment", "comments", "jump", "log", "prs", "pr", "branch" }) do
       if sub:sub(1, #lead) == lead then out[#out + 1] = sub end
     end
     return out

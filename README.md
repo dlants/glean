@@ -10,6 +10,7 @@ review store, so seen-marks and comments survive across sessions.
 ```vim
 :Glean                  " review current branch + dirty work tree
 :Glean log              " browse commits, then open one or a selected range
+:Glean jump             " from a file buffer, jump to that file+line in the review
 :Glean prs              " browse currently open GitHub pull requests
 :Glean <base>           " review <base> + dirty work tree
 :Glean <base> <target>  " review <base>..<target> (no dirty work tree)
@@ -32,6 +33,11 @@ A live work-tree review refreshes on save and on regaining focus (with a 5s
 safety-net poll for changes made outside the editor) and re-renders in place as
 
 files change, preserving the cursor and your collapse state.
+
+`:Glean jump` is the inverse of `<CR>` in the review: run it in a source file and
+the cursor moves into the review at that file and line, expanding the file, its
+seen section, and any collapsed seen runs hiding the line. With no review open it
+opens the default (`:Glean`) one first.
 
 Reopening the same `base..target` reuses the existing listed buffer rather than
 spawning a duplicate, so you can jump to a source file and return via the buffer

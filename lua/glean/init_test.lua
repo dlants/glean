@@ -4097,4 +4097,101 @@ do
   h.assert_true("single: wipe drops the augroup",
     not pcall(api.nvim_get_autocmds, { group = group }))
 end
+-- `:Glean jump`: from a file buffer, park the review cursor on that file+line,
+-- expanding whatever hides it, and open the default review when there is none.
+do
+  local jrepo = testutil.make_repo({
+    { msg = "base", files = {
+      ["j.txt"] = "a\nb\nc\nd\ne\nf\ng\nh\n", ["other.txt"] = "x\n",
+    } },
+    { msg = "c1: rewrite the block", files = {
+      ["j.txt"] = "a\nB\nC\nD\nE\nF\nG\nh\n", ["other.txt"] = "x\n",
+    } },
+  })
+  local jrun = function(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = jrepo.root, env = jrepo.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local jdir = vim.fn.tempname()
+  local function jopen(o)
+    return glean.open(vim.tbl_extend("force", {
+      base = jrepo.shas[1], target = jrepo.shas[2], repo_root = jrepo.root,
+      run = jrun, open_window = false, state_dir = jdir, scope = "commits",
+    }, o or {}))
+  end
+  local function landed_lnum(s, row)
+    local t = row and s.row_map[row]
+    local f = t and s:row_file(t)
+    if not (f and f.path == "j.txt") then return nil end
+    return s:row_post_lnum(t)
+  end
+  -- A collapsed file is expanded by the jump.
+  local s = jopen()
+  s:toggle_collapse(s:file_header_row("j.txt"))
+  local body = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("jump: file collapsed first", body:find("\nD", 1, true) == nil)
+  local row = s:goto_source_line("j.txt", 4)
+  h.assert_eq("jump: lands on the requested line", landed_lnum(s, row), 4)
+  -- A line hidden inside a seen-run marker is revealed, and the persisted seen
+  -- model is untouched by the navigation.
+  local csha = jrepo.shas[2]
+  s.store:mark_seen(csha, "j.txt", { 2, 3 })
+  s.store:save_commit(csha)
+  s:render()
+  local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
+  h.assert_true("jump: seen run renders as a marker",
+    joined:find("✓ marked 2 lines", 1, true) ~= nil)
+  local before = #s.store:seen_ranges(csha, "j.txt")
+  local mrow = s:goto_source_line("j.txt", 2)
+  h.assert_eq("jump: expands the marker and lands on the seen line",
+    landed_lnum(s, mrow), 2)
+  h.assert_eq("jump: seen model unchanged", #s.store:seen_ranges(csha, "j.txt"), before)
+  h.assert_true("jump: line 2 covered as before",
+    state.covers(s.store:seen_ranges(csha, "j.txt"), 2))
+  -- A line past the reviewed region degrades to the nearest reviewed line.
+  local nrow = s:goto_source_line("j.txt", 500)
+  h.assert_true("jump: degrades to the nearest reviewed line",
+    landed_lnum(s, nrow) ~= nil)
+  -- A file outside the review is reported, not approximated.
+  h.assert_true("jump: unreviewed file yields no row",
+    s:goto_source_line("other.txt", 1) == nil)
+  local obuf = vim.fn.bufadd(jrepo.root .. "/other.txt")
+  vim.fn.bufload(obuf)
+  local notified
+  local old_notify = vim.notify
+  vim.notify = function(msg) notified = msg end
+  local nil_row = glean.jump_to_review({ bufnr = obuf, lnum = 1, repo_root = jrepo.root })
+  vim.notify = old_notify
+  h.assert_true("jump: jump_to_review on an unreviewed file returns nil", nil_row == nil)
+  h.assert_true("jump: unreviewed file is reported",
+    notified ~= nil and notified:find("other.txt", 1, true) ~= nil)
+  -- The request survives an asynchronous load: it is stashed on the session and
+  -- consumed by the render that finishes the model.
+  glean.close_current()
+  local d = jopen({ jump = { path = "j.txt", lnum = 5 } })
+  h.assert_eq("jump: deferred request consumed on the first render",
+    landed_lnum(d, d._jump_row), 5)
+  d._jump_after_refresh = { path = "j.txt", lnum = 6 }
+  d:reload()
+  h.assert_eq("jump: deferred request consumed on a later render",
+    landed_lnum(d, d._jump_row), 6)
+  -- With no live session, jumping opens the default (dirty) review.
+  glean.close_current()
+  local jfile = jrepo.root .. "/j.txt"
+  local f = assert(io.open(jfile, "w"))
+  f:write("a\nB\nC\nD\nE\nF\nG\nH\n")
+  f:close()
+  local fbuf = vim.fn.bufadd(jfile)
+  vim.fn.bufload(fbuf)
+  local drow = glean.jump_to_review({
+    bufnr = fbuf, lnum = 8, repo_root = jrepo.root, run = jrun,
+    open_window = false, state_dir = jdir,
+  })
+  local live = glean.live_sessions()[1]
+  h.assert_true("jump: opened the default review", live ~= nil)
+  h.assert_eq("jump: lands in the freshly opened review", landed_lnum(live, drow), 8)
+  glean.close_current()
+end
 h.finish()
