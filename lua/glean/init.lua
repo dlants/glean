@@ -101,32 +101,21 @@ M.config = {
   hunk_indent_delay_ms = 50,
 }
 
--- Registry of live glean buffers, keyed by (repo_root, base, target), so a
--- second open of the same diff reuses its persistent, listed buffer instead of
--- spawning a duplicate. Lets you jump to a source file and come back via the
--- buffer list / `<C-^>`.
-local buffers = {}
-
--- Live session per buffer key, so a reopen/refresh can stop the previous one's
--- update timer; and content-addressed collapse overrides per buffer key, kept in
--- process memory so a reload-from-disk never loses expand/collapse state.
-local sessions = {}
--- Process-local review ids (`g1`, `g2`, …) per buffer key: short, unambiguous
--- handles the agent-facing api addresses sessions by. Rendered into the buffer
--- name so a paste out of the review carries its own address. Reopening the same
--- diff reuses the buffer and keeps its id; a wiped buffer's id is never reused.
-local session_ids = {}
+-- The one live glean review. There is at most one review session per nvim
+-- instance: opening a different range discards the previous one (see
+-- `M.close_current`). Keyed by (repo_root, base, target) as *identity*, so
+-- reopening the same range reuses its buffer, its id, and its collapse state.
+--   { key, buf, id, session, view }
+local current = nil
+-- Process-local review ids (`g1`, `g2`, …): short, unambiguous handles the
+-- agent-facing api addresses sessions by. Rendered into the buffer name so a
+-- paste out of the review carries its own address. Ids are never reused, so a
+-- stale id from a discarded session never resolves to the new one.
 local session_seq = 0
-local function session_id_for(key)
-  local id = session_ids[key]
-  if not id then
-    session_seq = session_seq + 1
-    id = "g" .. session_seq
-    session_ids[key] = id
-  end
-  return id
+local function next_session_id()
+  session_seq = session_seq + 1
+  return "g" .. session_seq
 end
-local views = {}
 local log_buffers = {}
 local log_views = {}
 local pr_buffers = {}
@@ -4587,18 +4576,36 @@ end
 --   - from_root (internal): base is the empty tree and history includes root.
 --   - open_window (optional, default true).
 
+-- The single live review session, or nil.
+function M.current_session()
+  if not (current and current.session) then return nil end
+  if not api.nvim_buf_is_valid(current.buf) then return nil end
+  return current.session
+end
+-- The only teardown path for a review: stop its background work (timer +
+-- augroup), close its sticky float, and wipe its buffer. `current` is cleared
+-- first, so this is re-entrant (wiping the buffer re-enters through BufWipeout,
+-- which then finds nothing) and can never clobber a session installed after it.
+-- `opts.keep_buf` is for the caller already reacting to the buffer going away.
+function M.close_current(opts)
+  local slot = current
+  if not slot then return end
+  current = nil
+  local session = slot.session
+  if session then
+    session:stop_live()
+    session:close_sticky()
+  end
+  if not (opts and opts.keep_buf) and slot.buf and api.nvim_buf_is_valid(slot.buf) then
+    pcall(api.nvim_buf_delete, slot.buf, { force = true })
+  end
+end
 -- The live review sessions, in id order. The programmatic surface
 -- (`glean.api`) addresses reviews through this registry rather than reaching
 -- into the file-local tables.
 function M.live_sessions()
-  local out = {}
-  for _, session in pairs(sessions) do
-    if session.buf and api.nvim_buf_is_valid(session.buf) then out[#out + 1] = session end
-  end
-  table.sort(out, function(a, b)
-    return tonumber(a.id:sub(2)) < tonumber(b.id:sub(2))
-  end)
-  return out
+  local session = M.current_session()
+  return session and { session } or {}
 end
 -- Rebuild `session` from scratch in its own buffer: stop its background work,
 -- wipe the painted state, and re-open with the options it was created from.
@@ -4639,29 +4646,30 @@ function M.open(opts)
   local wt_shard = M.wt_shard(git, opts.storage_branch)
   local store = state_mod.new({ dir = state_dir, wt_shard = wt_shard })
 
-  -- One buffer per (repo, base, target); reuse it on reopen. The live work-tree
-  -- review is a "special" unlisted buffer (it tracks the current repo state and
-  -- auto-refreshes); committed-range diffs are persistent and listed.
+  -- There is one review at a time. Reopening the same (repo, base, target)
+  -- reuses its buffer, id and collapse state; a different range discards the
+  -- previous review entirely.
   local key = buffer_key(repo_root, opts.base, opts.target)
-  local existing = buffers[key]
-  local buf
-  if existing and api.nvim_buf_is_valid(existing) then
-    buf = existing
+  local reuse = current and current.key == key and api.nvim_buf_is_valid(current.buf)
+  local buf, id, collapse
+  if reuse then
+    buf, id, collapse = current.buf, current.id, current.view
   else
+    M.close_current()
+    id, collapse = next_session_id(), {}
     buf = api.nvim_create_buf(true, false)
     api.nvim_set_option_value("buftype", "nofile", { buf = buf })
     api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
     api.nvim_set_option_value("swapfile", false, { buf = buf })
     api.nvim_set_option_value("filetype", "glean", { buf = buf })
-    buffers[key] = buf
     -- Background work is attached to *visibility*, not to the session's
     -- lifetime: a buffer sitting in no window must not poll the work tree or
     -- rebuild the model. Visibility is re-derived from `win_findbuf` rather than
     -- tracked per event, since BufWinLeave fires before the window is gone and
     -- one split of two closing must not detach the still-visible buffer.
     local function sync_active()
-      local s = sessions[key]
-      if not s then return end
+      local s = M.current_session()
+      if not (s and s.buf == buf) then return end
       if #vim.fn.win_findbuf(buf) > 0 then s:resume() else s:suspend() end
     end
     -- `:e` in a review is a hard reset: tear down the session and rebuild it
@@ -4670,8 +4678,8 @@ function M.open(opts)
     api.nvim_create_autocmd("BufReadCmd", {
       buffer = buf,
       callback = function()
-        local s = sessions[key]
-        if not s then return end
+        local s = M.current_session()
+        if not (s and s.buf == buf) then return end
         local ok, err = pcall(M.reset, s)
         if not ok then vim.notify(tostring(err):match("(glean: .*)") or tostring(err), vim.log.levels.ERROR) end
       end,
@@ -4693,8 +4701,8 @@ function M.open(opts)
     api.nvim_create_autocmd("User", {
       pattern = "GleanCommentsChanged",
       callback = function(args)
-        local s = sessions[key]
-        if not (s and api.nvim_buf_is_valid(buf)) then return true end
+        local s = M.current_session()
+        if not (s and s.buf == buf) then return true end
         local data = args.data or {}
         if data.dir ~= s.state_dir then return end
         if data.source == "session:" .. tostring(s.id) then return end
@@ -4704,29 +4712,17 @@ function M.open(opts)
     api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
       buffer = buf,
       callback = function()
-        buffers[key] = nil
-        views[key] = nil
-        session_ids[key] = nil
-        local s = sessions[key]
-        if s then
-          s:stop_live()
-          s:close_sticky()
+        if current and current.buf == buf then
+          M.close_current({ keep_buf = true })
         end
-        sessions[key] = nil
       end,
     })
   end
   api.nvim_set_option_value("buflisted", true, { buf = buf })
-  pcall(api.nvim_buf_set_name, buf, review_title(git, session_id_for(key),
+  pcall(api.nvim_buf_set_name, buf, review_title(git, id,
     opts.identifier or range_identifier(opts.base, opts.target), opts.base, opts.target))
-
-  -- Collapse overrides are content-addressed and kept in process memory keyed by
-  -- the buffer, so neither a live reload-from-disk nor a reopen loses the user's
-  -- expand/collapse choices.
-  local collapse = views[key] or {}
-  views[key] = collapse
-
-  local prev = sessions[key]
+  local prev = current and current.session
+  current = { key = key, buf = buf, id = id, view = collapse }
   if prev then
     prev:stop_live()
     -- A superseded session can still have Git callbacks in flight. Invalidate
@@ -4736,7 +4732,7 @@ function M.open(opts)
   end
 
   local session = setmetatable({
-    id = session_id_for(key),
+    id = id,
     open_opts = opts,
     git = git,
     store = store,
@@ -4768,7 +4764,7 @@ function M.open(opts)
     undo_stack = {},
     redo_stack = {},
   }, Session)
-  sessions[key] = session
+  current.session = session
   session:apply_collapse()
 
   local open_window = opts.open_window ~= false

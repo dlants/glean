@@ -44,7 +44,7 @@ local function open(o)
   })
 end
 local function wipe(s)
-  vapi.nvim_buf_delete(s.buf, { force = true })
+  if vapi.nvim_buf_is_valid(s.buf) then vapi.nvim_buf_delete(s.buf, { force = true }) end
 end
 -- No session open: a repo-addressed call answers off the repo store, and a
 -- path outside any repository errors rather than answering emptily.
@@ -145,8 +145,8 @@ do
     sym_name:find("feature∕x", 1, true) ~= nil, sym_name)
   wipe(sym)
 end
--- Two sessions on different repos get distinct ids and each resolves by its id;
--- an ambiguous call lists both candidates, an unknown id errors.
+-- There is one review at a time: opening a second range discards the first, so
+-- only the new session is listed and the old id no longer resolves.
 do
   local a = open()
   local repo2, run2 = make({
@@ -157,21 +157,21 @@ do
     base = repo2.shas[1], target = repo2.shas[2], repo_root = repo2.root,
     run = run2, open_window = false, state_dir = vim.fn.tempname(),
   })
-  h.assert_true("multi: distinct ids", a.id ~= b.id)
-  h.assert_eq("multi: sessions listed", #gapi.sessions(), 2)
-  h.assert_eq("multi: resolves by id", gapi.session(b.id).git.repo_root, repo2.root)
-  h.assert_eq("multi: resolves by buffer", gapi.session(a.buf).id, a.id)
-  h.assert_eq("multi: b has no comments", #gapi.comments(b.id), 0)
-  local ok, err = pcall(gapi.comments)
-  h.assert_true("multi: ambiguous errors", not ok)
-  h.assert_true("multi: error lists both",
-    tostring(err):find(a.id, 1, true) and tostring(err):find(b.id, 1, true) ~= nil,
+  h.assert_true("single: distinct ids", a.id ~= b.id)
+  h.assert_eq("single: one session listed", #gapi.sessions(), 1)
+  h.assert_eq("single: the listed session is the new one", gapi.sessions()[1].id, b.id)
+  h.assert_eq("single: resolves by id", gapi.session(b.id).git.repo_root, repo2.root)
+  h.assert_eq("single: resolves by buffer", gapi.session(b.buf).id, b.id)
+  h.assert_eq("single: b has no comments", #gapi.comments(b.id), 0)
+  h.assert_eq("single: no session arg resolves the only one",
+    #gapi.comments(), 0)
+  local ok, err = pcall(gapi.comments, a.id)
+  h.assert_true("single: stale id errors", not ok)
+  h.assert_true("single: stale id message", tostring(err):find(a.id, 1, true) ~= nil,
     tostring(err))
-  h.assert_true("multi: error names the repo",
-    tostring(err):find(repo2.root, 1, true) ~= nil, tostring(err))
   local ok2, err2 = pcall(gapi.comments, "g999")
-  h.assert_true("multi: unknown id errors", not ok2)
-  h.assert_true("multi: unknown id message", tostring(err2):find("g999", 1, true) ~= nil)
+  h.assert_true("single: unknown id errors", not ok2)
+  h.assert_true("single: unknown id message", tostring(err2):find("g999", 1, true) ~= nil)
   wipe(b)
   wipe(a)
 end

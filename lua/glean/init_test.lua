@@ -4036,4 +4036,65 @@ do
   h.assert_true("sync: undo leaves the file-authored comment alone",
     body():find("from the file", 1, true) ~= nil)
 end
+-- One review at a time: a second range discards the first (timer, augroup,
+-- buffer), while reopening the same range reuses buffer, id, and collapse.
+do
+  local calls = {}
+  local function run_logged(args)
+    calls[#calls + 1] = table.concat(args, " ")
+    return inject_run(args)
+  end
+  local function open_wt(o)
+    o = o or {}
+    return glean.open({
+      base = o.base or base,
+      target = glean.WORKTREE,
+      repo_root = repo.root,
+      run = run_logged,
+      open_window = false,
+      state_dir = state_dir,
+    })
+  end
+  local a = open_wt()
+  a:start_live()
+  local a_buf, a_id, a_group = a.buf, a.id, a._live_group
+  h.assert_true("single: timer running", a._timer ~= nil)
+  local b = open_wt({ base = repo.shas[2] })
+  h.assert_true("single: previous buffer wiped", not api.nvim_buf_is_valid(a_buf))
+  h.assert_eq("single: one live session", #glean.live_sessions(), 1)
+  h.assert_eq("single: the live session is the new one", glean.live_sessions()[1].id, b.id)
+  h.assert_true("single: previous timer stopped", a._timer == nil)
+  h.assert_true("single: previous augroup gone",
+    not pcall(api.nvim_get_autocmds, { group = a_group }))
+  h.assert_true("single: new id minted", b.id ~= a_id)
+  h.assert_true("single: collapse overrides are not carried across ranges",
+    next(b.collapse) == nil)
+  -- No background work is attributed to the discarded session: its refs never
+  -- show up in git calls again.
+  local mark = #calls
+  vim.api.nvim_exec_autocmds("BufWritePost", {})
+  for i = mark + 1, #calls do
+    h.assert_true("single: no stale poll for the old range",
+      calls[i]:find(base .. "..", 1, true) == nil, calls[i])
+  end
+  -- Reopening the same range reuses the buffer, id, and collapse overrides.
+  b.collapse["file:f.txt"] = true
+  local again = open_wt({ base = repo.shas[2] })
+  h.assert_eq("single: reopen reuses the buffer", again.buf, b.buf)
+  h.assert_eq("single: reopen keeps the id", again.id, b.id)
+  h.assert_eq("single: reopen keeps collapse overrides", again.collapse["file:f.txt"], true)
+  -- `:e` (M.reset) rebuilds in place: same buffer, same id, still the live one.
+  local reset = glean.reset(again)
+  h.assert_eq("single: reset keeps the buffer", reset.buf, b.buf)
+  h.assert_eq("single: reset keeps the id", reset.id, b.id)
+  h.assert_eq("single: reset stays the live session", glean.live_sessions()[1].id, b.id)
+  -- Wiping the buffer reaches the same end state as opening another range.
+  reset:start_live()
+  local group = reset._live_group
+  api.nvim_buf_delete(reset.buf, { force = true })
+  h.assert_eq("single: wipe leaves no live session", #glean.live_sessions(), 0)
+  h.assert_true("single: wipe stops the timer", reset._timer == nil)
+  h.assert_true("single: wipe drops the augroup",
+    not pcall(api.nvim_get_autocmds, { group = group }))
+end
 h.finish()
