@@ -189,7 +189,36 @@ api.nvim_buf_set_name(other, repo.root .. "/absent.txt")
 api.nvim_buf_set_lines(other, 0, -1, false, { "x" })
 gutter.refresh(other)
 h.assert_eq("unknown file untouched", signs(other), "")
+-- ── Foreign provider suppression ────────────────────────────────────────────
+local calls = {} --- @type string[]
+local fake = {
+  detach = function(b) calls[#calls + 1] = "detach:" .. b end,
+  attach = function(b) calls[#calls + 1] = "attach:" .. b end,
+}
+gutter.setup({ suppress = fake })
+gutter.clear_all() -- drop the "auto" provider's bookkeeping from the paints above
+calls = {}
+gutter.refresh(fbuf)
+gutter.refresh(fbuf)
+h.assert_eq("detached once", table.concat(calls, " "), "detach:" .. fbuf)
+gutter.refresh(other)
+h.assert_eq("untouched buffer not detached", table.concat(calls, " "), "detach:" .. fbuf)
+gutter.clear_all()
+h.assert_eq("reattached on teardown", table.concat(calls, " "),
+  ("detach:%d attach:%d"):format(fbuf, fbuf))
+
+calls = {}
+gutter.setup({ suppress = false })
+gutter.refresh(fbuf)
+gutter.clear_all()
+h.assert_eq("suppress=false never calls the provider", table.concat(calls, " "), "")
+
+gutter.setup({ suppress = { detach = function() error("boom") end, attach = function() end } })
+gutter.refresh(fbuf)
+h.assert_true("painted despite a throwing provider", signs(fbuf) ~= "")
+
 -- Closing the review clears every painted buffer.
+gutter.setup({ suppress = false })
 glean.close_current()
 h.assert_eq("cleared on close", signs(fbuf), "")
 

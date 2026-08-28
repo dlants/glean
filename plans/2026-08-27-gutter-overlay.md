@@ -269,14 +269,26 @@ Deviations:
 
 ## suppression and config
 
+**Status: done** (suppression block in `lua/glean/gutter.lua`, tests at the end
+of `lua/glean/gutter_test.lua`, `M.config.gutter.suppress` in `init.lua`).
+
+Deviations:
+- Suppression follows *membership* in the review, not paintedness: a buffer that
+  is momentarily `modified` (and so carries no marks) keeps the foreign provider
+  detached, since handing the column back for a keystroke would flicker. The
+  provider is reattached when the buffer leaves the session's file set, on
+  `clear_all` (session close / teardown) and on `VimLeavePre`.
+- `clear_all` is the single restore funnel, so `close_current` already covers the
+  session-close case with no extra wiring.
+
 - Goal: gitsigns is detached from painted buffers and reattached on teardown;
   the behaviour is configurable and never fatal.
 - Tests:
-  - With an injected fake provider (`{ detach, attach }` recording calls),
+  - [x] With an injected fake provider (`{ detach, attach }` recording calls),
     painting a buffer detaches once (not per refresh) and `clear_all` reattaches
-    exactly the buffers detached.
-  - `suppress = false` never calls the provider.
-  - A provider whose `detach` throws still leaves the gutter painted.
+    exactly the buffers detached; a buffer outside the review is never detached.
+  - [x] `suppress = false` never calls the provider.
+  - [x] A provider whose `detach` throws still leaves the gutter painted.
 
 ## docs
 

@@ -101,7 +101,10 @@ M.config = {
   hunk_indent = 2,
   hunk_indent_delay_ms = 50,
   -- The review's state projected into the gutter of ordinary file buffers.
-  gutter = { enabled = true },
+  -- `suppress` hands the sign column over from another diff-sign plugin while a
+  -- review is live: "auto" drives gitsigns, a `{ detach, attach }` table drives
+  -- any other provider, `false` leaves it alone.
+  gutter = { enabled = true, suppress = "auto" },
 }
 
 -- The one live glean review. There is at most one review session per nvim

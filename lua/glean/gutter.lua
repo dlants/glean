@@ -148,11 +148,11 @@ end
 -- there is nothing the gutter can prove: no session, a commit-targeted one
 -- (whose post-image is a snapshot the buffer may have moved past), a buffer
 -- outside the session's repo, or a buffer edited since the last model refresh.
-local function buf_target(bufnr)
+local function buf_target(bufnr, allow_modified)
   if M.config and M.config.enabled == false then return nil end
   local session = require("glean.init").current_session()
   if not (session and session.worktree) then return nil end
-  if vim.bo[bufnr].modified then return nil end
+  if vim.bo[bufnr].modified and not allow_modified then return nil end
   local name = api.nvim_buf_get_name(bufnr)
   if name == "" then return nil end
   local path = git.relpath(session.git.repo_root, name)
@@ -165,12 +165,53 @@ local function clear(bufnr)
   if api.nvim_buf_is_valid(bufnr) then api.nvim_buf_clear_namespace(bufnr, ns, 0, -1) end
 end
 
+-- ── Foreign sign provider suppression ───────────────────────────────────────
+--
+-- Another plugin (gitsigns by default) already paints diff signs in the same
+-- column; while a review is live the glean projection replaces it. Buffers we
+-- detached are recorded so teardown reattaches exactly those, and every call
+-- into the foreign plugin is pcall'd: a missing or renamed provider must never
+-- break the gutter.
+local suppressed = {}
+
+local AUTO = {
+  detach = function(bufnr) require("gitsigns").detach(bufnr) end,
+  attach = function(bufnr) require("gitsigns").attach(bufnr) end,
+}
+
+local function provider()
+  local s = M.config and M.config.suppress
+  if s == nil or s == "auto" then return AUTO end
+  if type(s) == "table" then return s end
+  return nil
+end
+
+local function suppress(bufnr)
+  if suppressed[bufnr] then return end
+  local p = provider()
+  if not (p and p.detach) then return end
+  suppressed[bufnr] = true
+  pcall(p.detach, bufnr)
+end
+
+local function restore(bufnr)
+  if not suppressed[bufnr] then return end
+  suppressed[bufnr] = nil
+  local p = provider()
+  if p and p.attach and api.nvim_buf_is_valid(bufnr) then pcall(p.attach, bufnr) end
+end
+
 --- Recompute and re-stamp `bufnr`. No-op (beyond clearing) when there is no
 --- live work-tree session, the buffer is not one of its files, or the buffer
 --- has diverged from the model.
 function M.refresh(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
   if not api.nvim_buf_is_loaded(bufnr) then return end
+  -- Suppression follows membership in the review, not paintedness: a buffer
+  -- momentarily modified (and so cleared) is still the review's file, and
+  -- handing the column back to the other plugin for one keystroke would flicker.
+  local member, mpath = buf_target(bufnr, true)
+  if member and member:file_status(mpath) then suppress(bufnr) else restore(bufnr) end
   local session, path = buf_target(bufnr)
   local marks = session and session:file_status(path) or nil
   clear(bufnr)
@@ -182,10 +223,13 @@ function M.refresh(bufnr)
   end
 end
 
---- Clear the marks from every buffer we painted.
+--- Clear the marks from every buffer we painted and hand the sign column back
+--- to the foreign provider on every buffer we took it from.
 function M.clear_all()
   for bufnr in pairs(painted) do clear(bufnr) end
   painted = {}
+  for bufnr in pairs(suppressed) do restore(bufnr) end
+  suppressed = {}
 end
 
 -- Every loaded, named buffer that could belong to a review: the painted ones
@@ -199,7 +243,7 @@ local function refresh_all()
 end
 
 function M.setup(cfg)
-  M.config = vim.tbl_extend("force", { enabled = true }, cfg or {})
+  M.config = vim.tbl_extend("force", { enabled = true, suppress = "auto" }, cfg or {})
   M.setup_highlights()
   local group = api.nvim_create_augroup("GleanGutter", { clear = true })
   api.nvim_create_autocmd({ "BufReadPost", "BufWinEnter", "BufWritePost", "FileChangedShellPost" }, {
@@ -219,6 +263,7 @@ function M.setup(cfg)
     pattern = "GleanReviewChanged",
     callback = function() refresh_all() end,
   })
+  api.nvim_create_autocmd("VimLeavePre", { group = group, callback = function() M.clear_all() end })
 end
 
 return M
