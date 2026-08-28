@@ -143,11 +143,17 @@ end
 -- First-parent history from HEAD, newest first. Parent ids are included so a
 -- selected log row can be opened as the exact commit range against its oldest
 -- commit's first parent. Returns { sha, short_sha, summary, parents } entries.
-function Git:log_commits()
-  local out, err = self:run({
+-- `opts.limit` / `opts.skip` page the history so opening the log on a large
+-- repo only costs the first screenful.
+function Git:log_commits(opts)
+  opts = opts or {}
+  local args = {
     "log", "--first-parent", "--no-color", "--abbrev=8",
     "--format=%x00%H%x09%h%x09%P%x09%s",
-  })
+  }
+  if opts.skip and opts.skip > 0 then args[#args + 1] = "--skip=" .. opts.skip end
+  if opts.limit then args[#args + 1] = "-n" .. opts.limit end
+  local out, err = self:run(args)
   if not out then return nil, err end
   local commits = {}
   for chunk in out:gmatch("%z([^%z]*)") do

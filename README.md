@@ -46,7 +46,9 @@ list / `<C-^>`.
 `:Glean log` opens the current repository's first-parent history, newest first.
 Its first row is the dirty work tree. Press `<CR>` on a row to review it, or
 visually select a contiguous set of rows and press `<CR>` to review that range;
-including the dirty row makes the work tree the review target. The log and
+including the dirty row makes the work tree the review target. Only the most
+recent 200 commits are loaded up front; press `]p` to append the next page of
+older history. The log and
 resulting reviews use
 the same persistent listed-buffer and window-reuse behavior as other Glean views.
 

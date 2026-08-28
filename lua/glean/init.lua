@@ -4374,6 +4374,9 @@ function LogView:render()
     lines[#lines + 1] = commit.short_sha .. "  " .. commit.summary
     row_map[i + 1] = i
   end
+  if self.has_more then
+    lines[#lines + 1] = "…         press ]p to load more history"
+  end
   api.nvim_set_option_value("modifiable", true, { buf = self.buf })
   api.nvim_buf_set_lines(self.buf, 0, -1, false, lines)
   api.nvim_buf_clear_namespace(self.buf, NS, 0, -1)
@@ -4390,6 +4393,21 @@ function LogView:render()
   end
   api.nvim_set_option_value("modifiable", false, { buf = self.buf })
   self.row_map = row_map
+end
+
+-- The log is fetched a page at a time; older commits are appended on demand so
+-- opening the log on a large history stays cheap.
+function LogView:load_more()
+  if not self.has_more then return end
+  local page, err = self.git:log_commits({ skip = #self.commits, limit = self.page_size + 1 })
+  if not page then
+    vim.notify("glean: git log failed: " .. tostring(err), vim.log.levels.ERROR)
+    return
+  end
+  self.has_more = #page > self.page_size
+  if self.has_more then page[#page] = nil end
+  for _, commit in ipairs(page) do self.commits[#self.commits + 1] = commit end
+  self:render()
 end
 
 function LogView:open_selected(srow, erow)
@@ -4456,6 +4474,7 @@ local function setup_log_keymaps(buf, view)
     view:open_selected(srow, erow)
   end)
   map("n", "q", function()
+  map("n", "]p", function() view:load_more() end)
     local win = api.nvim_get_current_win()
     if api.nvim_win_get_buf(win) == buf then api.nvim_win_close(win, true) end
   end)
@@ -4468,8 +4487,15 @@ function M.open_log(opts)
   local repo_root = opts.repo_root or resolve_repo_root(api.nvim_buf_get_name(0))
   assert(repo_root, "glean: could not find a git repo root")
   local git = git_mod.new({ repo_root = repo_root, run = opts.run })
-  local commits, err = git:log_commits()
+  local previous = log_views[repo_root]
+  local page_size = opts.page_size or 200
+  -- Refetching one extra commit tells us whether older history remains without
+  -- paying for the whole log. A reopen restores however much was loaded before.
+  local want = math.max(page_size, previous and #previous.commits or 0)
+  local commits, err = git:log_commits({ limit = want + 1 })
   if not commits then error("glean: git log failed: " .. tostring(err)) end
+  local has_more = #commits > want
+  if has_more then commits[#commits] = nil end
 
   local buf = log_buffers[repo_root]
   if not (buf and api.nvim_buf_is_valid(buf)) then
@@ -4504,6 +4530,8 @@ function M.open_log(opts)
     state_dir = opts.state_dir,
     open_window = opts.open_window,
     commits = commits,
+    page_size = page_size,
+    has_more = has_more,
     buf = buf,
     row_map = {},
   }, LogView)

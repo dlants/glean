@@ -66,6 +66,16 @@ do
   h.assert_eq("log_commits: root has no parent", #commits[3].parents, 0)
 end
 
+-- log_commits(): limit/skip page the history so the log view can load lazily.
+do
+  local page = git:log_commits({ limit = 2 })
+  h.assert_eq("log_commits: limit count", #page, 2)
+  h.assert_eq("log_commits: limit newest", page[1].sha, repo.shas[3])
+  local rest = git:log_commits({ skip = 2, limit = 2 })
+  h.assert_eq("log_commits: skip count", #rest, 1)
+  h.assert_eq("log_commits: skip sha", rest[1].sha, repo.shas[1])
+end
+
 -- combined_diff(): net of c1+c2 over base -> two files (f.txt, g.txt).
 do
   local files = git:combined_diff(base, target)
