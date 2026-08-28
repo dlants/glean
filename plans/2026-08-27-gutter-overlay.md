@@ -210,17 +210,27 @@ is `{ kind, del_below, del_above, seen }`; `del_above` was added to the alias.
 
 ## session projection
 
+**Status: done** (`Session:file_status` in `lua/glean/init.lua`,
+`lua/glean/file_status_test.lua`).
+
+Deviations:
+- The `_intra_cache` read-through described above does not apply: that cache
+  memoizes `intraline.refine`, not `pair_lines`, so `file_status` calls
+  `gutter.project` (and hence `pair_lines`) directly. If repaint cost shows up,
+  a separate pairing cache is the fix.
+- `file_status` also returns nil for a path the session does not carry.
+
 - Goal: `Session:file_status(path)` wires `combined_owner` + `line_identity` +
   `id_seen` (with correct flattened ordinals) into `gutter.project`, and returns
   nil for non-worktree sessions or unknown paths.
-- Tests (`init_test.lua`-style, fake git runner as in the existing suites):
-  - Build a worktree session over a fixture repo; `file_status` reports the
-    changed lnums as unseen; after marking a hunk seen, the same lnums report
-    `seen=true`.
-  - A commit-targeted session returns nil.
-  - Ordinals: a worktree-owned (uncommitted) line marked seen via a block record
-    is reported seen by `file_status` — this is the part that is easy to get
-    wrong, since worktree identities resolve positionally.
+- Tests (`file_status_test.lua`, fake git runner as in the existing suites):
+  - [x] A work-tree session over a fixture repo reports the changed lnums as
+    unseen (change / add rows, context untouched); after marking the file seen
+    the same lnums report `seen=true`.
+  - [x] A commit-targeted session returns nil; so does an unknown path.
+  - [x] Ordinals: the uncommitted line ("five") marked via a block record is
+    reported seen — the part that is easy to get wrong, since worktree
+    identities resolve positionally.
 
 ## rendering and lifecycle
 

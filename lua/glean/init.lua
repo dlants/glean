@@ -36,6 +36,7 @@ local lineage = require("glean.lineage")
 local intraline = require("glean.intraline")
 local comments_mod = require("glean.comments")
 local overlay = require("glean.overlay")
+local gutter = require("glean.gutter")
 local M = {}
 local api = vim.api
 
@@ -940,6 +941,23 @@ function Session:file_for_path(path)
   return nil
 end
 
+-- The gutter projection for one path in the combined scope: post-image
+-- `lnum -> GleanGutterMark`. nil when the session is not worktree-targeted (the
+-- post-image is then a snapshot the buffer may have moved past) or when the
+-- session does not carry the path. Seen-ness is the model's own — the same
+-- `line_identity` + `id_seen` the review buffer and the rollups fold over.
+function Session:file_status(path)
+  if not self.worktree then return nil end
+  self.combined_files = self.combined_files or self:compute_combined()
+  local file = file_with_path(self.combined_files, path)
+  if not file then return nil end
+  local owner = self:combined_owner(path)
+  local bases = hunk_base_ords(file)
+  return gutter.project(file.hunks, function(dl, hunk, i)
+    local id = self:line_identity(dl, path, owner, (bases[hunk] or 0) + i)
+    return id ~= nil and self:id_seen(id)
+  end)
+end
 -- Worktree seen records resolve against exact diff text, never the filtered
 -- projection. Their stored anchors therefore survive whitespace-mode toggles.
 function Session:wt_flat_texts(path)
