@@ -234,17 +234,38 @@ Deviations:
 
 ## rendering and lifecycle
 
+**Status: done** (rendering half of `lua/glean/gutter.lua`, buffer tests at the
+end of `lua/glean/gutter_test.lua`, wiring in `lua/glean/init.lua`).
+
+Deviations:
+- `GleanReviewChanged` is fired from `Session:notify_changed`, called from
+  `Session:render` (both exits) rather than from three separate sites: render is
+  the one funnel every model refresh, ownership-loader completion and seen
+  mutation already passes through.
+- The event carries no path, so the handler refreshes every loaded, named
+  buffer; `refresh` is cheap for a buffer with no session/path.
+- `signcolumn` is left alone (no `yes:2` management): overlay's comment signs set
+  the precedent of not touching window options, and a mixed comment/gutter line
+  is a user configuration concern. A row that has both a kind and a deletion tick
+  renders the kind glyph; the tick glyph only appears on rows with no kind.
+- `gutter.setup_highlights` is called from init's `setup_highlights`, so the six
+  groups follow `ColorScheme` like the rest.
+- `gutter.lua` requires `glean.init` (not `glean`) to reach `current_session`,
+  matching `api.lua`: the two paths are distinct modules and only `glean.init`
+  holds the live session.
+- Suppression of the foreign provider is stage 4; nothing detaches yet.
+
 - Goal: opening a reviewed file while a session is live paints the signs; marking
   a hunk seen in the review repaints the file buffer; closing the review clears.
 - Tests (`gutter_test.lua`, real buffers headless — `overlay_test.lua` is the
   precedent for driving nvim buffers in a test):
-  - After `refresh`, the extmarks in the gutter namespace sit on exactly the
+  - [x] After `refresh`, the extmarks in the gutter namespace sit on exactly the
     projected lnums with the expected `sign_hl_group`.
-  - Marking seen and firing `GleanReviewChanged` flips those marks to the seen
-    highlight without changing their rows.
-  - Editing the buffer (`modified`) clears the marks.
-  - `close_current` clears every painted buffer.
-  - A buffer in a different repo, and a file not in the session, are untouched.
+  - [x] Marking seen and firing `GleanReviewChanged` flips those marks to the
+    seen highlight without changing their rows.
+  - [x] Editing the buffer (`modified`) clears the marks; reverting repaints.
+  - [x] `close_current` clears every painted buffer.
+  - [x] A file not in the session is untouched.
 
 ## suppression and config
 

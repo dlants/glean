@@ -100,6 +100,8 @@ M.config = {
   -- Display indentation applied to the active hunk body (the header stays put).
   hunk_indent = 2,
   hunk_indent_delay_ms = 50,
+  -- The review's state projected into the gutter of ordinary file buffers.
+  gutter = { enabled = true },
 }
 
 -- The one live glean review. There is at most one review session per nvim
@@ -1703,6 +1705,17 @@ local function dirty_sections(prev, cur)
   return dirty
 end
 
+-- Tell the other surfaces (the file-buffer gutter) that this review's model or
+-- seen set may have moved. Fired from `render`, which is the one funnel every
+-- model refresh, ownership-loader completion and seen mutation already passes
+-- through.
+function Session:notify_changed()
+  api.nvim_exec_autocmds("User", {
+    pattern = "GleanReviewChanged",
+    data = { id = self.id, dir = self.state_dir },
+  })
+end
+
 function Session:render()
   if not (api.nvim_buf_is_valid(self.buf) and api.nvim_buf_is_loaded(self.buf)) then return end
   local lines, row_map, highlights, intra_work, sections = self:build()
@@ -1712,6 +1725,7 @@ function Session:render()
   self._dirty = dirty
   if next(dirty) == nil then
     self._sections = sigs
+    self:notify_changed()
     return
   end
   self._render_sig = self:render_sig(lines, row_map)
@@ -1863,6 +1877,7 @@ function Session:render()
   end
   self:highlight_cursor_hunk()
   self:update_sticky()
+  self:notify_changed()
 end
 
 -- Phase 2 of rendering: intra-line (word-level) emphasis, computed off the
@@ -4674,6 +4689,7 @@ function M.close_current(opts)
     session:stop_live()
     session:close_sticky()
   end
+  gutter.clear_all()
   if not (opts and opts.keep_buf) and slot.buf and api.nvim_buf_is_valid(slot.buf) then
     pcall(api.nvim_buf_delete, slot.buf, { force = true })
   end
@@ -5077,6 +5093,7 @@ local function setup_highlights()
   -- The "--- unseen ---" divider is meant to pop, not blend in.
   api.nvim_set_hl(0, "GleanDivider", { link = "Todo", default = true })
   api.nvim_set_hl(0, "GleanCurrentHunk", { link = "Identifier", default = true })
+  gutter.setup_highlights()
 end
 
 local function open_pr_notified(pr)
@@ -5097,6 +5114,7 @@ function M.setup(opts)
   M.config = vim.tbl_extend("force", M.config, opts or {})
   setup_highlights()
   overlay.setup(M.config.overlay)
+  gutter.setup(M.config.gutter)
   api.nvim_create_autocmd("ColorScheme", {
     group = api.nvim_create_augroup("GleanHighlights", { clear = true }),
     callback = setup_highlights,

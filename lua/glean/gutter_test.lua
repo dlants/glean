@@ -117,4 +117,80 @@ do
   h.assert_eq("two hunks", dump(marks), "2:add 21:add")
 end
 
+-- ── Rendering and lifecycle ─────────────────────────────────────────────────
+local api = vim.api
+local glean = require("glean.init")
+local testutil = require("glean.testutil")
+local repo = testutil.make_repo({
+  { msg = "base", files = { ["f.txt"] = "one\ntwo\nthree\n" } },
+  { msg = "c1", files = { ["f.txt"] = "one\ntwo\nthree\nfour\n" } },
+})
+do
+  local f = assert(io.open(repo.root .. "/f.txt", "w"))
+  f:write("one\ntwo more\nthree\nfour\nfive\n")
+  f:close()
+end
+local function inject_run(args)
+  local cmd = { "git" }
+  for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+  local res = vim.system(cmd, { cwd = repo.root, env = repo.env, text = true }):wait()
+  return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+end
+gutter.setup({})
+local session = glean.open({
+  base = repo.shas[1],
+  target = glean.WORKTREE,
+  repo_root = repo.root,
+  run = inject_run,
+  open_window = false,
+  state_dir = vim.fn.tempname(),
+  scope = "combined",
+})
+vim.cmd("edit " .. vim.fn.fnameescape(repo.root .. "/f.txt"))
+local fbuf = api.nvim_get_current_buf()
+-- Extmarks in the gutter namespace as "lnum:sign_hl_group", sorted.
+local function signs(bufnr)
+  local ns = api.nvim_create_namespace("glean_gutter")
+  local out = {}
+  for _, m in ipairs(api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })) do
+    out[#out + 1] = ("%d:%s"):format(m[2] + 1, m[4].sign_hl_group)
+  end
+  table.sort(out)
+  return table.concat(out, " ")
+end
+gutter.refresh(fbuf)
+h.assert_eq("painted rows", signs(fbuf),
+  "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+-- Marking the file seen and firing the event repaints in place, in the seen
+-- highlight.
+local header
+for row = 0, api.nvim_buf_line_count(session.buf) - 1 do
+  local t = session.row_map[row]
+  if t and t.cfile and not t.hunk then
+    local line = api.nvim_buf_get_lines(session.buf, row, row + 1, false)[1]
+    if line and line:find("f.txt", 1, true) then header = row break end
+  end
+end
+h.assert_true("found file header row", header ~= nil)
+session:toggle_seen(header)
+api.nvim_exec_autocmds("User", { pattern = "GleanReviewChanged", data = {} })
+h.assert_eq("seen rows", signs(fbuf),
+  "2:GleanGutterChangeSeen 4:GleanGutterAddSeen 5:GleanGutterAddSeen")
+-- An edited buffer has diverged from the model, so it carries no marks.
+api.nvim_buf_set_lines(fbuf, 0, 1, false, { "ONE" })
+gutter.refresh(fbuf)
+h.assert_eq("modified buffer cleared", signs(fbuf), "")
+vim.cmd("silent edit!")
+gutter.refresh(fbuf)
+h.assert_true("repainted after revert", signs(fbuf) ~= "")
+-- A buffer outside the session's file set is untouched.
+local other = api.nvim_create_buf(true, false)
+api.nvim_buf_set_name(other, repo.root .. "/absent.txt")
+api.nvim_buf_set_lines(other, 0, -1, false, { "x" })
+gutter.refresh(other)
+h.assert_eq("unknown file untouched", signs(other), "")
+-- Closing the review clears every painted buffer.
+glean.close_current()
+h.assert_eq("cleared on close", signs(fbuf), "")
+
 h.finish("gutter")

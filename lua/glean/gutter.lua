@@ -1,9 +1,14 @@
--- glean.gutter: the gutter projection of a reviewed file.
+-- glean.gutter: the review's state projected into the gutter of the ordinary
+-- file buffer.
 --
--- Stage 1 is the pure part only: turning a file's hunks plus a seen predicate
--- into a post-image `lnum -> mark` map. No nvim API here, so it unit-tests
--- headless like glean.diff / glean.intraline.
+-- The projection itself (`M.project`) is pure — a file's hunks plus a seen
+-- predicate become a post-image `lnum -> mark` map — so it unit-tests headless
+-- like glean.diff / glean.intraline. Rendering is the same discipline
+-- glean.overlay follows for comments: never track positions, recompute the
+-- whole map from the live model on every event that can move it and re-stamp.
+local api = vim.api
 local intraline = require("glean.intraline")
+local git = require("glean.git")
 
 local M = {}
 
@@ -104,6 +109,116 @@ function M.project(hunks, is_seen)
     end
   end
   return marks
+end
+
+-- ── Rendering ───────────────────────────────────────────────────────────────
+
+local ns = api.nvim_create_namespace("glean_gutter")
+-- Buffers carrying gutter marks, so a teardown clears exactly what it painted.
+local painted = {}
+
+-- Shape carries the kind, colour carries the seen status: a marked line keeps
+-- its glyph in place but greys out, so unreviewed work is what draws the eye.
+local GLYPH = { add = "▎", change = "▎", del = "▁" }
+local GROUP = { add = "GleanGutterAdd", change = "GleanGutterChange", del = "GleanGutterDelete" }
+
+function M.setup_highlights()
+  local links = {
+    GleanGutterAdd = "DiffAdd",
+    GleanGutterChange = "DiffChange",
+    GleanGutterDelete = "DiffDelete",
+    GleanGutterAddSeen = "Comment",
+    GleanGutterChangeSeen = "Comment",
+    GleanGutterDeleteSeen = "Comment",
+  }
+  for name, link in pairs(links) do
+    api.nvim_set_hl(0, name, { link = link, default = true })
+  end
+end
+
+local function stamp(bufnr, lnum, mark)
+  local kind = mark.kind or "del"
+  api.nvim_buf_set_extmark(bufnr, ns, lnum - 1, 0, {
+    sign_text = GLYPH[kind],
+    sign_hl_group = GROUP[kind] .. (mark.seen and "Seen" or ""),
+  })
+end
+
+-- The live work-tree session and this buffer's repo-relative path, or nil when
+-- there is nothing the gutter can prove: no session, a commit-targeted one
+-- (whose post-image is a snapshot the buffer may have moved past), a buffer
+-- outside the session's repo, or a buffer edited since the last model refresh.
+local function buf_target(bufnr)
+  if M.config and M.config.enabled == false then return nil end
+  local session = require("glean.init").current_session()
+  if not (session and session.worktree) then return nil end
+  if vim.bo[bufnr].modified then return nil end
+  local name = api.nvim_buf_get_name(bufnr)
+  if name == "" then return nil end
+  local path = git.relpath(session.git.repo_root, name)
+  if not path then return nil end
+  return session, path
+end
+
+local function clear(bufnr)
+  if painted[bufnr] then painted[bufnr] = nil end
+  if api.nvim_buf_is_valid(bufnr) then api.nvim_buf_clear_namespace(bufnr, ns, 0, -1) end
+end
+
+--- Recompute and re-stamp `bufnr`. No-op (beyond clearing) when there is no
+--- live work-tree session, the buffer is not one of its files, or the buffer
+--- has diverged from the model.
+function M.refresh(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  if not api.nvim_buf_is_loaded(bufnr) then return end
+  local session, path = buf_target(bufnr)
+  local marks = session and session:file_status(path) or nil
+  clear(bufnr)
+  if not marks or next(marks) == nil then return end
+  painted[bufnr] = true
+  local total = api.nvim_buf_line_count(bufnr)
+  for lnum, mark in pairs(marks) do
+    if lnum >= 1 and lnum <= total then stamp(bufnr, lnum, mark) end
+  end
+end
+
+--- Clear the marks from every buffer we painted.
+function M.clear_all()
+  for bufnr in pairs(painted) do clear(bufnr) end
+  painted = {}
+end
+
+-- Every loaded, named buffer that could belong to a review: the painted ones
+-- (which may need clearing) plus the rest (which may need a first paint).
+local function refresh_all()
+  for _, bufnr in ipairs(api.nvim_list_bufs()) do
+    if api.nvim_buf_is_loaded(bufnr) and api.nvim_buf_get_name(bufnr) ~= "" then
+      M.refresh(bufnr)
+    end
+  end
+end
+
+function M.setup(cfg)
+  M.config = vim.tbl_extend("force", { enabled = true }, cfg or {})
+  M.setup_highlights()
+  local group = api.nvim_create_augroup("GleanGutter", { clear = true })
+  api.nvim_create_autocmd({ "BufReadPost", "BufWinEnter", "BufWritePost", "FileChangedShellPost" }, {
+    group = group,
+    callback = function(args) M.refresh(args.buf) end,
+  })
+  -- An edited buffer has diverged from the model until the next poll, and a
+  -- marker on the wrong row is worse than no marker.
+  api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = group,
+    callback = function(args)
+      if painted[args.buf] then clear(args.buf) end
+    end,
+  })
+  api.nvim_create_autocmd("User", {
+    group = group,
+    pattern = "GleanReviewChanged",
+    callback = function() refresh_all() end,
+  })
 end
 
 return M
