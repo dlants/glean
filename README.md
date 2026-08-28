@@ -164,6 +164,31 @@ In a buffer that carries comments, `u` and `<C-r>` undo and redo glean's comment
 actions first and fall through to the buffer's own undo once there are none —
 the same rule the review buffer follows. A comment mutation changes no text, so
 it never enters the buffer's undo tree; a novel edit wipes the comment stack.
+### Review status in ordinary files
+
+While a work-tree review is open, every file it touches carries the review's own
+sign column: `▎` on added and changed lines and `▁` where lines were removed,
+coloured by seen status — unseen lines link to `DiffAdd`/`DiffChange`/
+`DiffDelete`, marked lines grey out to `Comment`, so what still needs review is
+what draws the eye. The glyphs come straight from the model the review buffer
+renders, so marking a hunk seen in the review repaints the file immediately.
+
+The projection is deliberately conservative: nothing is painted unless the review
+targets the work tree (so a post-image line *is* a buffer line) and the buffer is
+unmodified since the last model refresh. Editing clears the marks until the next
+poll. Display-only `min_seen_run` demotion is not applied here — the gutter
+answers "is this line marked" from the persisted model.
+
+Because it owns the sign column, glean detaches the other sign provider from
+those buffers (gitsigns, by name, under the default `suppress = "auto"`) and
+reattaches it when the buffer leaves the review, when the review closes and on
+exit. Set `suppress = false` to leave the other plugin alone, or pass
+`{ detach = fn(bufnr), attach = fn(bufnr) }` to drive a different one.
+
+Highlight groups: `GleanGutterAdd`, `GleanGutterChange`, `GleanGutterDelete` and
+the `GleanGutterAddSeen` / `GleanGutterChangeSeen` / `GleanGutterDeleteSeen`
+variants — all plain, overridable groups.
+
 ### Agents
 
 `require("glean.api")` is the programmatic surface. Comments live in the
@@ -220,6 +245,10 @@ require("glean.init").setup({
   min_seen_run = 5,        -- combined-scope: demote seen runs shorter than this to unseen
   hunk_indent = 2,         -- display indent for the active hunk body
   hunk_indent_delay_ms = 50,  -- wait before applying the active-hunk indent
+  gutter = {               -- review status in the sign column of ordinary files
+    enabled = true,
+    suppress = "auto",     -- "auto" | false | { detach = fn(bufnr), attach = fn(bufnr) }
+  },
 })
 ```
 

@@ -59,6 +59,10 @@ Line identities come in three kinds:
   `skills/glean-review/skill.md`, which dotfiles symlinks into `~/.claude/skills`.- `state.lua` — the persisted ReviewStore. Keyed by commit sha, sharded one JSON
   file per commit on disk (`<dir>/<sha>.json`), merged in memory. Holds seen
   ranges, del ranges, and content-addressed comments (in the `WORKTREE` shard).
+- `gutter.lua` — projects the live work-tree review into the sign column of
+  ordinary file buffers (add/change/delete glyphs coloured by seen status), and
+  detaches/reattaches the foreign sign provider (gitsigns) for those buffers.
+  `M.project` is pure and headless-tested.
 - `provenance.lua` — pure `git blame -p` porcelain parser for per-line ownership
   in the combined view; git invocation injected by the caller.
 - `intraline.lua` — pure word-level intra-line diff highlighting helpers

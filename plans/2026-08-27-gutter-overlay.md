@@ -292,6 +292,10 @@ Deviations:
 
 ## docs
 
+**Status: done** (README "Review status in ordinary files" section + `gutter`
+entry in the `setup` config block; `gutter.lua` added to `context.md`'s layout
+list). Deviation: no keymap table entry — the gutter claims no keys.
+
 - Goal: README section (keymaps/config table entry, highlight groups) and a
   `gutter.lua` line in `context.md`'s layout list.
-- Tests: `nvim -l lua/glean/run_tests.lua` green.
+- [x] Tests: `nvim -l lua/glean/run_tests.lua` green.
