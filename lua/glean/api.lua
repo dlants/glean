@@ -397,6 +397,15 @@ function M.mark(session, sel, seen)
   return { hunks = #sels, lines = #changed }
 end
 
+-- The unified diff behind a range of the review buffer's own rows, grouped
+-- under the file (and commit, in commit scope) and hunk header each run came
+-- from. Row-addressed on purpose: this is the one call whose input is what a
+-- human selected in the buffer, for quoting a selection out to an agent.
+-- Returns "" when the range holds no diff lines.
+function M.excerpt(session, srow, erow)
+  return M.session(session):excerpt(srow, erow)
+end
+
 -- Author a comment with no review open: `{ repo, path, lnum, end_lnum, text }`.
 -- `path` is repo-relative and `lnum`/`end_lnum` are working-tree line numbers,
 -- so an agent comments on what it just read off disk. The captured lines are

@@ -342,6 +342,24 @@ do
   h.assert_eq("unmark: back to the starting render",
     table.concat(vapi.nvim_buf_get_lines(hs.buf, 0, -1, false), "\n"), before_body)
 
+  -- excerpt: the diff behind a row range, grouped by file and hunk header.
+  local last_row = #vapi.nvim_buf_get_lines(hs.buf, 0, -1, false)
+  local whole = gapi.excerpt(hs.id, 1, last_row)
+  h.assert_true("excerpt: names each file",
+    whole:find("^b.txt\n") ~= nil and whole:find("\nlua/a.lua\n", 1, true) ~= nil, whole)
+  h.assert_true("excerpt: carries the hunk header", whole:find("@@", 1, true) ~= nil, whole)
+  h.assert_true("excerpt: prefixes adds", whole:find("\n+", 1, true) ~= nil, whole)
+  -- The first diff row alone is one group; a header-only range is empty.
+  local first_diff
+  for row, t in pairs(hs.row_map) do
+    if t and t.hunk and t.li and (not first_diff or row < first_diff) then first_diff = row end
+  end
+  local one = gapi.excerpt(hs.id, first_diff, first_diff)
+  h.assert_eq("excerpt: one row is path + header + line", #vim.split(one, "\n"), 3)
+  h.assert_eq("excerpt: reversed range is the same",
+    gapi.excerpt(hs.id, last_row, 1), whole)
+  h.assert_eq("excerpt: no diff rows, no text", gapi.excerpt(hs.id, 1, 1), "")
+
   -- Errors name the offending id / index / mode.
   local ok, err = pcall(gapi.mark, hs.id, "b:000099:000001")
   h.assert_true("mark: unknown id errors", not ok)

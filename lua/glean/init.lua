@@ -2925,6 +2925,49 @@ function Session:row_sticky(target)
   return { path = cf.path, text = dl.text }
 end
 
+local EXCERPT_PREFIX = { add = "+", del = "-", context = " " }
+
+--- The raw unified diff behind a range of buffer rows, grouped under the file
+--- (and, in commit scope, the commit) and hunk header each run came from. Rows
+--- carrying no diff line -- headers, markers, blanks -- contribute nothing.
+--- Returns "" when the range holds no diff lines at all.
+function Session:excerpt(srow, erow)
+  if srow > erow then srow, erow = erow, srow end
+  local groups, cur = {}, nil
+  for row = srow, erow do
+    local t = self.row_map[row]
+    local path, hunk, sha
+    if t and t.hunk and t.li then
+      if self.scope == "commits" then
+        local commit = t.commit and self.commits[t.commit]
+        local file = commit and t.file and commit.files[t.file]
+        if file then path, hunk, sha = file.path, file.hunks[t.hunk], commit.sha end
+      else
+        local cf = t.cfile and self.combined_files and self.combined_files[t.cfile]
+        if cf then path, hunk = cf.path, cf.hunks[t.hunk] end
+      end
+    end
+    local dl = hunk and hunk.lines[t.li]
+    if dl then
+      if not cur or cur.hunk ~= hunk then
+        cur = { path = path, sha = sha, hunk = hunk, lines = {} }
+        groups[#groups + 1] = cur
+      end
+      cur.lines[#cur.lines + 1] = (EXCERPT_PREFIX[dl.kind] or " ") .. (dl.text or "")
+    end
+  end
+  local out = {}
+  for _, g in ipairs(groups) do
+    if #out > 0 then out[#out + 1] = "" end
+    out[#out + 1] = g.sha and (g.path .. " (" .. g.sha:sub(1, 8) .. ")") or g.path
+    out[#out + 1] = g.hunk.header or "@@"
+    for _, l in ipairs(g.lines) do
+      out[#out + 1] = l
+    end
+  end
+  return table.concat(out, "\n")
+end
+
 function Session:toggle_seen(row)
   if row == nil then row = self:cursor_row() end
   local target = self.row_map[row]
