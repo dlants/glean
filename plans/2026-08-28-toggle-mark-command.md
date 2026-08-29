@@ -132,6 +132,22 @@ stale glyph and a refused mark agree) — and the `:Glean` dispatch routes
 completes, hunk expansion, inert context row / unknown path). Full suite green.
 No README/keymap changes in this stage.
 
+Status: done (stage 5). The pending-blame guard shipped with stage 4 and is now
+covered: `Session:toggle_marks` calls `load_lineage()` and refuses with
+"ownership still loading" when `owner_status(path) ~= "loaded"`. For staleness,
+`Session:wt_matches(path, lines)` (init.lua, just before `wt_head_lines`)
+compares a buffer's lines against `wt_file_lines(path)` — the work-tree content
+the live diff was actually built from — and `M.toggle_mark` refuses when they
+differ, kicking off a `session:poll()` so the next invocation acts on a fresh
+model ("refresh, then try again" rather than a silent refresh-and-mark, which
+would mark rows the reviewer never saw). This subsumes the earlier `modified`
+check (kept, as the cheaper and more specific message) and also catches a file
+changed on disk since the last poll. Tests live in `toggle_mark_test.lua`
+alongside the rest of the feature rather than `init_test.lua` (deviation from
+the plan's wording; same suite runner, better colocation): pending-ownership
+inertness plus `wt_matches` for matching / edited / truncated / unknown-path
+content. Suite green.
+
 Why deferred coordinates rather than pre-resolved identities:
 
 - `line_identity` needs `owner(dl)`, i.e. loaded blame provenance. Resolving during projection would make the gutter depend on it; resolving at mark time keeps `M.project` pure and headless-testable.

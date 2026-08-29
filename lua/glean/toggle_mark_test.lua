@@ -87,4 +87,29 @@ do
   h.assert_true("unknown path reason", err ~= nil)
 end
 
+-- A file whose blame provenance has not landed yet is inert: every line would
+-- report unowned, so acting would silently mark nothing.
+do
+  local s = open()
+  s:load_lineage()
+  s.load_lineage = function(self) return self._owner end
+  s._owner["f.txt"].status = "pending"
+  local ok, err = s:toggle_marks("f.txt", 4, 5)
+  h.assert_eq("pending ownership is inert", ok, false)
+  h.assert_eq("pending ownership reason", err, "ownership still loading")
+end
+
+-- The stale-buffer guard: the work tree the diff was built from, versus what a
+-- (possibly modified) buffer holds.
+do
+  local s = open()
+  local wt = vim.fn.readfile(repo.root .. "/f.txt")
+  h.assert_eq("work-tree content matches", s:wt_matches("f.txt", wt), true)
+  local edited = vim.deepcopy(wt)
+  edited[2] = edited[2] .. " edited"
+  h.assert_eq("edited buffer is stale", s:wt_matches("f.txt", edited), false)
+  h.assert_eq("shorter buffer is stale", s:wt_matches("f.txt", { wt[1] }), false)
+  h.assert_eq("unknown path is stale", s:wt_matches("nope.txt", {}), false)
+end
+
 h.finish()

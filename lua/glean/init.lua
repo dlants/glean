@@ -1004,6 +1004,18 @@ function Session:toggle_marks(path, srow, erow, expand_hunk)
   self:render()
   return true
 end
+--- Whether `lines` is the work-tree content the live diff was built from. The
+--- gutter's rows are `diff(H, W)` rows, so acting on a buffer whose content has
+--- moved past W would name lines the reviewer is not looking at.
+function Session:wt_matches(path, lines)
+  local wt = self:wt_file_lines(path)
+  if not wt then return false end
+  if #wt ~= #lines then return false end
+  for i = 1, #wt do
+    if wt[i] ~= lines[i] then return false end
+  end
+  return true
+end
 -- The tip-commit (H) lines of `path` — the immutable left endpoint the reviewed
 -- baseline is anchored on. An empty list when the path does not exist there (an
 -- untracked or newly added file), which is exactly its content at the tip.
@@ -4740,6 +4752,10 @@ function M.toggle_mark(line1, line2)
   local name = api.nvim_buf_get_name(bufnr)
   local path = name ~= "" and git_mod.relpath(session.git.repo_root, name) or nil
   if not path then return warn("buffer is not a file in the review's repo") end
+  if not session:wt_matches(path, api.nvim_buf_get_lines(bufnr, 0, -1, false)) then
+    session:poll()
+    return warn("review is out of date for this file; refreshing, try again")
+  end
   local expand = line1 == nil
   if expand then
     line1 = api.nvim_win_get_cursor(0)[1]
