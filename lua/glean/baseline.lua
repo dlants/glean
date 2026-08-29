@@ -82,6 +82,68 @@ function M.map_back(ops, b_lnum)
   return nil
 end
 
+--- Seen-ness of the *added* lines of the displayed diff D = diff(head,
+--- worktree), keyed by work-tree line number: an add at N is seen iff it is
+--- not an add of diff(reviewed, worktree). Deleted lines are not decided here
+--- -- they are stored explicitly as head line numbers by the caller.
+--- @return table<integer, boolean>
+function M.seen_adds(reviewed, worktree)
+  local add = {}
+  for n = 1, #worktree do
+    add[n] = true
+  end
+  for _, op in ipairs(M.align(reviewed, worktree)) do
+    if op.kind == "add" then add[op.b_lnum] = false end
+  end
+  return add
+end
+
+--- R' after marking work-tree lines `sel_add` seen: grow R toward W over
+--- exactly those lines. R is never shortened, so diff(head, R) stays add-only.
+--- @param sel_add integer[] work-tree line numbers
+--- @return string[]
+function M.mark_adds(reviewed, worktree, sel_add)
+  local sel = {}
+  for _, n in ipairs(sel_add or {}) do
+    sel[n] = true
+  end
+  local out = {}
+  for _, op in ipairs(M.align(reviewed, worktree)) do
+    if op.kind == "add" then
+      if sel[op.b_lnum] then out[#out + 1] = op.text end
+    else -- context, or a line of R absent from W: R keeps it either way
+      out[#out + 1] = op.text
+    end
+  end
+  return out
+end
+
+--- R' after unmarking work-tree lines `sel_add`: drop them from R unless they
+--- are head lines (R is never shrunk below H).
+--- @param sel_add integer[] work-tree line numbers
+--- @return string[]
+function M.unmark_adds(head, reviewed, worktree, sel_add)
+  local u = M.align(reviewed, worktree)
+  local drop_r = {}
+  for _, n in ipairs(sel_add or {}) do
+    local r = M.map_back(u, n)
+    if r then drop_r[r] = true end
+  end
+  local out = {}
+  for _, op in ipairs(M.align(head, reviewed)) do
+    if op.kind == "add" then
+      if not drop_r[op.b_lnum] then out[#out + 1] = op.text end
+    else -- context, or a head line missing from R: keep the head line
+      out[#out + 1] = op.text
+    end
+  end
+  return out
+end
+
+-- DEPRECATED (removed in stage 2 of plans/2026-08-29-explicit-del-seen.md):
+-- the del-aware surface, kept only until the session stores deletions as
+-- explicit head line ranges. New code uses seen_adds/mark_adds/unmark_adds.
+
 --- Seen-ness for one file, as dense predicates over line numbers of the
 --- displayed diff D = diff(head, worktree):
 ---   `add[N]` for a displayed add at worktree line N,
