@@ -77,6 +77,41 @@ do
   local marks = gutter.project({ hunk(1, { " a", "-alpha beta gamma", "+zzz(999)", " d" }) }, unseen())
   h.assert_eq("dissimilar", dump(marks), "2:addv")
 end
+-- Sources: the coordinates of every diff line folded into a row, so the gutter
+-- can be inverted back into diff coordinates.
+local function dump_sources(marks, lnum)
+  local parts = {}
+  for _, s in ipairs(marks[lnum].sources) do
+    parts[#parts + 1] = ("%d.%d"):format(s.hunk, s.li)
+  end
+  return table.concat(parts, " ")
+end
+do
+  local marks = gutter.project({ hunk(1, { " a", "+b", "+c", " d" }) }, unseen())
+  h.assert_eq("add sources", dump_sources(marks, 2), "1.2")
+  h.assert_eq("add sources 2", dump_sources(marks, 3), "1.3")
+end
+do
+  local marks = gutter.project({ hunk(1, { " a", "-local x = 1", "+local x = 2", " d" }) }, unseen())
+  h.assert_eq("change sources pair both lines", dump_sources(marks, 2), "1.3 1.2")
+end
+do
+  local marks = gutter.project({
+    hunk(1, { " a", "-local x = 1", "-alpha beta gamma", "-delta epsilon zeta", "+local x = 2", " d" }),
+  }, unseen())
+  h.assert_eq("unpaired dels attach to the change row", dump_sources(marks, 2), "1.5 1.2 1.3 1.4")
+end
+do
+  local marks = gutter.project({ hunk(1, { "-gone", " a" }) }, unseen())
+  h.assert_eq("del_above sources", dump_sources(marks, 1), "1.1")
+end
+do
+  local marks = gutter.project({
+    hunk(1, { " a", "+b" }),
+    hunk(10, { " x", "+y" }),
+  }, unseen())
+  h.assert_eq("hunk index is the file's hunk list index", dump_sources(marks, 11), "2.2")
+end
 
 -- A trailing del run with no adds ticks the preceding context row.
 do

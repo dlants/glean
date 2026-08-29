@@ -12,18 +12,25 @@ local git = require("glean.git")
 
 local M = {}
 
---- @alias GleanGutterMark { kind: string?, del_below: boolean?, del_above: boolean?, seen: boolean }
+--- A row's `sources` are the coordinates, within the file's hunk list, of every
+--- diff line folded into it: `hunk` indexes `hunks`, `li` indexes
+--- `hunks[hunk].lines`. Both are indices, never line numbers.
+--- @alias GleanGutterSource { hunk: integer, li: integer }
+--- @alias GleanGutterMark { kind: string?, del_below: boolean?, del_above: boolean?, seen: boolean, sources: GleanGutterSource[] }
 
 -- Fold one more identity's seen-ness into a row's mark: a row that stands for
 -- several diff lines (a change row, a row carrying deletions) reads as seen only
 -- when every one of them is.
-local function fold(marks, lnum, seen, fields)
+local function fold(marks, lnum, entries, fields)
   local m = marks[lnum]
   if not m then
-    m = { seen = true }
+    m = { seen = true, sources = {} }
     marks[lnum] = m
   end
-  m.seen = m.seen and seen
+  for _, e in ipairs(entries) do
+    m.seen = m.seen and e.seen
+    m.sources[#m.sources + 1] = e.src
+  end
   for k, v in pairs(fields) do
     m[k] = v
   end
@@ -36,12 +43,12 @@ end
 -- ...within a block that also has added lines the deletion belongs to the edited
 -- region, so it ticks the block's last post-image row rather than the context
 -- line above the block.
-local function mark_deletion(marks, dl, seen)
-  local above = (dl.new_lnum or 1) - 1
+local function mark_deletion(marks, entry)
+  local above = (entry.dl.new_lnum or 1) - 1
   if above >= 1 then
-    fold(marks, above, seen, { del_below = true })
+    fold(marks, above, { entry }, { del_below = true })
   else
-    fold(marks, 1, seen, { del_above = true })
+    fold(marks, 1, { entry }, { del_above = true })
   end
 end
 
@@ -61,19 +68,19 @@ local function project_block(marks, dels, adds)
   for _, p in ipairs(paired.pairs) do
     local d, a = dels[p[1]], adds[p[2]]
     del_used[p[1]] = true
-    fold(marks, a.dl.new_lnum, a.seen and d.seen, { kind = "change" })
+    fold(marks, a.dl.new_lnum, { a, d }, { kind = "change" })
   end
   for _, ai in ipairs(paired.add_unpaired) do
     local a = adds[ai]
-    fold(marks, a.dl.new_lnum, a.seen, { kind = "add" })
+    fold(marks, a.dl.new_lnum, { a }, { kind = "add" })
   end
   local anchor = #adds > 0 and adds[#adds].dl.new_lnum or nil
   for di = 1, #dels do
     if not del_used[di] then
       if anchor then
-        fold(marks, anchor, dels[di].seen, { del_below = true })
+        fold(marks, anchor, { dels[di] }, { del_below = true })
       else
-        mark_deletion(marks, dels[di].dl, dels[di].seen)
+        mark_deletion(marks, dels[di])
       end
     end
   end
@@ -85,7 +92,7 @@ end
 --- @return table<integer, GleanGutterMark>
 function M.project(hunks, is_seen)
   local marks = {}
-  for _, hunk in ipairs(hunks or {}) do
+  for hi, hunk in ipairs(hunks or {}) do
     local lines = hunk.lines or {}
     local i = 1
     while i <= #lines do
@@ -96,7 +103,8 @@ function M.project(hunks, is_seen)
         local dels, adds = {}, {}
         while i <= #lines and lines[i].kind ~= "context" do
           local cur = lines[i]
-          local entry = { dl = cur, seen = is_seen(cur, hunk, i) and true or false }
+          local entry =
+            { dl = cur, seen = is_seen(cur, hunk, i) and true or false, src = { hunk = hi, li = i } }
           if cur.kind == "del" then
             dels[#dels + 1] = entry
           else

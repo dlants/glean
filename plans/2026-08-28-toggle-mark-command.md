@@ -98,6 +98,15 @@ part of this stage. Suite green.
 
 `M.project` retains, per post-image row, the coordinates of the diff lines it folded in: `sources = { { hunk = i, line = j } }`. The forward pass already holds both indices, so this is free, and `gutter.project`'s signature is unchanged. Nothing else is retained — not `dl`, not a resolved identity.
 
+Status: done (stage 3). `fold` now takes the folded *entries* rather than a
+bare `seen` flag, and both accumulates `m.seen` and appends each entry's
+`src = { hunk = hi, li = i }` to `m.sources`; the `hunk` index is into the
+file's hunk list. Change rows carry both the add and its paired del, an anchored
+or `del_above`/`del_below` deletion carries its own coordinate. Signature,
+`GleanGutterMark` rendering and every existing assertion unchanged; five new
+`gutter_test.lua` cases cover add, change-pair, unpaired dels attached to the
+change row, `del_above`, and multi-hunk indexing. Suite green.
+
 `:Glean toggle-mark` then: resolve path from the buffer → union `sources` over the selected rows (or the cursor row's hunk when given no range) → map each through `line_identity(dl, path, self:combined_owner(path))` → hand the ids to the existing `Session:perform({ kind = "seen", ... })` + `render()`. The repaint follows from `GleanReviewChanged`, which the gutter already listens for.
 
 Why deferred coordinates rather than pre-resolved identities:
