@@ -358,9 +358,9 @@ function Store:set_baseline(path, base_hash, lines) end --- nil/equal-to-base pr
   All covered in `lua/glean/state_test.lua` (the two `do` blocks preceding the
   branch-anchored-shard suite).
 
-## Session: classification and marking through R
+## Session: classification and marking through R — DONE
 
-- Goal: `id_seen`, `file_status`, `apply_seen` and the worktree identity route
+- [x] Goal: `id_seen`, `file_status`, `apply_seen` and the worktree identity route
   through `baseline.lua`; the ordinal/content machinery listed above is deleted.
 - Tests (`init_test.lua`, sessions built against the fake git runner):
   - Mark a hunk in the review buffer, rewrite one line of the work-tree file,
@@ -373,6 +373,36 @@ function Store:set_baseline(path, base_hash, lines) end --- nil/equal-to-base pr
     the same session keeps its baseline and its seen state.
   - Marking is one `perform` and one undo step, as today.
   - A session with no uncommitted changes writes no baselines.
+- Decisions:
+  - A worktree identity is `{ kind = "wt", path, lnum, dkind }`: `lnum` is the
+    work-tree line for an add and the tip-commit line for a del, the two spaces
+    `baseline.seen_sets` decides in. Both owner closures already produce exactly
+    those numbers — `commit_owner` from the floating commit's own patch (which
+    *is* tip..work-tree), `combined_owner` from `prov` (post-image line of the
+    worktree layer) and `del_attr` (that layer's pre-image line) — so the
+    identity is scope-invariant with no extra computation, and `ident_key` no
+    longer has to exclude anything.
+  - H comes from `Git:show(head, path)` (empty for an untracked/new file), W
+    from the existing `wt_file_lines`. Both are memoized per render alongside
+    the seen sets and the baseline read (`_wt_base` / `_wt_versions` /
+    `_wt_seen`, all cleared in `build`), and the marking path invalidates the
+    path it just wrote so a mark is visible before the next render.
+  - Because seen-ness is positional, the whole flattened-ordinal plumbing that
+    carried it (`base_ord` through `line_identity` / `changed_lines` /
+    `hunk_seen` / `all_hunks`'s `entry.base`, and `hunk_base_ords`) is gone.
+- Deviations:
+  - `canonical_ordinal` is **kept**: comments (`comment_target`,
+    `visual_comment_target`) resolve in canonical ordinal space, which is
+    unrelated to seen-ness. Only its seen-mark caller was removed.
+  - The plan's "reverting an edit restores the seen state" and its "R may drift
+    outside [H, W]" invariant meet in the zombie test: marking an add does not
+    drop the line it replaced from R, so after mark → edit → re-mark → revert
+    the reverted line reads *seen* (the reviewer did approve that exact text).
+    The test asserts that, plus the property that matters — one baseline
+    record for the path, never a live record beside a zombie.
+  - The store's block-record API (`seen_records` / `add_seen_record` /
+    `set_seen_records`) is deleted here, as stage 2 deferred; `migrate_shard`
+    now drops a legacy `seen_marks` table on read.
 
 ## Docs
 

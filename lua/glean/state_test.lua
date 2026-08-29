@@ -71,25 +71,12 @@ do
   h.assert_eq("roundtrip: unmatched lnum empty", #s2:comments_at("shaA", "f.txt", 999), 0)
 end
 
--- Worktree seen-blocks: stored as { anchor, content } records, re-anchored
--- positionally via M.resolve against the live diff (one closest match), so a
--- trivial single-line block marks exactly one ordinal, never file-wide.
+-- `M.resolve` survives the block-record removal for comments: a trivial
+-- single-line needle resolves to the occurrence closest to its anchor.
 do
-  local dir = vim.fn.tempname()
-  local s = state.new({ dir = dir })
-  s:add_seen_record("f.txt", { anchor = 2, content = { "beta", "gamma" } })
-  local recs = s:seen_records("f.txt")
-  h.assert_eq("seen-block: stored one record", #recs, 1)
-  h.assert_eq("seen-block: content preserved", recs[1].content[2], "gamma")
-
-  -- resolve finds the closest single occurrence of a trivial block.
   local diff = { "alpha", "}", "beta", "}", "gamma" }
-  h.assert_eq("seen-block: trivial resolves to closest one",
+  h.assert_eq("resolve: trivial needle picks the closest occurrence",
     state.resolve({ "}" }, diff, nil, 4), 4)
-
-  -- set_seen_records replaces; an empty list prunes the path entry.
-  s:set_seen_records("f.txt", {})
-  h.assert_eq("seen-block: cleared", #s:seen_records("f.txt"), 0)
 end
 
 -- Committed deletion ranges round-trip through save/load, parallel to add ranges.
@@ -124,22 +111,19 @@ do
   h.assert_eq("identity: mark+unmark restores JSON", vim.json.encode(s:commit("shaA")), empty)
 end
 
--- Worktree shard round-trips: seen-block records and worktree comments persist
+-- Worktree shard round-trips: reviewed baselines and worktree comments persist
 -- through save/reload under the worktree shard.
 do
   local dir = vim.fn.tempname()
   local s = state.new({ dir = dir })
   s:load({ "WORKTREE" })
-  s:add_seen_record("f.txt", { anchor = 2, content = { "two", "three" } })
+  local hash = state.content_hash({ "one", "two" })
+  s:set_baseline("f.txt", hash, { "one", "two", "three" })
   s:wt_add_comment("WORKTREE", "f.txt", "four", "hi")
   s:save_commit("WORKTREE")
-
   local s2 = state.new({ dir = dir })
   s2:load({ "WORKTREE" })
-  local recs = s2:seen_records("f.txt")
-  h.assert_eq("wt roundtrip: one seen-block", #recs, 1)
-  h.assert_eq("wt roundtrip: block anchor", recs[1].anchor, 2)
-  h.assert_eq("wt roundtrip: block content", recs[1].content[2], "three")
+  h.assert_eq("wt roundtrip: baseline lines", (s2:baseline("f.txt", hash) or {})[3], "three")
   h.assert_eq("wt roundtrip: comment", s2:wt_comments_for("WORKTREE", "f.txt", "four")[1].text, "hi")
 end
 
@@ -225,25 +209,6 @@ do
   h.assert_eq("resolve: nearest by lnum picks the far index",
     state.resolve({ "x" }, dup, lnum_of, 99), 1)
 end
--- Seen-block records round-trip on the worktree shard, and a mark fully undone
--- (set to empty) restores the shard JSON byte-identically.
-do
-  local dir = vim.fn.tempname()
-  local s = state.new({ dir = dir })
-  s:load({ state.COMMENTS_ID })
-  local empty = vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} })
-  s:add_seen_record("old.txt", { anchor = 1, content = { "fresh" } })
-  s:save_commit(state.COMMENTS_ID)
-  local s2 = state.new({ dir = dir })
-  s2:load({ state.COMMENTS_ID })
-  h.assert_eq("seen-block roundtrip: persists on reload",
-    s2:seen_records("old.txt")[1].content[1], "fresh")
-
-  -- Undo the mark: the slice prunes back to byte-identical JSON.
-  s:set_seen_records("old.txt", {})
-  h.assert_eq("seen-block: mark+unmark restores JSON",
-    vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
-end
 
 -- Reviewed baselines: anchored to the base content, pruned when they say
 -- nothing, and round-tripping to byte-identical JSON when cleared.
@@ -310,13 +275,13 @@ end
 do
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
-  local rec = { anchor = 1, content = { "line" } }
+  local hash = state.content_hash({ "line" })
 
   local a = state.new({ dir = dir, wt_shard = "WORKTREE/feature/a" })
   a:load({})
-  a:add_seen_record("w.txt", rec)
+  a:set_baseline("w.txt", hash, { "line", "more" })
   a:save_commit(a.wt_shard)
-  h.assert_eq("wt_shard: seen-block under A", #a:seen_records("w.txt"), 1)
+  h.assert_true("wt_shard: baseline under A", a:baseline("w.txt", hash) ~= nil)
 
   -- The branch-with-slash shard maps to a single readable file.
   h.assert_eq("wt_shard: slash-safe filename readable",
@@ -324,15 +289,14 @@ do
 
   local b = state.new({ dir = dir, wt_shard = "WORKTREE/feature/b" })
   b:load({})
-  h.assert_eq("wt_shard: absent under B", #b:seen_records("w.txt"), 0)
-
+  h.assert_true("wt_shard: absent under B", b:baseline("w.txt", hash) == nil)
   -- Reopening A's shard still has the block; B's load left A's file untouched.
   local a2 = state.new({ dir = dir, wt_shard = "WORKTREE/feature/a" })
   a2:load({})
-  h.assert_eq("wt_shard: A persists on reload", #a2:seen_records("w.txt"), 1)
+  h.assert_true("wt_shard: A persists on reload", a2:baseline("w.txt", hash) ~= nil)
 end
 
--- Stage 2 — comments exhibit the same branch isolation as seen-marks.
+-- Stage 2 — comments exhibit the same branch isolation as baselines.
 do
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")

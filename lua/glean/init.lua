@@ -12,7 +12,8 @@
 --
 -- Seen-ness has a single representation: a flat set of stable line-identities in
 -- glean.state (committed add `(sha,lnum)`, committed del `(remover_sha,lnum)`,
--- and content-hashed worktree lines). The renderer's section placement, the
+-- and positional worktree lines, decided against a persisted reviewed baseline
+-- of the file). The renderer's section placement, the
 -- file/commit header glyphs, and the action layer all derive from the same
 -- `Session:changed_lines`/`line_identity`/`line_seen`/`hunk_seen` resolver, so
 -- "renders in the seen section" and "the action layer thinks it is seen" are
@@ -34,6 +35,7 @@ local diff_mod = require("glean.diff")
 local state_mod = require("glean.state")
 local lineage = require("glean.lineage")
 local intraline = require("glean.intraline")
+local baseline = require("glean.baseline")
 local comments_mod = require("glean.comments")
 local overlay = require("glean.overlay")
 local gutter = require("glean.gutter")
@@ -41,8 +43,9 @@ local M = {}
 local api = vim.api
 
 -- Reserved non-sha id for the synthetic "floating" commit that stands in for the
--- working tree on top of HEAD. Its reviewed units are content-addressed (hashes)
--- rather than line ranges, since uncommitted lines have no stable line numbers.
+-- working tree on top of HEAD. Its reviewed units are not line ranges (an
+-- uncommitted line has no stable number across renders) but a per-file reviewed
+-- baseline: the content of the file the reviewer has signed off on.
 M.WORKTREE = "WORKTREE"
 local NS = api.nvim_create_namespace("glean_hl")
 local NS_INTRA = api.nvim_create_namespace("glean_intra_hl")
@@ -544,7 +547,11 @@ end
 -- commit owns its lines as WORKTREE (content-addressed). `owner(dl) -> sha,lnum`.
 function Session:commit_owner(commit)
   return function(dl)
-    if commit.sha == M.WORKTREE then return M.WORKTREE end
+    if commit.sha == M.WORKTREE then
+      -- The floating commit's patch is exactly tip..work-tree, so its own line
+      -- numbers are already the coordinates the reviewed baseline is read in.
+      return M.WORKTREE, dl.kind == "add" and dl.new_lnum or dl.old_lnum
+    end
     return commit.sha, dl.kind == "add" and dl.new_lnum or dl.old_lnum
   end
 end
@@ -566,14 +573,17 @@ function Session:combined_owner(path)
     if dl.kind == "del" then
       local a = del_attr[dl.old_lnum]
       if a then return a.sha, a.lnum end
-      return M.WORKTREE
+      return M.WORKTREE, nil
     end
     if not dl.new_lnum then return nil end
     local p = prov[dl.new_lnum]
     -- An add line composition can't attribute (an untracked file has no patch
     -- at all, so its provenance map is empty) is uncommitted content in a work-tree
     -- review: route it to the content-addressed WORKTREE owner so it is markable.
-    if not p then return self.worktree and M.WORKTREE or nil end
+    if not p then
+      if not self.worktree then return nil end
+      return M.WORKTREE, dl.new_lnum
+    end
     return p.sha, p.lnum
   end
 end
@@ -654,20 +664,17 @@ end
 
 
 -- The stable seen-identity of one changed diff line, or nil for a context line
--- or a line with no in-range owner. A WORKTREE-owned line is content-addressed;
--- a committed add line is (sha, new_lnum); a committed del line is (sha, lnum).
--- `ord` is the line's flattened diff-line ordinal within its file; worktree
--- identities carry it so seen-ness is resolved positionally (block re-anchoring)
--- rather than by file-wide content match. Committed identities ignore it.
-function Session:line_identity(dl, path, owner, ord)
+-- or a line with no in-range owner. A WORKTREE-owned line is positional: an add
+-- carries its work-tree line number, a del its tip-commit line number, the two
+-- coordinate spaces the reviewed baseline is read in. A committed add line is
+-- (sha, new_lnum); a committed del line is (sha, lnum).
+function Session:line_identity(dl, path, owner)
   if dl.kind ~= "add" and dl.kind ~= "del" then return nil end
   local sha, lnum = owner(dl)
   if not sha then return nil end
   if sha == M.WORKTREE then
-    local id = state_mod.wt_identity(path, dl.text)
-    local display_file = self:file_for_path(path)
-    id.ord = self:canonical_ordinal(display_file, dl) or ord
-    return id
+    if not lnum then return nil end
+    return state_mod.wt_identity(path, lnum, dl.kind)
   end
   if dl.kind == "add" then return state_mod.add_identity(sha, path, lnum) end
   return state_mod.del_identity(sha, path, lnum)
@@ -675,39 +682,24 @@ end
 
 -- The seen-identities of a hunk's changed (add/del) lines — the one place that
 -- defines "which lines matter". Context lines and unowned lines are excluded.
--- `base_ord` is the flattened diff-line ordinal of the line *before* this hunk's
--- first line within its file (0 for the first hunk), so each line's ordinal is
--- `base_ord + index`. Worktree identities carry that ordinal for positional
--- (block) seen-resolution; committed identities ignore it. When omitted it
--- defaults to 0 (sufficient for committed-only callers).
-function Session:changed_lines(hunk, path, owner, base_ord)
-  base_ord = base_ord or 0
+function Session:changed_lines(hunk, path, owner)
   local ids = {}
   for i, dl in ipairs(hunk.lines) do
-    local id = self:line_identity(dl, path, owner, base_ord + i)
+    local id = self:line_identity(dl, path, owner)
     if id then ids[#ids + 1] = id end
   end
   return ids
 end
 
--- The flattened-ordinal base of each hunk within a file (hunk object -> count of
--- diff lines preceding it). Used to translate a per-hunk line index into the
--- file-wide ordinal worktree identities are addressed by.
-local function hunk_base_ords(file)
-  local bases, acc = {}, 0
-  for _, h in ipairs(file.hunks) do
-    bases[h] = acc
-    acc = acc + #h.lines
-  end
-  return bases
-end
 
--- Is a single line identity in the seen set? Worktree identities are resolved
--- positionally against the live diff (block re-anchoring); the rest delegate to
--- the store.
+-- Is a single line identity in the seen set? Worktree identities are decided
+-- against the path's reviewed baseline; the rest delegate to the store.
 function Session:id_seen(id)
   if id.kind == "wt" then
-    return id.ord ~= nil and self:wt_seen_ords(id.path)[id.ord] == true
+    local sets = self:wt_seen_sets(id.path)
+    if not sets then return false end
+    local set = id.dkind == "del" and sets.del or sets.add
+    return set[id.lnum] == true
   end
   return self.store:is_seen(id)
 end
@@ -728,8 +720,8 @@ end
 -- A hunk is seen iff it has at least one changed line and every changed line's
 -- identity is seen. This is the single predicate the renderer and the rollups
 -- share, so placement and the header glyphs agree by construction.
-function Session:hunk_seen(hunk, path, owner, base_ord)
-  local ids = self:changed_lines(hunk, path, owner, base_ord)
+function Session:hunk_seen(hunk, path, owner)
+  local ids = self:changed_lines(hunk, path, owner)
   if #ids == 0 then return false end
   return self:ids_all_seen(ids)
 end
@@ -740,12 +732,11 @@ function Session:progress_counts()
   local counts = { files = 0, hunks = 0, adds = 0, dels = 0 }
   local function count_file(file, owner)
     local file_unseen = false
-    local bases = hunk_base_ords(file)
     for _, hunk in ipairs(file.hunks) do
       local hunk_unseen = false
       for i, dl in ipairs(hunk.lines) do
         if dl.kind == "add" or dl.kind == "del" then
-          local id = self:line_identity(dl, file.path, owner, bases[hunk] + i)
+          local id = self:line_identity(dl, file.path, owner)
           if not id or not self:id_seen(id) then
             hunk_unseen = true
             local key = dl.kind == "add" and "adds" or "dels"
@@ -777,9 +768,8 @@ end
 -- Is a file fully seen? (every hunk's changed lines seen)
 function Session:file_seen(commit, file)
   local owner = self:commit_owner(commit)
-  local bases = hunk_base_ords(file)
   for _, hunk in ipairs(file.hunks) do
-    if not self:hunk_seen(hunk, file.path, owner, bases[hunk]) then return false end
+    if not self:hunk_seen(hunk, file.path, owner) then return false end
   end
   return true
 end
@@ -957,38 +947,58 @@ function Session:file_status(path)
   local file = file_with_path(self.combined_files, path)
   if not file then return nil end
   local owner = self:combined_owner(path)
-  local bases = hunk_base_ords(file)
-  return gutter.project(file.hunks, function(dl, hunk, i)
-    local id = self:line_identity(dl, path, owner, (bases[hunk] or 0) + i)
+  return gutter.project(file.hunks, function(dl)
+    local id = self:line_identity(dl, path, owner)
     return id ~= nil and self:id_seen(id)
   end)
 end
--- Worktree seen records resolve against exact diff text, never the filtered
--- projection. Their stored anchors therefore survive whitespace-mode toggles.
-function Session:wt_flat_texts(path)
-  local file = self:canonical_file(self:file_for_path(path))
-  if not file then return nil end
-  local texts = {}
-  for i, dl in ipairs(flatten_diff_lines(file)) do texts[i] = dl.text end
-  return texts
+-- The tip-commit (H) lines of `path` — the immutable left endpoint the reviewed
+-- baseline is anchored on. An empty list when the path does not exist there (an
+-- untracked or newly added file), which is exactly its content at the tip.
+function Session:wt_base_lines(path)
+  self._wt_base = self._wt_base or {}
+  local cached = self._wt_base[path]
+  if cached then return cached end
+  local out = self.git:show(self._commit_cache_head or "HEAD", path)
+  local lines = {}
+  if out then
+    lines = vim.split(out, "\n", { plain = true })
+    -- `git show` emits a trailing newline; splitting it yields a phantom line.
+    if lines[#lines] == "" then lines[#lines] = nil end
+  end
+  self._wt_base[path] = lines
+  return lines
 end
 
-function Session:wt_seen_ords(path)
+-- The three versions a path's uncommitted seen-ness is defined by: the tip
+-- commit (H), the reviewed baseline (R, read under H's content anchor so a
+-- moved tip reads as unreviewed) and the work tree (W).
+function Session:wt_versions(path)
+  self._wt_versions = self._wt_versions or {}
+  local cached = self._wt_versions[path]
+  if cached then return cached end
+  local base = self:wt_base_lines(path)
+  local base_hash = state_mod.content_hash(base)
+  local v = {
+    base = base,
+    base_hash = base_hash,
+    reviewed = self.store:baseline(path, base_hash) or base,
+    worktree = self:wt_file_lines(path) or {},
+  }
+  self._wt_versions[path] = v
+  return v
+end
+
+-- Seen-ness of `path`'s uncommitted lines: `add[<work-tree lnum>]` and
+-- `del[<tip lnum>]`, decided by diffing against the reviewed baseline.
+function Session:wt_seen_sets(path)
   self._wt_seen = self._wt_seen or {}
   local cached = self._wt_seen[path]
   if cached then return cached end
-  local set = {}
-  local texts = self:wt_flat_texts(path)
-  if texts then
-    for _, rec in ipairs(self.store:seen_records(path)) do
-      local start = state_mod.resolve(rec.content, texts, nil, rec.anchor)
-      if start then
-        for k = 0, #rec.content - 1 do set[start + k] = true end
-      end
-    end
-  end
-  self._wt_seen[path] = set
-  return set
+  local v = self:wt_versions(path)
+  local sets = baseline.seen_sets(v.base, v.reviewed, v.worktree)
+  self._wt_seen[path] = sets
+  return sets
 end
 
 -- The lnum-of mapping for a flattened diff-line list: every diff line (adds,
@@ -1262,9 +1272,11 @@ local function wrap_text(text, width, indent, cont)
 end
 
 function Session:build()
-  -- Worktree seen-marks are resolved positionally against the live diff; the
-  -- per-path ord cache is rebuilt each render since the diff may have changed.
+  -- Worktree seen-ness is derived from the file's tip-commit / reviewed /
+  -- work-tree contents, all of which may have moved since the last render.
   self._wt_seen = {}
+  self._wt_versions = {}
+  self._wt_base = {}
   -- Working-tree reads backing off-diff comment resolution, likewise per-render.
   self._wt_lines = {}
   local lines = {}
@@ -1336,7 +1348,7 @@ function Session:build()
     -- any contiguous block of seen changed lines (adds or dels), via the shared
     -- line-identity predicate.
     local seen_line = function(dl, li)
-      local id = self:line_identity(dl, path, owner, base_ord + li)
+      local id = self:line_identity(dl, path, owner)
       return id ~= nil and self:id_seen(id)
     end
     local runs = sec == "seen" and {} or hunk_marker_runs(hunk, seen_line)
@@ -1430,7 +1442,7 @@ function Session:build()
     for hi, hunk in ipairs(file.hunks) do
       base_ord[hi] = acc
       acc = acc + #hunk.lines
-      if self:hunk_seen(hunk, file.path, owner, base_ord[hi]) then seen_idx[#seen_idx + 1] = hi
+      if self:hunk_seen(hunk, file.path, owner) then seen_idx[#seen_idx + 1] = hi
       else unseen_idx[#unseen_idx + 1] = hi end
     end
     -- The seen section sits on top as the only collapsible region: a
@@ -2212,10 +2224,9 @@ end
 -- shards. Every seen action (commit/combined toggle, visual span, marker run)
 -- now carries a flat list of seen-`ids`, so this is a single fold over the
 -- unified identity store with no scope- or owner-specific branching.
--- Persist a marking action. Committed identities fold through the store's range
--- API; worktree identities are stored as content block records (re-anchored
--- positionally at render), grouped per path into maximal contiguous-ordinal
--- runs so each selected block is one record.
+-- Committed identities fold through the store's range API; worktree identities
+-- move the path's reviewed baseline toward (mark) or away from (unmark) the
+-- work tree over exactly the selected lines.
 function Session:apply_seen(a, op)
   local non_wt, wt_by_path = {}, {}
   for _, id in ipairs(a.ids) do
@@ -2233,7 +2244,7 @@ function Session:apply_seen(a, op)
     for _, id in ipairs(non_wt) do touched[id.sha] = true end
   end
   for path, ids in pairs(wt_by_path) do
-    if op == "mark" then self:apply_wt_mark(path, ids) else self:apply_wt_unmark(path, ids) end
+    self:apply_wt_seen(path, ids, op)
     touched[self.store.wt_shard] = true
   end
   -- Content-addressed sticky overrides (combined scope): an explicit mark exempts
@@ -2247,68 +2258,26 @@ function Session:apply_seen(a, op)
   for sha in pairs(touched) do self.store:save_commit(sha) end
 end
 
--- Store the selected worktree lines (each carrying its flattened ordinal and
--- text) as seen-block records, one per maximal contiguous-ordinal run.
-function Session:apply_wt_mark(path, ids)
-  table.sort(ids, function(a, b) return (a.ord or 0) < (b.ord or 0) end)
-  local run
-  local function flush()
-    if run then
-      self.store:add_seen_record(path, { anchor = run.anchor, content = run.content })
-      run = nil
-    end
-  end
+-- Advance (mark) or retreat (unmark) `path`'s reviewed baseline over the
+-- selected uncommitted lines: an add is named by its work-tree line, a del by
+-- its tip-commit line, the coordinates each diff shares with the displayed one.
+-- The write is content-anchored on the tip blob, so it is discarded wholesale
+-- once that blob moves.
+function Session:apply_wt_seen(path, ids, op)
+  local v = self:wt_versions(path)
+  local sel = { add = {}, del = {} }
   for _, id in ipairs(ids) do
-    if run and id.ord == run.last + 1 then
-      run.content[#run.content + 1] = id.text
-      run.last = id.ord
-    else
-      flush()
-      run = { anchor = id.ord, last = id.ord, content = { id.text } }
+    if id.lnum then
+      local list = id.dkind == "del" and sel.del or sel.add
+      list[#list + 1] = id.lnum
     end
   end
-  flush()
+  local fn = op == "mark" and baseline.mark or baseline.unmark
+  local reviewed = fn(v.base, v.reviewed, v.worktree, sel)
+  self.store:set_baseline(path, v.base_hash, reviewed)
+  self._wt_versions[path] = nil
+  if self._wt_seen then self._wt_seen[path] = nil end
 end
-
--- Remove the selected worktree ordinals from `path`'s seen-block records,
--- re-anchoring each stored block against the live diff and rewriting it minus
--- the unmarked ordinals (splitting a partially-unmarked block into the runs that
--- survive). A fully unmarked block leaves no record, restoring byte-identity.
-function Session:apply_wt_unmark(path, ids)
-  local remove = {}
-  for _, id in ipairs(ids) do
-    if id.ord then remove[id.ord] = true end
-  end
-  local texts = self:wt_flat_texts(path) or {}
-  local kept = {}
-  for _, rec in ipairs(self.store:seen_records(path)) do
-    local start = state_mod.resolve(rec.content, texts, nil, rec.anchor)
-    if not start then
-      kept[#kept + 1] = { anchor = rec.anchor, content = rec.content }
-    else
-      local run
-      local function flush()
-        if run then kept[#kept + 1] = { anchor = run.anchor, content = run.content } end
-        run = nil
-      end
-      for k = 0, #rec.content - 1 do
-        local ord = start + k
-        if remove[ord] then
-          flush()
-        elseif run and ord == run.last + 1 then
-          run.content[#run.content + 1] = texts[ord]
-          run.last = ord
-        else
-          flush()
-          run = { anchor = ord, last = ord, content = { texts[ord] } }
-        end
-      end
-      flush()
-    end
-  end
-  self.store:set_seen_records(path, kept)
-end
-
 -- Persist the comment shard and tell every other surface (file overlays, other
 -- sessions) that it moved. `source` names this session so its own listener can
 -- ignore the echo; the shard on disk stays the single serialization point.
@@ -2698,9 +2667,8 @@ end
 -- (collapsed-row summaries) are folds over this one traversal.
 function Session:each_target_hunk(target, fn)
   local function gather(file, hunks, path, owner)
-    local bases = hunk_base_ords(file)
     for _, h in ipairs(hunks) do
-      fn(self:changed_lines(h, path, owner, bases[h]))
+      fn(self:changed_lines(h, path, owner))
     end
   end
   if self.scope == "commits" then
@@ -2752,7 +2720,6 @@ function Session:all_hunks(mode)
     for ci, commit in ipairs(self.commits or {}) do
       local owner = self:commit_owner(commit)
       for fi, file in ipairs(commit.files) do
-        local bases = hunk_base_ords(file)
         for hi, hunk in ipairs(file.hunks) do
           out[#out + 1] = {
             id = ("c:%06d:%06d:%06d"):format(ci, fi, hi),
@@ -2762,7 +2729,6 @@ function Session:all_hunks(mode)
             file = file,
             hunk = hunk,
             owner = owner,
-            base = bases[hunk],
           }
         end
       end
@@ -2775,7 +2741,6 @@ function Session:all_hunks(mode)
   -- so it is safe here even on a commits-scope session.
   self:load_lineage()
   for cfi, cf in ipairs(self.combined_files) do
-    local bases = hunk_base_ords(cf)
     local owner = self:combined_owner(cf.path)
     for hi, hunk in ipairs(cf.hunks) do
       out[#out + 1] = {
@@ -2785,7 +2750,6 @@ function Session:all_hunks(mode)
         file = cf,
         hunk = hunk,
         owner = owner,
-        base = bases[hunk],
       }
     end
   end
@@ -2832,7 +2796,7 @@ function Session:row_identity(target)
     local commit = self.commits[target.commit]
     local file = commit.files[target.file]
     return self:line_identity(file.hunks[target.hunk].lines[target.line], file.path,
-      self:commit_owner(commit), target_ordinal(file, target))
+      self:commit_owner(commit))
   end
   if not (target.cfile and target.hunk and target.line) then return nil end
   local cf = self.combined_files[target.cfile]
@@ -2841,7 +2805,7 @@ function Session:row_identity(target)
   assert(self:owner_status(cf.path) == "loaded",
     "row_identity on non-loaded file: " .. cf.path)
   return self:line_identity(cf.hunks[target.hunk].lines[target.line], cf.path,
-    self:combined_owner(cf.path), target_ordinal(cf, target))
+    self:combined_owner(cf.path))
 end
 
 -- Toggle seen on the cursor's target. The action is decided by which section the
@@ -3134,10 +3098,9 @@ function Session:unmark_marker(target)
       "unmark_marker on non-loaded file: " .. file.path)
     hunk, path, owner = file.hunks[target.hunk], file.path, self:combined_owner(file.path)
   end
-  local base = hunk_base_ords(file)[hunk]
   local ids = {}
   for li = mk.lo, mk.hi_line do
-    local id = self:line_identity(hunk.lines[li], path, owner, base + li)
+    local id = self:line_identity(hunk.lines[li], path, owner)
     if id and self:id_seen(id) then ids[#ids + 1] = id end
   end
   if #ids == 0 then return end
@@ -3879,12 +3842,13 @@ end
 -- Capture a cursor location in model coordinates before replacing the active
 -- display projection. Row indices are unstable across whitespace modes, while
 -- paths and Git's real old/new line numbers remain comparable.
--- A scope-invariant string form of a line identity. `wt.ord` is deliberately
--- excluded: it is the line's ordinal within its *display* file, which differs
--- between the two scopes for the very same physical line.
+-- A scope-invariant string form of a line identity: a worktree identity is
+-- positional in tip/work-tree coordinates, which both scopes share.
 local function ident_key(id)
   if not id then return nil end
-  if id.kind == "wt" then return "wt:" .. id.path .. "\0" .. id.text end
+  if id.kind == "wt" then
+    return "wt:" .. id.path .. "\0" .. tostring(id.dkind) .. ":" .. tostring(id.lnum)
+  end
   return id.kind .. ":" .. id.sha .. ":" .. id.path .. ":" .. tostring(id.lnum)
 end
 -- `row_identity` for an arbitrary row, nil instead of an assertion failure when

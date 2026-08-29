@@ -216,6 +216,10 @@ end
 -- to recreate, so a legacy `seen` list is dropped rather than migrated in place.
 function M.migrate_shard(decoded)
   M.migrate_comment_ids(decoded)
+  -- Block seen-records (`seen_marks`) were superseded by reviewed baselines;
+  -- they are abandoned rather than migrated (re-anchoring them by search is the
+  -- lossy operation the baseline exists to delete).
+  decoded.seen_marks = nil
   if not decoded.worktree or type(decoded.files) ~= "table" then
     return
   end
@@ -398,18 +402,6 @@ function Store:wt_file(id, path)
   return f
 end
 
--- ── Worktree (content-addressed) seen-marks ────────────────────────────────
--- Uncommitted lines have no stable line numbers, so a seen mark is stored as a
--- content *block record* `{ anchor, content = {texts} }` under the worktree
--- shard's top-level `seen_marks[path]` list — the same shape comments use. At
--- render the block is re-anchored against the file's current flattened diff via
--- `M.resolve` (single closest match), so a trivial one-line block marks exactly
--- one location and a block whose own text changed simply fails to resolve.
-
-function Store:seen_records(path)
-  local c = self.data[self.wt_shard]
-  return (c and c.seen_marks and c.seen_marks[path]) or {}
-end
 
 local function wt_slice(store)
   local c = store.data[store.wt_shard]
@@ -420,17 +412,16 @@ local function wt_slice(store)
   return c
 end
 
--- Prune the worktree shard when it carries no seen-marks, comments, files, or
+-- Prune the worktree shard when it carries no baselines, comments, files, or
 -- sticky marks, so a fully-undone edit restores byte-identical JSON.
 local function wt_prune(store)
   local c = store.data[store.wt_shard]
   if not c then return end
-  local sm_empty = not c.seen_marks or next(c.seen_marks) == nil
   local cm_empty = not c.comments or next(c.comments) == nil
   local f_empty = not c.files or next(c.files) == nil
   local st_empty = not c.sticky or next(c.sticky) == nil
   local bl_empty = not c.baselines or next(c.baselines) == nil
-  if sm_empty and cm_empty and f_empty and st_empty and bl_empty then
+  if cm_empty and f_empty and st_empty and bl_empty then
     store.data[store.wt_shard] = nil
   end
 end
@@ -484,33 +475,6 @@ function Store:set_baseline(path, base_hash, lines)
   wt_prune(self)
 end
 
--- Append a seen-mark block record { anchor, content = {...} } for `path`.
-function Store:add_seen_record(path, record)
-  local c = wt_slice(self)
-  c.seen_marks = c.seen_marks or {}
-  c.seen_marks[path] = c.seen_marks[path] or {}
-  local list = c.seen_marks[path]
-  list[#list + 1] = { anchor = record.anchor, content = record.content }
-end
-
--- Replace the seen-mark records for `path`. An empty list prunes the entry, and
--- the whole worktree slice when it then carries no seen-marks, comments, or
--- files — so a mark fully undone restores the shard to byte-identical JSON.
-function Store:set_seen_records(path, list)
-  local c = self.data[self.wt_shard]
-  if not c then
-    if not list or #list == 0 then return end
-    c = wt_slice(self)
-  end
-  c.seen_marks = c.seen_marks or {}
-  if not list or #list == 0 then
-    c.seen_marks[path] = nil
-    if next(c.seen_marks) == nil then c.seen_marks = nil end
-  else
-    c.seen_marks[path] = list
-  end
-  wt_prune(self)
-end
 
 -- ── Content-addressed sticky seen-overrides ────────────────────────────────
 -- A sticky mark exempts a line from the combined-scope display-demotion of short
@@ -740,7 +704,8 @@ end
 -- of any display unit. Three kinds:
 --   add: { kind = "add", sha, path, lnum }  -- committed add, post-image lnum
 --   del: { kind = "del", sha, path, lnum }  -- committed del, pre-image lnum
---   wt:  { kind = "wt",  path, text }        -- uncommitted line, content-hashed
+--   wt:  { kind = "wt",  path, lnum, dkind } -- uncommitted line, positional:
+--        an add's `lnum` is its work-tree line, a del's its tip-commit line
 -- `sha == WORKTREE` add/del lines are represented as wt identities.
 
 function M.add_identity(sha, path, lnum)
@@ -751,8 +716,8 @@ function M.del_identity(sha, path, lnum)
   return { kind = "del", sha = sha, path = path, lnum = lnum }
 end
 
-function M.wt_identity(path, text)
-  return { kind = "wt", path = path, text = text }
+function M.wt_identity(path, lnum, dkind)
+  return { kind = "wt", path = path, lnum = lnum, dkind = dkind }
 end
 
 -- Is a single line identity in the seen set?
@@ -762,9 +727,9 @@ function Store:is_seen(id)
   elseif id.kind == "del" then
     return M.covers(self:seen_del_ranges(id.sha, id.path), id.lnum)
   end
-  -- `kind == "wt"` is resolved positionally by the Session (block re-anchoring
-  -- against the live diff), which the store has no view of, so it is never seen
-  -- at the store layer.
+  -- `kind == "wt"` is decided against the path's reviewed baseline, which needs
+  -- the tip-commit and work-tree contents the store has no view of, so it is
+  -- never seen at the store layer.
   return false
 end
 
@@ -787,7 +752,7 @@ function Store:mark(ids)
     elseif id.kind == "del" then
       self:mark_seen_del(id.sha, id.path, { id.lnum, id.lnum })
     end
-    -- wt identities are stored as block records by the Session, not here.
+    -- wt identities advance the reviewed baseline, written by the Session.
   end
 end
 
@@ -818,7 +783,7 @@ function Store:unmark(ids)
       self:unmark_seen_del(id.sha, id.path, { id.lnum, id.lnum })
       prune_file(self, id.sha, id.path)
     end
-    -- wt identities are removed as block records by the Session, not here.
+    -- wt identities retreat the reviewed baseline, written by the Session.
   end
 end
 

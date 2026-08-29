@@ -1201,8 +1201,8 @@ do
   end)
   h.assert_true("stage2-C: found +hi row", nrow ~= nil)
   s:toggle_seen(nrow)
-  h.assert_true("stage2-C: untracked add block-seen on WORKTREE",
-    #s.store:seen_records("new.txt") > 0)
+  h.assert_true("stage2-C: untracked add recorded in the reviewed baseline",
+    s.store:baseline("new.txt", state.content_hash({})) ~= nil)
 end
 
 -- Stage 3 — pending hunks inert + load assertion backstop. A non-loaded file's
@@ -1940,8 +1940,8 @@ do
   end)
   h.assert_true("worktree: found w.txt header", frow ~= nil)
   s:toggle_seen(frow)
-  h.assert_true("worktree: seen block stored",
-    #s.store:seen_records("w.txt") > 0)
+  h.assert_true("worktree: reviewed baseline stored",
+    s.store:baseline("w.txt", state.content_hash({ "a", "b", "c" })) ~= nil)
   -- reopen: working file unchanged, so the content hash still matches → fully seen.
   local s2 = openwt(seen_dir)
   local _, fline2 = find_row(s2, function(_, line, t)
@@ -1975,7 +1975,7 @@ do
   h.assert_true("worktree edit: w.txt seen dropped", fline3:find("✓", 1, true) == nil)
 end
 
--- Stage 3 — worktree seen-blocks are positional: marking one trivial `}` line
+-- Stage 3 — worktree seen-ness is positional: marking one trivial `}` line
 -- marks exactly that occurrence, never every `}` file-wide; and a partial mark
 -- survives an unrelated edit elsewhere in the same hunk.
 do
@@ -2013,17 +2013,17 @@ do
   h.assert_eq("wt brace: two `}` rows", #brace_rows, 2)
   local id1 = s:row_identity(s.row_map[brace_rows[1]])
   local id2 = s:row_identity(s.row_map[brace_rows[2]])
-  h.assert_true("wt brace: distinct ordinals", id1.ord ~= id2.ord)
+  h.assert_true("wt brace: distinct line numbers", id1.lnum ~= id2.lnum)
 
   -- Mark only the first `}` line.
   s:mark_visual_range(brace_rows[1], brace_rows[1])
   h.assert_true("wt brace: first `}` seen", s:id_seen(id1))
   h.assert_true("wt brace: second `}` NOT seen (no file-wide bleed)", not s:id_seen(id2))
 
-  -- Persisted as exactly one single-line block.
-  local recs = s.store:seen_records("t.txt")
-  h.assert_eq("wt brace: one stored block", #recs, 1)
-  h.assert_eq("wt brace: block is one line", #recs[1].content, 1)
+  -- The reviewed baseline holds exactly the marked line on top of the tip blob.
+  local r = s.store:baseline("t.txt", state.content_hash({ "x" }))
+  h.assert_eq("wt brace: baseline is base plus the marked line", #r, 2)
+  h.assert_eq("wt brace: marked line in the baseline", r[2], "}")
 end
 
 -- Stage 4 — combined overlay with the WORKTREE as target: a committed branch
@@ -2073,8 +2073,8 @@ do
   s:toggle_seen(frow)
   h.assert_true("wt combined: committed B range-seen on c1",
     state.covers(s.store:seen_ranges(wm.shas[2], "m.txt"), 2))
-  h.assert_true("wt combined: dirty D block-seen on WORKTREE",
-    #s.store:seen_records("m.txt") > 0)
+  h.assert_true("wt combined: dirty D recorded in the reviewed baseline",
+    s.store:baseline("m.txt", state.content_hash({ "a", "B", "c", "d" })) ~= nil)
   local jseen = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("wt combined: m.txt fully seen", jseen:find(" seen (1 hunks)", 1, true) ~= nil)
   -- reopen: persisted committed + floating seen still collapses the file.
@@ -4193,5 +4193,111 @@ do
   h.assert_true("jump: opened the default review", live ~= nil)
   h.assert_eq("jump: lands in the freshly opened review", landed_lnum(live, drow), 8)
   glean.close_current()
+end
+-- Reviewed baselines: uncommitted seen-ness is decided by diffing the file
+-- against the content the reviewer signed off on, so editing one marked line
+-- unmarks exactly that line — in the review buffer and in the gutter alike —
+-- and no stored record can resolve at the wrong place or outlive its subject.
+do
+  local br = testutil.make_repo({
+    { msg = "base", files = { ["f.txt"] = "a\nb\nc\nd\n", ["g.txt"] = "p\nq\n" } },
+  })
+  local F_BASE = { "a", "b", "c", "d" }
+  local G_BASE = { "p", "q" }
+  local function runbr(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = br.root, env = br.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local function write(path, content)
+    local f = assert(io.open(br.root .. "/" .. path, "w"))
+    f:write(content)
+    f:close()
+  end
+  local dir = vim.fn.tempname()
+  local function openbr()
+    return glean.open({
+      base = br.shas[1], target = glean.WORKTREE, repo_root = br.root, run = runbr,
+      open_window = false, state_dir = dir,
+    })
+  end
+  local function mark_file(s, path)
+    local row = find_row(s, function(_, line, t)
+      return t and t.cfile and not t.hunk and line:find(path, 1, true)
+    end)
+    h.assert_true("baseline: found " .. path .. " header", row ~= nil)
+    s:toggle_seen(row)
+  end
+  local function row_of(s, text)
+    return find_row(s, function(_, line, t) return t and t.line and line == text end)
+  end
+  local function seen_at(s, path, lnum)
+    local st = s:file_status(path)
+    return st[lnum] and st[lnum].seen
+  end
+
+  write("f.txt", "A\nB\nC\nd\n")
+  write("g.txt", "P\nq\n")
+  local s = openbr()
+  mark_file(s, "f.txt")
+  mark_file(s, "g.txt")
+  h.assert_eq("baseline: whole file marked seen in the gutter", seen_at(s, "f.txt", 2), true)
+  h.assert_eq("baseline: marking is one undo step", #s.undo_stack, 2)
+  s:undo()
+  h.assert_eq("baseline: undo restores unseen", seen_at(s, "g.txt", 1), false)
+  s:redo()
+  h.assert_eq("baseline: redo restores seen", seen_at(s, "g.txt", 1), true)
+
+  -- Edit one marked line: only that line comes back, in both surfaces.
+  write("f.txt", "A\nBB\nC\nd\n")
+  local s2 = openbr()
+  h.assert_eq("baseline: edited line unseen in the gutter", seen_at(s2, "f.txt", 2), false)
+  h.assert_eq("baseline: line above stays seen", seen_at(s2, "f.txt", 1), true)
+  h.assert_eq("baseline: line below stays seen", seen_at(s2, "f.txt", 3), true)
+  local edited = row_of(s2, "BB")
+  h.assert_true("baseline: edited row is displayed", edited ~= nil)
+  h.assert_true("baseline: edited row unseen in the review buffer",
+    not s2:id_seen(s2:row_identity(s2.row_map[edited])))
+
+  -- The zombie case: re-mark the edited line, then revert the edit. The store
+  -- holds one baseline for the path (never a record beside a zombie), and the
+  -- reverted line reads seen because the reviewer did approve exactly that text.
+  s2:mark_visual_range(edited, edited)
+  write("f.txt", "A\nB\nC\nd\n")
+  local s3 = openbr()
+  local f_hash = state.content_hash(F_BASE)
+  h.assert_true("baseline: exactly one baseline for the path",
+    s3.store:baseline("f.txt", f_hash) ~= nil)
+  h.assert_eq("baseline: reverting an edit restores its seen state",
+    seen_at(s3, "f.txt", 2), true)
+  h.assert_eq("baseline: its neighbours are untouched", seen_at(s3, "f.txt", 1), true)
+
+  -- Committing part of the work moves that path's tip blob, so its baseline is
+  -- discarded — and only its own: g.txt keeps both baseline and seen state.
+  runbr({ "add", "f.txt" })
+  write("f.txt", "A\nB\nC\nZZ\n")
+  runbr({ "commit", "-m", "commit f.txt" })
+  local s4 = openbr()
+  local f_hash2 = state.content_hash({ "A", "B", "C", "d" })
+  h.assert_true("baseline: stale anchor reads as unreviewed",
+    s4.store:baseline("f.txt", f_hash2) == nil)
+  h.assert_eq("baseline: post-commit change is unseen", seen_at(s4, "f.txt", 4), false)
+  h.assert_true("baseline: untouched path keeps its baseline",
+    s4.store:baseline("g.txt", state.content_hash(G_BASE)) ~= nil)
+  h.assert_eq("baseline: untouched path stays seen", seen_at(s4, "g.txt", 1), true)
+end
+-- A review with no uncommitted changes writes no baselines: a committed target
+-- marks through the (sha, lnum) range model and never touches the worktree shard.
+do
+  local cdir = vim.fn.tempname()
+  local s = open({ state_dir = cdir })
+  local frow = find_row(s, function(_, line, t)
+    return t and t.cfile and not t.hunk and line:find("f.txt", 1, true)
+  end)
+  s:toggle_seen(frow)
+  local wt = s.store.data[s.store.wt_shard]
+  h.assert_true("no-worktree: no baselines written",
+    wt == nil or wt.baselines == nil)
 end
 h.finish()

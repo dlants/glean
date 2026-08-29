@@ -258,7 +258,7 @@ end
 -- The display line number and side of a diff line, plus its rendered body.
 local function api_line(session, entry, i)
   local dl = entry.hunk.lines[i]
-  local id = session:line_identity(dl, entry.path, entry.owner, entry.base + i)
+  local id = session:line_identity(dl, entry.path, entry.owner)
   local lnum, side = line_position(dl)
   return {
     i = i,
@@ -294,7 +294,7 @@ local function api_hunk(session, entry)
     old_count = h.old_count,
     new_start = h.new_start,
     new_count = h.new_count,
-    seen = session:hunk_seen(h, entry.path, entry.owner, entry.base),
+    seen = session:hunk_seen(h, entry.path, entry.owner),
     adds = adds,
     dels = dels,
     unseen_lines = unseen,
@@ -355,7 +355,7 @@ local function selector_identities(s, index, sel)
       error(("glean: hunk %s has no line %s (it has %d)")
         :format(id, tostring(i), #entry.hunk.lines), 0)
     end
-    local lid = s:line_identity(dl, entry.path, entry.owner, entry.base + i)
+    local lid = s:line_identity(dl, entry.path, entry.owner)
     if lid then
       ids[#ids + 1] = lid
       if entry.mode == "combined" then
