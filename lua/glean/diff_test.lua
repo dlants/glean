@@ -196,4 +196,29 @@ do
   h.assert_eq("map: after last hunk", diff.map_lnum(hunks, 20), 20)
   h.assert_eq("map: no hunks", diff.map_lnum({}, 7), 7)
 end
+-- A changed line whose own text starts with `--` / `++` (SQL comments, C++
+-- macros) renders as `--- x` / `+++ x` inside the hunk body. Those are diff
+-- *content*, not the file's old/new-path markers, which only precede the
+-- first `@@`. Swallowing them silently drops changed lines from the model.
+do
+  local text = table.concat({
+    "diff --git a/schema.sql b/schema.sql",
+    "--- a/schema.sql",
+    "+++ b/schema.sql",
+    "@@ -1,2 +1,2 @@",
+    "--- Name: old; Type: FUNCTION",
+    "+++ Name: new; Type: FUNCTION",
+    " tail",
+  }, "\n")
+  local files = diff.parse(text)
+  h.assert_eq("marker-lookalike: one file", #files, 1)
+  h.assert_eq("marker-lookalike: path unchanged", files[1].path, "schema.sql")
+  local lines = files[1].hunks[1].lines
+  h.assert_eq("marker-lookalike: 3 diff lines", #lines, 3)
+  h.assert_eq("marker-lookalike: del kind", lines[1].kind, "del")
+  h.assert_eq("marker-lookalike: del text", lines[1].text, "-- Name: old; Type: FUNCTION")
+  h.assert_eq("marker-lookalike: del old_lnum", lines[1].old_lnum, 1)
+  h.assert_eq("marker-lookalike: add kind", lines[2].kind, "add")
+  h.assert_eq("marker-lookalike: add text", lines[2].text, "++ Name: new; Type: FUNCTION")
+end
 h.finish()

@@ -76,7 +76,11 @@ function M.splice(segments, at, remove_n, seg)
 
     local tail_start = math.max(pos, cut_end)
     if tail_start < s_end then
-      push(slice(s, tail_start - pos, inf and nil or (s_end - tail_start)))
+      -- `inf and nil or x` would always take the `or` branch (nil is falsy),
+      -- turning the open-ended tail into a segment of length inf.
+      local tail_n = nil
+      if not inf then tail_n = s_end - tail_start end
+      push(slice(s, tail_start - pos, tail_n))
     end
 
     if inf then break end

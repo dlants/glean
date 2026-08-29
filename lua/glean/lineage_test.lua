@@ -695,4 +695,13 @@ do
   h.assert_eq("mover owns the moved line", c["f.txt"].prov[1].sha, mover)
 end
 
+-- The trailing open-ended segment must stay open after a splice: giving it a
+-- finite (infinite) length makes every later consumer treat the rest of the
+-- file as a bounded run of `inf` lines.
+do
+  local segs = lineage.splice(lineage.base_state(), 5, 1, { sha = "c1", lnum = 5, n = 2 })
+  local tail = segs[#segs]
+  h.assert_eq("splice: tail stays open", tail.n, nil)
+  h.assert_eq("splice: tail resumes after the cut", tail.base, 6)
+end
 h.finish()

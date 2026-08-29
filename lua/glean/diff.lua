@@ -85,9 +85,11 @@ function M.parse(text)
       file.kind = "rename"
     elseif file and not hunk and line:match("^rename to ") then
       file.kind = "rename"
-    elseif file and line:match("^%-%-%- ") then
-      -- old-file marker; for added files this is `/dev/null`.
-    elseif file and line:match("^%+%+%+ ") then
+    elseif file and not hunk and line:match("^%-%-%- ") then
+      -- old-file marker; for added files this is `/dev/null`. Only valid before
+      -- the file's first `@@`: inside a hunk `--- x` is a deleted `-- x` line
+      -- (and `+++ x` an added `++ x` line), which the body branch must claim.
+    elseif file and not hunk and line:match("^%+%+%+ ") then
       local p = line:match("^%+%+%+ (.+)$")
       if p and p ~= "/dev/null" then file.path = strip_prefix(p) end
     elseif file and line:match("^@@") then
