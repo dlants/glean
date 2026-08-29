@@ -109,6 +109,29 @@ change row, `del_above`, and multi-hunk indexing. Suite green.
 
 `:Glean toggle-mark` then: resolve path from the buffer → union `sources` over the selected rows (or the cursor row's hunk when given no range) → map each through `line_identity(dl, path, self:combined_owner(path))` → hand the ids to the existing `Session:perform({ kind = "seen", ... })` + `render()`. The repaint follows from `GleanReviewChanged`, which the gutter already listens for.
 
+Status: done (stage 4). `Session:toggle_marks(path, srow, erow, expand_hunk)`
+(init.lua, right before `wt_head_lines`) is the inverse: it reads
+`self:file_status(path)`, unions the rows' `sources` (deduped by `hunk:li`),
+widens them to whole hunks when `expand_hunk` (the no-range, cursor-row case),
+maps each through `line_identity` with `combined_owner`, and performs one
+`{kind = "seen"}` action + `render()`. Polarity is `ids_all_seen` -> unmark,
+else mark. Every addressed changed line also contributes a `{path, text}` sticky
+record, matching `mark_visual_range`. Unlike `mark_visual_range` the already-seen
+ids are *not* filtered out of the mark payload: both the store and
+`baseline.mark` are idempotent there, and the unmark direction needs them.
+Guards: `file_status` nil (not worktree-targeted / path not in the review),
+`load_lineage()` then `owner_status(path) ~= "loaded"` (pending ownership), and
+an empty id set (a pure-context selection) all return `false, reason` rather
+than acting. `M.toggle_mark(line1, line2)` is the buffer-side entry point —
+`current_session()` + `git_mod.relpath`, refusing a `modified` buffer (chosen
+over forcing a refresh: it is the same rule the gutter already paints by, so a
+stale glyph and a refused mark agree) — and the `:Glean` dispatch routes
+`toggle-mark` to it, with `o.range > 0` deciding range vs. cursor-hunk.
+`toggle-mark` added to the completion list. New suite
+`lua/glean/toggle_mark_test.lua` (range mark, all-seen toggle back, partial
+completes, hunk expansion, inert context row / unknown path). Full suite green.
+No README/keymap changes in this stage.
+
 Why deferred coordinates rather than pre-resolved identities:
 
 - `line_identity` needs `owner(dl)`, i.e. loaded blame provenance. Resolving during projection would make the gutter depend on it; resolving at mark time keeps `M.project` pure and headless-testable.

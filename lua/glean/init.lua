@@ -952,6 +952,58 @@ function Session:file_status(path)
     return id ~= nil and self:id_seen(id)
   end)
 end
+--- Flip the seen-ness of `path`'s post-image rows `srow..erow` from the file
+--- buffer's coordinates: the gutter's `sources` invert each row back into
+--- `diff(B, W)` line coordinates, which the usual `line_identity` +
+--- `perform{kind="seen"}` funnel turns into store/baseline edits. With
+--- `expand_hunk` the touched rows widen to every line of the hunks they belong
+--- to (the no-range, cursor-row case). Polarity is mark unless every addressed
+--- identity is already seen, so a partial selection completes rather than flips.
+--- Returns false plus a reason when there is nothing to act on.
+function Session:toggle_marks(path, srow, erow, expand_hunk)
+  local marks = self:file_status(path)
+  if not marks then return false, "no live review for this file" end
+  local file = file_with_path(self.combined_files, path)
+  if not file then return false, "no live review for this file" end
+  -- A file whose ownership is still loading is inert here exactly as its rows
+  -- are in the review buffer: every line would report unowned.
+  self:load_lineage()
+  if self:owner_status(path) ~= "loaded" then return false, "ownership still loading" end
+
+  local seen_src, srcs, hunks = {}, {}, {}
+  local function take(hi, li)
+    local k = hi .. ":" .. li
+    if seen_src[k] then return end
+    seen_src[k] = true
+    srcs[#srcs + 1] = { hunk = hi, li = li }
+  end
+  for lnum = srow, erow do
+    local m = marks[lnum]
+    for _, src in ipairs(m and m.sources or {}) do
+      if expand_hunk then hunks[#hunks + 1] = src.hunk else take(src.hunk, src.li) end
+    end
+  end
+  table.sort(hunks)
+  for _, hi in ipairs(hunks) do
+    for li = 1, #file.hunks[hi].lines do take(hi, li) end
+  end
+
+  local owner = self:combined_owner(path)
+  local ids, sticky = {}, {}
+  for _, src in ipairs(srcs) do
+    local dl = file.hunks[src.hunk].lines[src.li]
+    local id = dl and self:line_identity(dl, path, owner)
+    if id then
+      ids[#ids + 1] = id
+      sticky[#sticky + 1] = { path = path, text = dl.text }
+    end
+  end
+  if #ids == 0 then return false, "no reviewable lines in the selection" end
+  local op = self:ids_all_seen(ids) and "unmark" or "mark"
+  self:perform({ kind = "seen", op = op, ids = ids, sticky = sticky })
+  self:render()
+  return true
+end
 -- The tip-commit (H) lines of `path` — the immutable left endpoint the reviewed
 -- baseline is anchored on. An empty list when the path does not exist there (an
 -- untracked or newly added file), which is exactly its content at the tip.
@@ -4675,6 +4727,28 @@ function M.current_session()
   if not api.nvim_buf_is_valid(current.buf) then return nil end
   return current.session
 end
+--- `:Glean toggle-mark` from an ordinary file buffer: flip the seen-ness of the
+--- selected rows, or of the whole hunk under the cursor when given no range.
+--- A modified buffer is refused — it is no longer the work tree the review's
+--- diff describes, so its rows would name lines the user is not looking at.
+function M.toggle_mark(line1, line2)
+  local function warn(msg) vim.notify("glean: " .. msg, vim.log.levels.WARN) end
+  local session = M.current_session()
+  if not (session and session.worktree) then return warn("no live work-tree review") end
+  local bufnr = api.nvim_get_current_buf()
+  if vim.bo[bufnr].modified then return warn("buffer is modified; write it first") end
+  local name = api.nvim_buf_get_name(bufnr)
+  local path = name ~= "" and git_mod.relpath(session.git.repo_root, name) or nil
+  if not path then return warn("buffer is not a file in the review's repo") end
+  local expand = line1 == nil
+  if expand then
+    line1 = api.nvim_win_get_cursor(0)[1]
+    line2 = line1
+  end
+  if line1 > line2 then line1, line2 = line2, line1 end
+  local ok, err = session:toggle_marks(path, line1, line2, expand)
+  if not ok then warn(err) end
+end
 -- The only teardown path for a review: stop its background work (timer +
 -- augroup), close its sticky float, and wipe its buffer. `current` is cleared
 -- first, so this is re-entrant (wiping the buffer re-enters through BufWipeout,
@@ -5129,6 +5203,10 @@ function M.setup(opts)
       end
       return
     end
+    if args[1] == "toggle-mark" then
+      if o.range > 0 then M.toggle_mark(o.line1, o.line2) else M.toggle_mark() end
+      return
+    end
     if args[1] == "comments" then
       overlay.quickfix()
       vim.cmd("copen")
@@ -5169,7 +5247,8 @@ function M.setup(opts)
     M.open({ base = args[1], target = args[2] })
   end, { nargs = "*", range = true, complete = function(lead)
     local out = {}
-    for _, sub in ipairs({ "comment", "comments", "jump", "log", "prs", "pr", "branch" }) do
+    local subs = { "comment", "comments", "toggle-mark", "jump", "log", "prs", "pr", "branch" }
+    for _, sub in ipairs(subs) do
       if sub:sub(1, #lead) == lead then out[#out + 1] = sub end
     end
     return out
