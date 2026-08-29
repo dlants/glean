@@ -87,13 +87,21 @@ both modes.
 
 ## Seen / collapse
 
-Seen-ness is a flat set of stable line identities. A hunk is "seen" iff every
+Seen-ness is a flat set of line identities. A hunk is "seen" iff every
 one of its changed lines is seen; files and commits roll up the same way. Seen
 units render in a collapsible per-file "seen" section, and a contiguous seen run
 inside an otherwise-unseen hunk collapses into a `✓ marked N lines` marker row.
 
 The top row reports the remaining unreviewed files, hunks, additions, and
 deletions. It stays pinned in the floating header while scrolling.
+
+For committed changes a mark is just a line number on a commit, and both sides
+of the comparison are immutable. For *uncommitted* work "seen" means you signed
+off on a particular version of the line: glean remembers the content you
+approved and compares it against the file as it is now, so the parts you
+subsequently change come back as unseen while everything you did not touch stays
+marked. Committing resets the seen state for the files the commit touched — the
+changes you approved are no longer the changes on screen.
 
 Collapse state is ephemeral view-state (initialized from seen status, then
 evolves independently and is never persisted).

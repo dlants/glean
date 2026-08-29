@@ -404,10 +404,16 @@ function Store:set_baseline(path, base_hash, lines) end --- nil/equal-to-base pr
     `set_seen_records`) is deleted here, as stage 2 deferred; `migrate_shard`
     now drops a legacy `seen_marks` table on read.
 
-## Docs
+## Docs — DONE
 
-- Goal: `context.md`'s line-identity section and `state.lua`'s stale
+- [x] Goal: `context.md`'s line-identity section and `state.lua`'s stale
   per-line-hash comment (state.lua:104-110) describe R. `README.md` gains a
   sentence on what "seen" means for uncommitted work: you signed off on a
   version of the line, and only the parts you subsequently change come back.
 - Tests: none (prose).
+- Done: `state.lua`'s content-hash header now describes R (and notes content
+  hashing survives only for sticky overrides and comments); `context.md` gains
+  the positional worktree identity, the H/R/W classification rules, a
+  `baseline.lua` layout entry and an updated `state.lua` entry; `README.md`'s
+  "Seen / collapse" section explains what seen means for uncommitted work and
+  that committing resets it for the touched files.

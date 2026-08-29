@@ -101,12 +101,19 @@ function M.range_covered(ranges, range)
   return false
 end
 
--- ── Content-hash addressing (the floating "worktree" commit) ────────────────
+-- ── The floating "worktree" commit ─────────────────────────────────────────
 -- Uncommitted changes live on a synthetic commit with no stable line numbers,
--- so each reviewed line is addressed by the **content hash** of its text. The
--- worktree shard stores a flat set of seen line hashes (per file); a line is
--- seen iff its current text hashes into that set. Per-line addressing makes
--- mark/unmark a pure set add/remove with no block-coalescing pass.
+-- so their seen-ness is not stored per line at all. Instead the worktree shard
+-- holds a **reviewed baseline** per file (`baselines[path]`): the content the
+-- reviewer has signed off on, anchored by a hash of the tip-commit content it
+-- was reviewed against. Seen-ness is then recomputed by diffing that baseline
+-- against the work tree, so editing a reviewed line makes exactly that line
+-- unseen and nothing is ever re-found by searching for text. See
+-- `baseline.lua` for the algebra and `plans/2026-08-28-reviewed-baseline.md`
+-- for the reasoning.
+--
+-- Content hashing survives only for sticky demotion overrides and comments,
+-- which genuinely want all-or-nothing content identity.
 
 -- Content key for a single new-file line of text.
 function M.line_hash(text)
