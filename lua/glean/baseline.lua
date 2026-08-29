@@ -2,7 +2,7 @@
 -- uncommitted file. See plans/2026-08-28-reviewed-baseline.md.
 --
 -- Three versions are in play, each a plain list of lines:
---   base     (H) the file at the review's tip commit — immutable,
+--   head     (H) the file at the review's tip commit — immutable,
 --   reviewed (R) the content the reviewer has signed off on,
 --   worktree (W) the file as it is right now.
 --
@@ -83,15 +83,15 @@ function M.map_back(ops, b_lnum)
 end
 
 --- Seen-ness for one file, as dense predicates over line numbers of the
---- displayed diff D = diff(base, worktree):
+--- displayed diff D = diff(head, worktree):
 ---   `add[N]` for a displayed add at worktree line N,
----   `del[P]` for a displayed del at base line P.
+---   `del[P]` for a displayed del at head line P.
 --- Lines that are not part of D are still keyed (they read as seen); callers
 --- only ever ask about lines D actually displays.
 --- @return { add: table<integer, boolean>, del: table<integer, boolean> }
-function M.seen_sets(base, reviewed, worktree)
+function M.seen_sets(head, reviewed, worktree)
   local u = M.align(reviewed, worktree)
-  local a = M.align(base, reviewed)
+  local a = M.align(head, reviewed)
   local add, del = {}, {}
   for n = 1, #worktree do
     add[n] = true
@@ -100,7 +100,7 @@ function M.seen_sets(base, reviewed, worktree)
     -- Present in W but not in R: the reviewer has not approved this text.
     if op.kind == "add" then add[op.b_lnum] = false end
   end
-  for p = 1, #base do
+  for p = 1, #head do
     del[p] = false
   end
   for _, op in ipairs(a) do
@@ -123,13 +123,13 @@ local function sel_sets(sel)
 end
 
 --- R' after marking `sel` seen: advance R toward W over the selected lines.
---- `sel` is `{ add = { <worktree lnum>, ... }, del = { <base lnum>, ... } }`.
+--- `sel` is `{ add = { <worktree lnum>, ... }, del = { <head lnum>, ... } }`.
 --- @return string[]
-function M.mark(base, reviewed, worktree, sel)
+function M.mark(head, reviewed, worktree, sel)
   local sel_add, sel_del = sel_sets(sel)
-  local a = M.align(base, reviewed)
+  local a = M.align(head, reviewed)
   -- A selected displayed del still lives in R (it is unseen), at the line the
-  -- base line maps forward to through diff(base, reviewed).
+  -- head line maps forward to through diff(head, reviewed).
   local drop_r = {}
   for p in pairs(sel_del) do
     local r = M.map_forward(a, p)
@@ -148,9 +148,9 @@ function M.mark(base, reviewed, worktree, sel)
   return out
 end
 
---- R' after unmarking `sel`: retreat R toward base over the selected lines.
+--- R' after unmarking `sel`: retreat R toward head over the selected lines.
 --- @return string[]
-function M.unmark(base, reviewed, worktree, sel)
+function M.unmark(head, reviewed, worktree, sel)
   local sel_add, sel_del = sel_sets(sel)
   local u = M.align(reviewed, worktree)
   -- A selected displayed add is already in R (it is seen), at the line the
@@ -161,12 +161,12 @@ function M.unmark(base, reviewed, worktree, sel)
     if r then drop_r[r] = true end
   end
   local out = {}
-  for _, op in ipairs(M.align(base, reviewed)) do
+  for _, op in ipairs(M.align(head, reviewed)) do
     if op.kind == "context" then
       out[#out + 1] = op.text
     elseif op.kind == "add" then
       if not drop_r[op.b_lnum] then out[#out + 1] = op.text end
-    else -- del: approved removal of a base line; restore it when unmarked
+    else -- del: approved removal of a head line; restore it when unmarked
       if sel_del[op.a_lnum] then out[#out + 1] = op.text end
     end
   end

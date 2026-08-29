@@ -442,7 +442,7 @@ end
 -- relative to the H it was reviewed against, the anchor is checked on every
 -- read: a mismatch reads as "nothing reviewed" rather than as a diff against
 -- stale content, so committing part of the work resets exactly the paths whose
--- base content moved.
+-- tip-commit content moved.
 
 -- Content key for a whole file's lines — the baseline anchor.
 function M.content_hash(lines)
@@ -450,21 +450,21 @@ function M.content_hash(lines)
 end
 
 -- The reviewed baseline lines for `path`, or nil when none is stored or the
--- stored anchor is not `base_hash`. A stale record is left in place (a later
+-- stored anchor is not `head_hash`. A stale record is left in place (a later
 -- read with its original hash still finds it); only a write replaces it.
-function Store:baseline(path, base_hash)
+function Store:baseline(path, head_hash)
   local c = self.data[self.wt_shard]
   local rec = c and c.baselines and c.baselines[path]
-  if not rec or rec.base ~= base_hash then return nil end
+  if not rec or rec.head ~= head_hash then return nil end
   return rec.lines
 end
 
 -- Store `path`'s reviewed baseline. `lines` nil, or content-identical to the
--- base the hash names (nothing reviewed), prunes the record — and the worktree
+-- head the hash names (nothing reviewed), prunes the record — and the worktree
 -- slice when it then carries nothing else, so a mark fully undone restores
 -- byte-identical JSON.
-function Store:set_baseline(path, base_hash, lines)
-  local prune = lines == nil or M.content_hash(lines) == base_hash
+function Store:set_baseline(path, head_hash, lines)
+  local prune = lines == nil or M.content_hash(lines) == head_hash
   local c = self.data[self.wt_shard]
   if not c then
     if prune then return end
@@ -477,7 +477,7 @@ function Store:set_baseline(path, base_hash, lines)
     end
   else
     c.baselines = c.baselines or {}
-    c.baselines[path] = { base = base_hash, lines = lines }
+    c.baselines[path] = { head = head_hash, lines = lines }
   end
   wt_prune(self)
 end

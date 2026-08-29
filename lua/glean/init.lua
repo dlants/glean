@@ -955,9 +955,9 @@ end
 -- The tip-commit (H) lines of `path` — the immutable left endpoint the reviewed
 -- baseline is anchored on. An empty list when the path does not exist there (an
 -- untracked or newly added file), which is exactly its content at the tip.
-function Session:wt_base_lines(path)
-  self._wt_base = self._wt_base or {}
-  local cached = self._wt_base[path]
+function Session:wt_head_lines(path)
+  self._wt_head = self._wt_head or {}
+  local cached = self._wt_head[path]
   if cached then return cached end
   local out = self.git:show(self._commit_cache_head or "HEAD", path)
   local lines = {}
@@ -966,7 +966,7 @@ function Session:wt_base_lines(path)
     -- `git show` emits a trailing newline; splitting it yields a phantom line.
     if lines[#lines] == "" then lines[#lines] = nil end
   end
-  self._wt_base[path] = lines
+  self._wt_head[path] = lines
   return lines
 end
 
@@ -977,12 +977,12 @@ function Session:wt_versions(path)
   self._wt_versions = self._wt_versions or {}
   local cached = self._wt_versions[path]
   if cached then return cached end
-  local base = self:wt_base_lines(path)
-  local base_hash = state_mod.content_hash(base)
+  local head = self:wt_head_lines(path)
+  local head_hash = state_mod.content_hash(head)
   local v = {
-    base = base,
-    base_hash = base_hash,
-    reviewed = self.store:baseline(path, base_hash) or base,
+    head = head,
+    head_hash = head_hash,
+    reviewed = self.store:baseline(path, head_hash) or head,
     worktree = self:wt_file_lines(path) or {},
   }
   self._wt_versions[path] = v
@@ -996,7 +996,7 @@ function Session:wt_seen_sets(path)
   local cached = self._wt_seen[path]
   if cached then return cached end
   local v = self:wt_versions(path)
-  local sets = baseline.seen_sets(v.base, v.reviewed, v.worktree)
+  local sets = baseline.seen_sets(v.head, v.reviewed, v.worktree)
   self._wt_seen[path] = sets
   return sets
 end
@@ -1276,7 +1276,7 @@ function Session:build()
   -- work-tree contents, all of which may have moved since the last render.
   self._wt_seen = {}
   self._wt_versions = {}
-  self._wt_base = {}
+  self._wt_head = {}
   -- Working-tree reads backing off-diff comment resolution, likewise per-render.
   self._wt_lines = {}
   local lines = {}
@@ -2273,8 +2273,8 @@ function Session:apply_wt_seen(path, ids, op)
     end
   end
   local fn = op == "mark" and baseline.mark or baseline.unmark
-  local reviewed = fn(v.base, v.reviewed, v.worktree, sel)
-  self.store:set_baseline(path, v.base_hash, reviewed)
+  local reviewed = fn(v.head, v.reviewed, v.worktree, sel)
+  self.store:set_baseline(path, v.head_hash, reviewed)
   self._wt_versions[path] = nil
   if self._wt_seen then self._wt_seen[path] = nil end
 end
