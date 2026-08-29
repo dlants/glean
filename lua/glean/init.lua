@@ -827,7 +827,7 @@ local function target_ordinal(file, target)
   for hi = 1, target.hunk - 1 do
     ord = ord + #file.hunks[hi].lines
   end
-  return ord + target.line
+  return ord + target.li
 end
 
 -- The diff file a target row belongs to (commit scope: its commit's file;
@@ -1206,9 +1206,9 @@ function M.compute_ancestry(row_map, n)
         commit_row, file_row, sec_row, hunk_row = row, nil, nil, nil
       elseif t.seen then
         sec_row, hunk_row = row, nil
-      elseif (t.file or t.cfile) and not t.hunk and not t.line then
+      elseif (t.file or t.cfile) and not t.hunk and not t.li then
         file_row, sec_row, hunk_row = row, nil, nil
-      elseif t.hunk and t.line == nil and t.marker == nil and t.comment == nil then
+      elseif t.hunk and t.li == nil and t.marker == nil and t.comment == nil then
         hunk_row = row
       end
     end
@@ -1244,6 +1244,11 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Build (pure projection): returns lines, row_map, highlights, comments.
+-- ---------------------------------------------------------------------------
+-- A row_map entry is a target: the semantic thing a buffer row stands for.
+-- `hunk` and `li` are both indices — `li` into `hunk.lines`, never a line
+-- number. Line numbers only ever live on the DiffLine (`new_lnum` post-image /
+-- `old_lnum` pre-image) and on identities.
 -- ---------------------------------------------------------------------------
 
 -- Comment-summary rows are laid out (not soft-wrapped) so the projection stays
@@ -1399,7 +1404,7 @@ function Session:build()
             local dl = hunk.lines[ri]
             local m = dl.kind == "add" and "+" or dl.kind == "del" and "-" or " "
             emit(dl.text,
-              vim.tbl_extend("force", mtarget, { line = ri }), "GleanSeen", m)
+              vim.tbl_extend("force", mtarget, { li = ri }), "GleanSeen", m)
             for _, c in ipairs(comments_by_ord[base_ord + ri] or {}) do
               emit_comment(c, target)
             end
@@ -1414,7 +1419,7 @@ function Session:build()
           or dl.kind == "del" and "GleanDel"
           or "GleanContext"
         local row = emit(dl.text,
-          vim.tbl_extend("force", target, { line = li }), hl, m)
+          vim.tbl_extend("force", target, { li = li }), hl, m)
         if dl.kind == "del" then
           if #adds > 0 then flush() end
           dels[#dels + 1] = { row = row, text = dl.text }
@@ -2068,7 +2073,7 @@ function Session:highlight_cursor_hunk()
     if indent_gen ~= self._cursor_indent_gen or self._cursor_hunk_state ~= state
         or not api.nvim_buf_is_valid(self.buf) then return end
     for r, o in pairs(self.row_map) do
-      if same(o) and not (o.line == nil and o.marker == nil and o.comment == nil) then
+      if same(o) and not (o.li == nil and o.marker == nil and o.comment == nil) then
         api.nvim_buf_set_extmark(self.buf, NS_CURSOR_INDENT, r, 0, {
           virt_text = { { indent, "Normal" } },
           virt_text_pos = "inline",
@@ -2491,16 +2496,16 @@ function Session:collapse_header_row(target)
   for r, t in pairs(self.row_map) do
     if target.marker then
       local a, b = target.marker, t.marker
-      if b and not t.line and t.commit == target.commit and t.file == target.file
+      if b and not t.li and t.commit == target.commit and t.file == target.file
           and t.cfile == target.cfile and t.hunk == target.hunk
           and b.lo == a.lo and b.hi_line == a.hi_line then return r end
     elseif target.dir then
       if t.dir == target.dir and t.commit == target.commit then return r end
     elseif target.cfile then
-      if t.cfile == target.cfile and not t.hunk and not t.line and not t.seen then return r end
+      if t.cfile == target.cfile and not t.hunk and not t.li and not t.seen then return r end
     elseif target.file then
       if t.commit == target.commit and t.file == target.file
-          and not t.hunk and not t.line and not t.seen then return r end
+          and not t.hunk and not t.li and not t.seen then return r end
     elseif target.commit then
       if t.commit == target.commit and not t.file and not t.cfile and not t.dir
           and not t.hunk then return r end
@@ -2640,11 +2645,11 @@ end
 -- the fresh row_map after render. Nil for non-line rows (headers/markers).
 local function line_anchor(t)
   if not t then return nil end
-  if t.commit and t.file and t.hunk and t.line then
-    return ("c:%d:%d:%d:%d"):format(t.commit, t.file, t.hunk, t.line)
+  if t.commit and t.file and t.hunk and t.li then
+    return ("c:%d:%d:%d:%d"):format(t.commit, t.file, t.hunk, t.li)
   end
-  if t.cfile and t.hunk and t.line then
-    return ("f:%d:%d:%d"):format(t.cfile, t.hunk, t.line)
+  if t.cfile and t.hunk and t.li then
+    return ("f:%d:%d:%d"):format(t.cfile, t.hunk, t.li)
   end
   return nil
 end
@@ -2792,19 +2797,19 @@ end
 -- on individual rows rather than whole hunks.
 function Session:row_identity(target)
   if self.scope == "commits" then
-    if not (target.commit and target.file and target.hunk and target.line) then return nil end
+    if not (target.commit and target.file and target.hunk and target.li) then return nil end
     local commit = self.commits[target.commit]
     local file = commit.files[target.file]
-    return self:line_identity(file.hunks[target.hunk].lines[target.line], file.path,
+    return self:line_identity(file.hunks[target.hunk].lines[target.li], file.path,
       self:commit_owner(commit))
   end
-  if not (target.cfile and target.hunk and target.line) then return nil end
+  if not (target.cfile and target.hunk and target.li) then return nil end
   local cf = self.combined_files[target.cfile]
   -- Backstop: pending rows are filtered before reaching here (see toggle_seen /
   -- mark_visual_range), so a non-loaded file is a violated invariant.
   assert(self:owner_status(cf.path) == "loaded",
     "row_identity on non-loaded file: " .. cf.path)
-  return self:line_identity(cf.hunks[target.hunk].lines[target.line], cf.path,
+  return self:line_identity(cf.hunks[target.hunk].lines[target.li], cf.path,
     self:combined_owner(cf.path))
 end
 
@@ -2848,10 +2853,10 @@ end
 -- The content-addressed sticky record for a single row's diff line, or nil if
 -- the row is not a changed (add/del) diff line. Feeds the visual-mark path.
 function Session:row_sticky(target)
-  if not (target and target.cfile and target.hunk and target.line) then return nil end
+  if not (target and target.cfile and target.hunk and target.li) then return nil end
   local cf = self.combined_files and self.combined_files[target.cfile]
   if not cf then return nil end
-  local dl = cf.hunks[target.hunk] and cf.hunks[target.hunk].lines[target.line]
+  local dl = cf.hunks[target.hunk] and cf.hunks[target.hunk].lines[target.li]
   if not dl or (dl.kind ~= "add" and dl.kind ~= "del") then return nil end
   return { path = cf.path, text = dl.text }
 end
@@ -2914,7 +2919,7 @@ function Session:next_hunk_key(row)
   local cur_key = hunk_key(self.row_map[row])
   local best, best_t
   for r, t in pairs(self.row_map) do
-    if t.hunk and not t.line and t.sec ~= "seen" and hunk_key(t) ~= cur_key then
+    if t.hunk and not t.li and t.sec ~= "seen" and hunk_key(t) ~= cur_key then
       if r > row and (not best or r < best) then best, best_t = r, t end
     end
   end
@@ -2929,7 +2934,7 @@ function Session:revive_dest_key(row, target)
   local cur_key = hunk_key(target)
   local best, best_t
   for r, t in pairs(self.row_map) do
-    if t.hunk and not t.line and t.sec == "seen" and same_file(t, target)
+    if t.hunk and not t.li and t.sec == "seen" and same_file(t, target)
       and hunk_key(t) ~= cur_key and r > row and (not best or r < best) then
       best, best_t = r, t
     end
@@ -2937,7 +2942,7 @@ function Session:revive_dest_key(row, target)
   if best_t then return hunk_key(best_t) end
   best, best_t = nil, nil
   for r, t in pairs(self.row_map) do
-    if t.hunk and not t.line and t.sec == "unseen" and same_file(t, target)
+    if t.hunk and not t.li and t.sec == "unseen" and same_file(t, target)
       and (not best or r < best) then
       best, best_t = r, t
     end
@@ -2976,7 +2981,7 @@ function Session:move_to_hunk_key(key)
   if not key then return self:move_to_next_hunk() end
   if not (self.win and api.nvim_win_is_valid(self.win)) then return end
   for r, t in pairs(self.row_map) do
-    if t.hunk and not t.line and hunk_key(t) == key then
+    if t.hunk and not t.li and hunk_key(t) == key then
       return self:move_to_hunk_row(r)
     end
   end
@@ -2992,7 +2997,7 @@ function Session:move_to_next_hunk()
   local cur = self:cursor_row()
   local best
   for r, t in pairs(self.row_map) do
-    if t.hunk and not t.line and t.sec ~= "seen" then
+    if t.hunk and not t.li and t.sec ~= "seen" then
       if r >= cur and (not best or r < best) then best = r end
     end
   end
@@ -3017,7 +3022,7 @@ function Session:nav_to(pred, forward)
   end
   if best then
     local t = self.row_map[best]
-    if t.hunk and not t.line and not t.seen then
+    if t.hunk and not t.li and not t.seen then
       self:move_to_hunk_row(best)
     else
       pcall(api.nvim_win_set_cursor, self.win, { best + 1, 0 })
@@ -3026,11 +3031,11 @@ function Session:nav_to(pred, forward)
 end
 
 local function is_hunk_row(t)
-  return t.hunk and not t.line and not t.seen
+  return t.hunk and not t.li and not t.seen
 end
 
 local function is_file_row(t)
-  return (t.file or t.cfile) and not t.hunk and not t.line and not t.seen
+  return (t.file or t.cfile) and not t.hunk and not t.li and not t.seen
 end
 
 function Session:next_hunk() self:nav_to(is_hunk_row, true) end
@@ -3203,10 +3208,10 @@ end
 -- or nil if the row is not a literal diff line.
 function Session:comment_target(row)
   local target = self.row_map[row]
-  if not target or not target.line or target.pending then return nil end
+  if not target or not target.li or target.pending then return nil end
   local file = self:row_file(target)
   if not file then return nil end
-  local dl = file.hunks[target.hunk].lines[target.line]
+  local dl = file.hunks[target.hunk].lines[target.li]
   local exact = self:canonical_file(file)
   if not line_ordinal(exact, dl) then return nil end
   return {
@@ -3221,10 +3226,10 @@ function Session:visual_comment_target(srow, erow)
   local path, dls, prev_ord, first_target = nil, {}, nil, nil
   for row = srow, erow do
     local t = self.row_map[row]
-    if t and t.line and not t.pending then
+    if t and t.li and not t.pending then
       local file = self:row_file(t)
       if file then
-        local dl = file.hunks[t.hunk].lines[t.line]
+        local dl = file.hunks[t.hunk].lines[t.li]
         local ord = self:canonical_ordinal(file, dl)
         if not ord then break end
         if not path then
@@ -3270,7 +3275,7 @@ function Session:delete_comment_at(row)
   if row == nil then row = self:cursor_row() end
   local target = self.row_map[row]
   local file = self:row_file(target)
-  if not file or not target.line or target.pending then return end
+  if not file or not target.li or target.pending then return end
   local ord = target_ordinal(file, target)
   local list = self:resolve_comments(file)[ord] or {}
   if #list == 0 then
@@ -3389,7 +3394,7 @@ end
 function Session:file_header_row(path)
   local best
   for r, t in pairs(self.row_map) do
-    if t and (t.file or t.cfile) and not t.hunk and not t.line then
+    if t and (t.file or t.cfile) and not t.hunk and not t.li then
       local f = self:row_file(t)
       if f and f.path == path and (not best or r < best) then best = r end
     end
@@ -3503,10 +3508,10 @@ end
 -- it takes the line number of the following surviving line in its hunk: it is
 -- then only ever picked when the requested line is exactly there.
 function Session:row_post_lnum(target)
-  local file = target and target.line and self:row_file(target)
+  local file = target and target.li and self:row_file(target)
   local hunk = file and file.hunks[target.hunk]
   if not hunk then return nil end
-  for i = target.line, #hunk.lines do
+  for i = target.li, #hunk.lines do
     local dl = hunk.lines[i]
     if dl.new_lnum then return dl.new_lnum end
   end
@@ -3537,7 +3542,7 @@ function Session:goto_source_line(path, lnum)
   if changed then self:render() end
   local best, best_score
   for r, t in pairs(self.row_map) do
-    local f = t and t.line and self:row_file(t)
+    local f = t and t.li and self:row_file(t)
     if f and f.path == path then
       local post = self:row_post_lnum(t)
       if post then
@@ -3583,13 +3588,13 @@ end
 
 function Session:jump_target(row)
   local target = self.row_map[row]
-  if not target or not target.line then return nil end
+  if not target or not target.li then return nil end
   local dl, path, post_ref, pre_ref
   if self.scope == "commits" then
     if not target.commit then return nil end
     local commit = self.commits[target.commit]
     local file = commit.files[target.file]
-    dl = file.hunks[target.hunk].lines[target.line]
+    dl = file.hunks[target.hunk].lines[target.li]
     path = file.path
     -- The floating commit's add/context lines live in the live work tree; its
     -- pre-image (deletions) resolves against HEAD.
@@ -3601,7 +3606,7 @@ function Session:jump_target(row)
   else
     if not target.cfile then return nil end
     local cf = self.combined_files[target.cfile]
-    dl = cf.hunks[target.hunk].lines[target.line]
+    dl = cf.hunks[target.hunk].lines[target.li]
     path = cf.path
     post_ref, pre_ref = self.target, self.base
   end
@@ -3742,13 +3747,13 @@ end
 -- (combined scope).
 function Session:diff_context(row)
   local target = self.row_map[row]
-  if not target or not target.line then return nil end
+  if not target or not target.li then return nil end
   local dl, path, post_ref, pre_ref
   if self.scope == "commits" then
     if not target.commit then return nil end
     local commit = self.commits[target.commit]
     local file = commit.files[target.file]
-    dl = file.hunks[target.hunk].lines[target.line]
+    dl = file.hunks[target.hunk].lines[target.li]
     path = file.path
     if commit.sha == M.WORKTREE then
       post_ref, pre_ref = M.WORKTREE, "HEAD"
@@ -3758,7 +3763,7 @@ function Session:diff_context(row)
   else
     if not target.cfile then return nil end
     local cf = self.combined_files[target.cfile]
-    dl = cf.hunks[target.hunk].lines[target.line]
+    dl = cf.hunks[target.hunk].lines[target.li]
     path = cf.path
     post_ref, pre_ref = self.target, self.base
   end
@@ -3871,8 +3876,8 @@ function Session:cursor_anchor()
     local commit = self.commits[target.commit]
     anchor.sha = commit and commit.sha
   end
-  if target.hunk and target.line then
-    local dl = file.hunks[target.hunk].lines[target.line]
+  if target.hunk and target.li then
+    local dl = file.hunks[target.hunk].lines[target.li]
     anchor.kind = dl.kind
     anchor.old_lnum = dl.old_lnum
     anchor.new_lnum = dl.new_lnum
@@ -3906,10 +3911,10 @@ function Session:restore_cursor_anchor(anchor)
   end
   local exact_row, exact_dist, owner_row, owner_score, best_row, best_score
   for row, target in pairs(self.row_map) do
-    local file = target and target.hunk and target.line and self:row_file(target) or nil
+    local file = target and target.hunk and target.li and self:row_file(target) or nil
     if file and file.path == anchor.path then
       local commit = target.commit and self.commits[target.commit] or nil
-      local dl = file.hunks[target.hunk].lines[target.line]
+      local dl = file.hunks[target.hunk].lines[target.li]
       local distance
       if anchor.new_lnum and dl.new_lnum then
         distance = math.abs(anchor.new_lnum - dl.new_lnum)

@@ -50,7 +50,7 @@ local function find_add_row(s, text)
   local n = api.nvim_buf_line_count(s.buf)
   for row = 0, n - 1 do
     local t = s.row_map[row]
-    if t and t.line and t.cfile then
+    if t and t.li and t.cfile then
       local line = api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
       if line and line:find(text, 1, true) then return row end
     end
@@ -91,7 +91,7 @@ do
     local n = api.nvim_buf_line_count(s.buf)
     for r = 0, n - 1 do
       local t = s.row_map[r]
-      if t and t.cfile and not t.hunk and not t.line then return r end
+      if t and t.cfile and not t.hunk and not t.li then return r end
     end
   end
   local hr = header_row()
@@ -137,7 +137,7 @@ do
   local n = api.nvim_buf_line_count(s.buf)
   for r = 0, n - 1 do
     local t = s.row_map[r]
-    if t and t.line and t.cfile then
+    if t and t.li and t.cfile then
       local cf = s.combined_files[t.cfile]
       if cf.path == "new.txt" then urow = r; break end
     end

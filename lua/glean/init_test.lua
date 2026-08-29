@@ -92,7 +92,7 @@ do
   local found_line = false
   for row = 0, n - 1 do
     local t = s.row_map[row]
-    if t.line then found_line = true end
+    if t.li then found_line = true end
   end
   h.assert_true("row_map: has body line rows", found_line)
 end
@@ -134,8 +134,8 @@ do
   })
   local body, header, file_header
   for row, t in pairs(s.row_map) do
-    if t.cfile and t.line and not body then body = row end
-    if t.cfile and t.hunk and not t.line and not t.marker and not header then header = row end
+    if t.cfile and t.li and not body then body = row end
+    if t.cfile and t.hunk and not t.li and not t.marker and not header then header = row end
     if t.cfile and not t.hunk and not file_header then file_header = row end
   end
   api.nvim_win_set_cursor(s.win, { body + 1, 0 })
@@ -162,7 +162,7 @@ do
   s:toggle_collapse()
   local target = s.row_map[s:cursor_row()]
   h.assert_true("collapse cursor: moves from body to collapsed file header",
-    target and target.cfile and not target.hunk and not target.line)
+    target and target.cfile and not target.hunk and not target.li)
   s:toggle_collapse()
 end
 -- Helpers for commit-scope tests.
@@ -189,7 +189,7 @@ do
     if not s.row_map[row] then all = false end
   end
   h.assert_true("commits: every row mapped", all)
-  local lrow = find_row(s, function(_, _, t) return t and t.commit and t.line end)
+  local lrow = find_row(s, function(_, _, t) return t and t.commit and t.li end)
   h.assert_true("commits: has a body line row", lrow ~= nil)
 end
 
@@ -246,7 +246,7 @@ do
   local s = open({ scope = "commits", state_dir = dir })
   -- comment on c1's +TWO line (new_lnum 2 in f.txt).
   local trow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   h.assert_true("comment: found +TWO row", trow ~= nil)
   s:add_comment_at(trow, "first note")
@@ -273,7 +273,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local trow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:add_comment_at(trow, "a question")
   local crow = find_row(s, function(_, line, t)
@@ -318,7 +318,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local trow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:add_comment_at(trow, "to delete")
   h.assert_eq("delete: present before", #s.store:comments_for("f.txt"), 1)
@@ -337,7 +337,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local trow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:open_comment_editor({}, function(text) s:add_comment_at(trow, text) end)
   local ebuf = api.nvim_get_current_buf()
@@ -358,7 +358,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local trow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:open_comment_editor({}, function(text) s:add_comment_at(trow, text) end)
   local ebuf = api.nvim_get_current_buf()
@@ -386,10 +386,10 @@ do
   local dir = vim.fn.tempname()
   local s = open({ state_dir = dir }) -- combined
   local hrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.hunk and not t.line and line:find("@@", 1, true)
+    return t and t.cfile and t.hunk and not t.li and line:find("@@", 1, true)
   end)
   local twrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.line and line == "TWO"
+    return t and t.cfile and t.li and line == "TWO"
   end)
   h.assert_true("visual: hunk header row", hrow ~= nil)
   h.assert_true("visual: +TWO row", twrow ~= nil)
@@ -415,7 +415,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ state_dir = dir }) -- combined
   local addrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.line and line == "TWO"
+    return t and t.cfile and t.li and line == "TWO"
   end)
   local add_ct = s:comment_target(addrow)
   h.assert_eq("author: add kind", add_ct.content[1].kind, "add")
@@ -428,7 +428,7 @@ do
   h.assert_eq("author: clean combined origin is not dirty", add_ct.origin.dirty, false)
 
   local delrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.line and line == "two"
+    return t and t.cfile and t.li and line == "two"
   end)
   local del_ct = s:comment_target(delrow)
   h.assert_eq("author: del kind", del_ct.content[1].kind, "del")
@@ -437,7 +437,7 @@ do
     del_ct.lnum, 2)
 
   local ctxrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.line and line == "one"
+    return t and t.cfile and t.li and line == "one"
   end)
   local ctx_ct = s:comment_target(ctxrow)
   h.assert_eq("author: context kind", ctx_ct.content[1].kind, "context")
@@ -446,7 +446,7 @@ do
   -- A visual span over the whole hunk keeps every kind in order and anchors on
   -- its first non-del line.
   local hrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.hunk and not t.line and line:find("@@", 1, true)
+    return t and t.cfile and t.hunk and not t.li and line:find("@@", 1, true)
   end)
   local span = s:visual_comment_target(hrow, hrow + 5)
   local kinds = {}
@@ -463,7 +463,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ state_dir = dir, scope = "commits" })
   local row = find_row(s, function(_, line, t)
-    return t and t.commit and t.line and line == "TWO"
+    return t and t.commit and t.li and line == "TWO"
   end)
   local ct = s:comment_target(row)
   h.assert_eq("author: commit-scope origin is the row's commit",
@@ -495,7 +495,7 @@ do
   end
   local sc = openo("commits")
   local wrow = find_row(sc, function(_, line, t)
-    return t and t.commit == #sc.commits and t.line and line == "DIRTY"
+    return t and t.commit == #sc.commits and t.li and line == "DIRTY"
   end)
   h.assert_true("origin: found the uncommitted row", wrow ~= nil)
   local wct = sc:comment_target(wrow)
@@ -505,7 +505,7 @@ do
 
   local sb = openo("combined")
   local brow = find_row(sb, function(_, line, t)
-    return t and t.cfile and t.line and line == "B"
+    return t and t.cfile and t.li and line == "B"
   end)
   local bct = sb:comment_target(brow)
   h.assert_eq("origin: combined keeps the owning commit", bct.origin.sha, wtr.shas[2])
@@ -563,7 +563,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local trow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:add_comment_at(trow, "kill me")
   local crow = find_row(s, function(_, line, t)
@@ -584,7 +584,7 @@ do
   local s = open({ scope = "commits", state_dir = dir })
   -- present comment: c1's +TWO line (content "TWO" still in the diff at line 2).
   local twrow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:add_comment_at(twrow, "live note")
   -- outdated comment: a record whose content no longer appears in any diff line.
@@ -613,14 +613,14 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local twrow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:add_comment_at(twrow, "nav note")
   -- Collapse every f.txt copy and its commits so the comment is only present in
   -- the summary. Navigation must reopen the full enclosing hierarchy.
   while true do
     local fhrow = find_row(s, function(_, _, t)
-      return t and t.file and not t.hunk and not t.line
+      return t and t.file and not t.hunk and not t.li
         and not t.collapsed_seen and s:row_file(t).path == "f.txt"
         and not s.commits[t.commit].files[t.file].collapsed
     end)
@@ -657,7 +657,7 @@ do
   local frow = s:jump(sfrow)
   local ft = frow and s.row_map[frow]
   h.assert_true("summary-nav: landed on file header",
-    ft ~= nil and ft.file and not ft.hunk and not ft.line)
+    ft ~= nil and ft.file and not ft.hunk and not ft.li)
 
   scrow = find_row(s, function(_, _, t) return t and t.summary_comment end)
   s:delete_comment_under(scrow)
@@ -671,11 +671,11 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local twrow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:add_comment_at(twrow, "first note\ncontinued")
   local threerow = find_row(s, function(_, line, t)
-    return t and t.commit == 2 and t.line and line == "THREE"
+    return t and t.commit == 2 and t.li and line == "THREE"
   end)
   s:add_comment_at(threerow, "second note")
 
@@ -709,7 +709,7 @@ do
   local s = open({ scope = "combined", state_dir = dir })
   -- context "one" is owned by the base commit (not in base..target).
   local crow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.line and line == "one"
+    return t and t.cfile and t.li and line == "one"
   end)
   h.assert_true("ctx-summary: found context one row", crow ~= nil)
   s:add_comment_at(crow, "context note")
@@ -777,7 +777,7 @@ do
   h.assert_true("marker: unseen lines visible", joined:find("\nL3", 1, true) ~= nil)
   h.assert_true("marker: hunk stays unseen", joined:find(" seen (", 1, true) == nil)
   -- the marker row carries a {marker=...} target with no line and the right span.
-  local mrow = find_row(s, function(_, _, t) return t and t.marker and not t.line end)
+  local mrow = find_row(s, function(_, _, t) return t and t.marker and not t.li end)
   h.assert_true("marker: row has marker target", mrow ~= nil)
   local mk = s.row_map[mrow].marker
   h.assert_eq("marker: span lo lnum", mk.lnum_lo, 2)
@@ -816,7 +816,7 @@ do
     run = drun, open_window = false, state_dir = ddir, scope = "commits",
   })
   local function drow(text)
-    return find_row(s, function(_, line, t) return t and t.line and line == text end)
+    return find_row(s, function(_, line, t) return t and t.li and line == text end)
   end
   s:mark_visual_range(drow("A"), drow("C"))
   local joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
@@ -855,7 +855,7 @@ do
   end
   local function lrow(s, text)
     return find_row(s, function(_, line, t)
-      return t and t.line and t.sec == "unseen" and line == text
+      return t and t.li and t.sec == "unseen" and line == text
     end)
   end
 
@@ -877,7 +877,7 @@ do
 
   -- Behavior 4 (toggle): `=` on the marker row expands it; `=` again collapses;
   -- the expanded state survives reload.
-  local mrow = find_row(s, function(_, _, t) return t and t.marker and not t.line end)
+  local mrow = find_row(s, function(_, _, t) return t and t.marker and not t.li end)
   s:toggle_collapse(mrow)
   joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("stage3 toggle: expanded after =", joined:find("▼ ✓ marked 3 lines", 1, true) ~= nil)
@@ -885,13 +885,13 @@ do
   s:reload()
   joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("stage3 toggle: expansion survives reload", joined:find("▼ ✓ marked 3 lines", 1, true) ~= nil)
-  local mrow2 = find_row(s, function(_, _, t) return t and t.marker and not t.line end)
+  local mrow2 = find_row(s, function(_, _, t) return t and t.marker and not t.li end)
   s:toggle_collapse(mrow2)
   joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("stage3 toggle: collapsed after second =", joined:find("\n  ✓ marked 3 lines", 1, true) ~= nil)
 
   -- Behavior 3 (unmark): `m` on the collapsed marker row removes the run.
-  local mrow3 = find_row(s, function(_, _, t) return t and t.marker and not t.line end)
+  local mrow3 = find_row(s, function(_, _, t) return t and t.marker and not t.li end)
   s:toggle_seen(mrow3)
   joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("stage3 unmark: marker gone", joined:find("marked", 1, true) == nil)
@@ -901,10 +901,10 @@ do
   -- Behavior 3b (unmark via expanded line): mark, expand, `m` on a marked line.
   local s2 = fresh()
   s2:mark_visual_range(lrow(s2, "L1"), lrow(s2, "L2"))
-  local mr = find_row(s2, function(_, _, t) return t and t.marker and not t.line end)
+  local mr = find_row(s2, function(_, _, t) return t and t.marker and not t.li end)
   s2:toggle_collapse(mr)
   local mline = find_row(s2, function(_, line, t)
-    return t and t.marker and t.line and line == "L1"
+    return t and t.marker and t.li and line == "L1"
   end)
   s2:toggle_seen(mline)
   joined = table.concat(api.nvim_buf_get_lines(s2.buf, 0, -1, false), "\n")
@@ -954,7 +954,7 @@ do
   h.assert_eq("stage3 unmark-hunk: seen after m", #s6.store:seen_ranges(csha, "m.txt"), 1)
   s6:toggle_collapse(find_row(s6, function(_, _, t) return t and t.seen end))
   local seen_hunk_row = find_row(s6, function(_, _, t)
-    return t and t.hunk and not t.line and t.sec == "seen"
+    return t and t.hunk and not t.li and t.sec == "seen"
   end)
   s6:unmark_hunk(seen_hunk_row)
   h.assert_eq("stage3 unmark-hunk: revived", #s6.store:seen_ranges(csha, "m.txt"), 0)
@@ -993,7 +993,7 @@ do
   -- lines (1, 2, 4): context carries no identity, so it is never filled.
   local s = iopen(vim.fn.tempname())
   local insrow = find_row(s, function(_, line, t)
-    return t and t.commit and t.line and t.sec == "unseen" and line == "INS"
+    return t and t.commit and t.li and t.sec == "unseen" and line == "INS"
   end)
   local empty = encode_shard(s)
   s:toggle_seen(insrow)
@@ -1004,7 +1004,7 @@ do
 
   -- Mark then unmark the same hunk restores the shard byte-identically.
   s:toggle_seen(find_row(s, function(_, _, t)
-    return t and t.commit and t.file and not t.hunk and not t.line
+    return t and t.commit and t.file and not t.hunk and not t.li
   end))
   h.assert_eq("stage3 roundtrip: shard byte-identical after mark+unmark",
     encode_shard(s), empty)
@@ -1013,7 +1013,7 @@ do
   local s2 = iopen(vim.fn.tempname())
   local before = encode_shard(s2)
   s2:toggle_seen(find_row(s2, function(_, line, t)
-    return t and t.commit and t.line and t.sec == "unseen" and line == "INS"
+    return t and t.commit and t.li and t.sec == "unseen" and line == "INS"
   end))
   local marked = encode_shard(s2)
   h.assert_true("stage3 undo: mark changed the shard", marked ~= before)
@@ -1032,13 +1032,13 @@ do
   h.assert_true("unseen: no section header", joined:find("unseen (", 1, true) == nil)
   h.assert_true("unseen: body shown bare", joined:find("\nTWO", 1, true) ~= nil)
 
-  local lrow = find_row(s, function(_, _, t) return t and t.line and t.sec == "unseen" end)
+  local lrow = find_row(s, function(_, _, t) return t and t.li and t.sec == "unseen" end)
   h.assert_true("unseen: found a line row", lrow ~= nil)
   s:toggle_collapse(lrow)
   local j2 = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("unseen: collapsing folds the file", j2:find("▶ f.txt", 1, true) ~= nil)
   h.assert_true("unseen: body hidden", j2:find("\nTWO", 1, true) == nil)
-  s:toggle_collapse(find_row(s, function(_, _, t) return t and t.cfile and not t.line end))
+  s:toggle_collapse(find_row(s, function(_, _, t) return t and t.cfile and not t.li end))
   local j3 = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("unseen: re-expanded body", j3:find("\nTWO", 1, true) ~= nil)
 end
@@ -1068,7 +1068,7 @@ do
   local dir = vim.fn.tempname()
   local s = open({ scope = "commits", state_dir = dir })
   local crow = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   s:add_comment_at(crow, "hi")
   h.assert_eq("comment-undo: added", #s.store:comments_for("f.txt"), 1)
@@ -1197,7 +1197,7 @@ do
   h.assert_eq("stage2-C: untracked line owned by WORKTREE",
     s:provenance("new.txt")[1].sha, glean.WORKTREE)
   local nrow = find_row(s, function(_, line, t)
-    return t and t.cfile and t.line and line == "hi"
+    return t and t.cfile and t.li and line == "hi"
   end)
   h.assert_true("stage2-C: found +hi row", nrow ~= nil)
   s:toggle_seen(nrow)
@@ -1218,7 +1218,7 @@ do
   -- A pending file renders an explicit loading placeholder instead of its diff
   -- body, so it never flashes as unmarked and then restreams into placement.
   local frow = find_row(s, function(_, line, t)
-    return t and t.cfile and not t.hunk and not t.line and t.pending
+    return t and t.cfile and not t.hunk and not t.li and t.pending
   end)
   h.assert_true("stage3: found a pending file header row", frow ~= nil)
   local path = s.combined_files[s.row_map[frow].cfile].path
@@ -1248,7 +1248,7 @@ do
   s:load_lineage()
   s:render()
   local hrow2 = find_row(s, function(_, line, t)
-    return t and t.cfile and t.hunk and not t.line and not t.pending
+    return t and t.cfile and t.hunk and not t.li and not t.pending
       and s.combined_files[t.cfile].path == path
   end)
   h.assert_true("stage3-B: loaded hunk row found", hrow2 ~= nil)
@@ -1438,19 +1438,19 @@ do
   -- A pending file emits no line rows (only a loading placeholder), so drive the
   -- backstop through a synthetic add-line target on the first pending file.
   local frow = find_row(s, function(_, _, t)
-    return t and t.cfile and not t.hunk and not t.line and t.pending
+    return t and t.cfile and not t.hunk and not t.li and t.pending
   end)
   h.assert_true("stage5: found a pending file", frow ~= nil)
   local cfi = s.row_map[frow].cfile
   local path = s.combined_files[cfi].path
-  local ptarget = { cfile = cfi, hunk = 1, line = 1, sec = "unseen", pending = true }
+  local ptarget = { cfile = cfi, hunk = 1, li = 1, sec = "unseen", pending = true }
   h.assert_true("stage5: mark-during-load is a hard error",
     not pcall(function() return s:row_identity(ptarget) end))
 
   s:load_lineage()
   s:render()
   local lrow2 = find_row(s, function(row, line, t)
-    return t and t.cfile and t.line and not t.pending
+    return t and t.cfile and t.li and not t.pending
       and s.combined_files[t.cfile].path == path and s.row_hl[row] == "GleanAdd"
   end)
   h.assert_true("stage5: mark-after-load resolves an identity",
@@ -1483,7 +1483,7 @@ do
   end
   local function crow(s, text)
     return find_row(s, function(_, line, t)
-      return t and t.cfile and t.line and t.sec == "unseen" and line == text
+      return t and t.cfile and t.li and t.sec == "unseen" and line == text
     end)
   end
 
@@ -1503,14 +1503,14 @@ do
     state.covers(s.store:seen_ranges(crepo.shas[3], "mm.txt"), 3))
 
   -- `=` toggles the marker open (cmarker_key) then closed.
-  local mrow = find_row(s, function(_, _, t) return t and t.marker and not t.line end)
+  local mrow = find_row(s, function(_, _, t) return t and t.marker and not t.li end)
   s:toggle_collapse(mrow)
   joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("combined marker: expanded after =", joined:find("▼ ✓ marked 2 lines", 1, true) ~= nil)
   h.assert_true("combined marker: expanded shows A1", joined:find("\nA1", 1, true) ~= nil)
 
   -- `m` on the marker unmarks both owners' stores.
-  local mrow2 = find_row(s, function(_, _, t) return t and t.marker and not t.line end)
+  local mrow2 = find_row(s, function(_, _, t) return t and t.marker and not t.li end)
   s:toggle_seen(mrow2)
   joined = table.concat(api.nvim_buf_get_lines(s.buf, 0, -1, false), "\n")
   h.assert_true("combined marker: marker gone after unmark", joined:find("marked", 1, true) == nil)
@@ -1611,7 +1611,7 @@ do
     for r = 0, api.nvim_buf_line_count(s.buf) - 1 do
       local line = api.nvim_buf_get_lines(s.buf, r, r + 1, false)[1]
       local tgt = s.row_map[r]
-      if line and want[line] and tgt and tgt.cfile and tgt.line then rs[#rs + 1] = r end
+      if line and want[line] and tgt and tgt.cfile and tgt.li then rs[#rs + 1] = r end
     end
     return rs
   end
@@ -1681,8 +1681,8 @@ end
 do
   local dir = vim.fn.tempname()
   local s = open({ state_dir = dir })
-  local r3 = find_row(s, function(_, line, t) return t and t.cfile and t.line and line == "THREE" end)
-  local r2 = find_row(s, function(_, line, t) return t and t.cfile and t.line and line == "TWO" end)
+  local r3 = find_row(s, function(_, line, t) return t and t.cfile and t.li and line == "THREE" end)
+  local r2 = find_row(s, function(_, line, t) return t and t.cfile and t.li and line == "TWO" end)
   s:add_comment_at(r3, "on three")
   s:add_comment_at(r2, "on two")
   h.assert_eq("combined comment: both stored on f.txt", #s.store:comments_for("f.txt"), 2)
@@ -1760,7 +1760,7 @@ do
   local s = open3()
   local hunk_rows = {}
   for row, t in pairs(s.row_map) do
-    if t.cfile and t.hunk and not t.line and not t.marker then
+    if t.cfile and t.hunk and not t.li and not t.marker then
       hunk_rows[#hunk_rows + 1] = row
     end
   end
@@ -1784,7 +1784,7 @@ end
 -- working-tree file; the returned path is the absolute working-tree path.
 do
   local s = open()
-  local r = find_row(s, function(_, line, t) return t and t.cfile and t.line and line == "TWO" end)
+  local r = find_row(s, function(_, line, t) return t and t.cfile and t.li and line == "TWO" end)
   h.assert_true("jump: found +TWO row", r ~= nil)
   local jt = s:jump_target(r)
   h.assert_eq("jump: target ref is target", jt.ref, target)
@@ -1800,7 +1800,7 @@ end
 do
   local s = open()
   local r = find_row(s, function(row, line, t)
-    return t and t.cfile and t.line and s.row_hl[row] == "GleanDel"
+    return t and t.cfile and t.li and s.row_hl[row] == "GleanDel"
   end)
   h.assert_true("jump: found a deletion row", r ~= nil)
   local jt = s:jump_target(r)
@@ -1831,7 +1831,7 @@ end
 do
   local s = open({ scope = "commits" })
   local r = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "TWO"
+    return t and t.commit == 1 and t.li and line == "TWO"
   end)
   h.assert_true("jump commits: found c1 +TWO row", r ~= nil)
   local jt = s:jump_target(r)
@@ -1862,7 +1862,7 @@ do
     open_window = false, state_dir = vim.fn.tempname(), scope = "commits",
   })
   local r = find_row(s, function(_, line, t)
-    return t and t.commit == 1 and t.line and line == "B1"
+    return t and t.commit == 1 and t.li and line == "B1"
   end)
   h.assert_true("jump changed: found c1 +B1 row", r ~= nil)
   local buf = s:jump(r)
@@ -1876,7 +1876,7 @@ end
 do
   local s = open()
   local r = find_row(s, function(row, line, t)
-    return t and t.cfile and t.line and s.row_hl[row] == "GleanDel"
+    return t and t.cfile and t.li and s.row_hl[row] == "GleanDel"
   end)
   h.assert_true("diffsplit: found a deletion row", r ~= nil)
   local ctx = s:diff_context(r)
@@ -1953,7 +1953,7 @@ do
   local cdir = vim.fn.tempname()
   local sc = openwt(cdir)
   local crow = find_row(sc, function(_, line, t)
-    return t and t.commit == #sc.commits and t.line and line == "B"
+    return t and t.commit == #sc.commits and t.li and line == "B"
   end)
   h.assert_true("worktree comment: found +B row", crow ~= nil)
   sc:add_comment_at(crow, "note on B")
@@ -2008,7 +2008,7 @@ do
   for r = 0, n - 1 do
     local t = s.row_map[r]
     local line = api.nvim_buf_get_lines(s.buf, r, r + 1, false)[1]
-    if t and t.line and line == "}" then brace_rows[#brace_rows + 1] = r end
+    if t and t.li and line == "}" then brace_rows[#brace_rows + 1] = r end
   end
   h.assert_eq("wt brace: two `}` rows", #brace_rows, 2)
   local id1 = s:row_identity(s.row_map[brace_rows[1]])
@@ -2085,7 +2085,7 @@ do
   -- (d): a comment on the dirty line lands in the floating shard by line hash.
   local cdir = vim.fn.tempname()
   local sc = openwm(cdir)
-  local crow = find_row(sc, function(_, line, t) return t and t.cfile and t.line and line == "D" end)
+  local crow = find_row(sc, function(_, line, t) return t and t.cfile and t.li and line == "D" end)
   h.assert_true("wt combined comment: found +D row", crow ~= nil)
   sc:add_comment_at(crow, "dirty note")
   h.assert_eq("wt combined comment: stored by content on WORKTREE",
@@ -2120,7 +2120,7 @@ do
   -- A floating add row resolves to the live work tree (ref == WORKTREE) and
   -- jump opens the absolute working-tree path.
   local addrow = find_row(s, function(_, line, t)
-    return t and t.commit == #s.commits and t.line and line == "B"
+    return t and t.commit == #s.commits and t.li and line == "B"
   end)
   h.assert_true("wt jump: found +B row", addrow ~= nil)
   local jt = s:jump_target(addrow)
@@ -2131,7 +2131,7 @@ do
 
   -- A floating deletion row resolves to the HEAD pre-image scratch.
   local delrow = find_row(s, function(row, line, t)
-    return t and t.commit == #s.commits and t.line and s.row_hl[row] == "GleanDel"
+    return t and t.commit == #s.commits and t.li and s.row_hl[row] == "GleanDel"
   end)
   if delrow then
     local djt = s:jump_target(delrow)
@@ -2164,7 +2164,7 @@ do
   local sha = repo.shas[2]
   local s = open({ scope = "commits", state_dir = dir })
   local frow = find_row(s, function(_, _, t)
-    return t and t.commit and t.file and not t.line
+    return t and t.commit and t.file and not t.li
   end)
   h.assert_true("collapse: found a file header", frow ~= nil)
   local ci, fi = s.row_map[frow].commit, s.row_map[frow].file
@@ -2350,7 +2350,7 @@ do
     local n = api.nvim_buf_line_count(s.buf)
     for row = 0, n - 1 do
       local t = s.row_map[row]
-      if t and t.hunk and not t.line and t.sec ~= "seen" then hs[#hs + 1] = row end
+      if t and t.hunk and not t.li and t.sec ~= "seen" then hs[#hs + 1] = row end
     end
     return hs
   end
@@ -2366,14 +2366,14 @@ do
     local mid
     for row = hs[1] + 1, hs[2] - 1 do
       local t = s.row_map[row]
-      if t and t.line and t.cfile == h1.cfile and t.hunk == h1.hunk then mid = row break end
+      if t and t.li and t.cfile == h1.cfile and t.hunk == h1.hunk then mid = row break end
     end
     h.assert_true("multihunk: found hunk 1 body line", mid ~= nil)
     s:toggle_seen(mid)
     local cur = s:cursor_row()
     local ct = s.row_map[cur]
     h.assert_true("multihunk: cursor on a hunk header after mark",
-      ct and ct.hunk and not ct.line)
+      ct and ct.hunk and not ct.li)
     h.assert_true("multihunk: cursor on hunk 2 (not skipped to hunk 3)",
       ct.cfile == h2.cfile and ct.hunk == h2.hunk)
   end
@@ -2424,7 +2424,7 @@ do
   local agree = true
   for row = 0, n - 1 do
     local t = s.row_map[row]
-    if t and t.commit and t.file and t.hunk and not t.line and not t.marker then
+    if t and t.commit and t.file and t.hunk and not t.li and not t.marker then
       local c = s.commits[t.commit]
       local cf = c.files[t.file]
       local seen = s:hunk_seen(cf.hunks[t.hunk], cf.path, s:commit_owner(c))
@@ -2709,10 +2709,10 @@ do
     [1] = { commit = 1 },
     [2] = { commit = 1, file = 1 },
     [3] = { commit = 1, file = 1, hunk = 1 },
-    [4] = { commit = 1, file = 1, hunk = 1, line = 1 },
+    [4] = { commit = 1, file = 1, hunk = 1, li = 1 },
     [5] = { commit = 1, file = 1, seen = true },
     [6] = { commit = 1, file = 1, hunk = 2, sec = "seen" },
-    [7] = { commit = 1, file = 1, hunk = 2, sec = "seen", line = 1 },
+    [7] = { commit = 1, file = 1, hunk = 2, sec = "seen", li = 1 },
     [8] = { commit = 1, file = 1, hunk = 2, sec = "seen", marker = {} },
   }
   local anc = glean.compute_ancestry(rm, 9)
@@ -2741,7 +2741,7 @@ do
     [0] = {},
     [1] = { cfile = 1 },
     [2] = { cfile = 1, hunk = 1 },
-    [3] = { cfile = 1, hunk = 1, line = 1 },
+    [3] = { cfile = 1, hunk = 1, li = 1 },
   }
   local canc = glean.compute_ancestry(cm, 4)
   h.assert_eq("anc/combined: cfile header has no commit level",
@@ -2759,10 +2759,10 @@ do
     [1] = { commit = 1 },
     [2] = { commit = 1, file = 1 },
     [3] = { commit = 1, file = 1, hunk = 1 },
-    [4] = { commit = 1, file = 1, hunk = 1, line = 1 },
+    [4] = { commit = 1, file = 1, hunk = 1, li = 1 },
     [5] = { commit = 1, file = 1, seen = true },
     [6] = { commit = 1, file = 1, hunk = 2, sec = "seen" },
-    [7] = { commit = 1, file = 1, hunk = 2, sec = "seen", line = 1 },
+    [7] = { commit = 1, file = 1, hunk = 2, sec = "seen", li = 1 },
     [8] = { commit = 1, file = 1, hunk = 2, sec = "seen", marker = {} },
   }
   local anc = glean.compute_ancestry(rm, 9)
@@ -2784,7 +2784,7 @@ do
     [0] = {},
     [1] = { cfile = 1 },
     [2] = { cfile = 1, hunk = 1 },
-    [3] = { cfile = 1, hunk = 1, line = 1 },
+    [3] = { cfile = 1, hunk = 1, li = 1 },
   }
   local canc = glean.compute_ancestry(cm, 4)
   h.assert_eq("pin/combined: line pins summary+file+hunk, no commit",
@@ -2825,7 +2825,7 @@ do
   local n = api.nvim_buf_line_count(s.buf)
   for row = 0, n - 1 do
     local t = s.row_map[row]
-    if t and t.hunk and not t.line and not t.marker and t.sec ~= "seen" then
+    if t and t.hunk and not t.li and not t.marker and t.sec ~= "seen" then
       hunk_row = row
       break
     end
@@ -3411,7 +3411,7 @@ do
     })
   end
   local function row_for(s, text)
-    return find_row(s, function(_, line, t) return t and t.line and line == text end)
+    return find_row(s, function(_, line, t) return t and t.li and line == text end)
   end
   -- Mark the committed +B line in commit scope; combined scope sees it seen.
   local sc = xopen("commits")
@@ -3467,7 +3467,7 @@ do
   local sc = mopen("commits")
   h.assert_eq("stage5: only the merge commit is listed", #sc.commits, 1)
   h.assert_eq("stage5: listed commit is the merge", sc.commits[1].sha, mr.shas[3])
-  local srow = find_row(sc, function(_, line, t) return t and t.line and line == "SIDE" end)
+  local srow = find_row(sc, function(_, line, t) return t and t.li and line == "SIDE" end)
   h.assert_true("stage5: merge carries the side branch's change", srow ~= nil)
   sc:toggle_seen(srow)
   local sb = mopen("combined")
@@ -3527,19 +3527,19 @@ do
   h.assert_true("whitespace model: normal projection includes whitespace-only file",
     normal_body:find("space.txt", 1, true) ~= nil)
   h.assert_true("whitespace model: normal projection includes whitespace-only row",
-    find_row(normal, function(row, line, t) return t and t.line and line == "   " and normal.row_hl[row] == "GleanAdd" end) ~= nil)
+    find_row(normal, function(row, line, t) return t and t.li and line == "   " and normal.row_hl[row] == "GleanAdd" end) ~= nil)
 
   local ignored = wopen("combined", true)
   local ignored_body = table.concat(api.nvim_buf_get_lines(ignored.buf, 0, -1, false), "\n")
   h.assert_true("whitespace model: ignored projection removes whitespace-only file",
     ignored_body:find("space.txt", 1, true) == nil)
   h.assert_true("whitespace model: ignored projection removes whitespace-only row",
-    find_row(ignored, function(row, line, t) return t and t.line and line == "   " and ignored.row_hl[row] == "GleanAdd" end) == nil)
+    find_row(ignored, function(row, line, t) return t and t.li and line == "   " and ignored.row_hl[row] == "GleanAdd" end) == nil)
   h.assert_true("whitespace model: mixed semantic row retains exact text",
     ignored_body:find("   TWO", 1, true) ~= nil)
 
   local beta_row = find_row(ignored, function(_, line, t)
-    return t and t.line and line == "BETA"
+    return t and t.li and line == "BETA"
   end)
   local beta_id = ignored:row_identity(ignored.row_map[beta_row])
   h.assert_eq("whitespace model: displayed add maps through exact lineage",
@@ -3547,7 +3547,7 @@ do
   h.assert_eq("whitespace model: displayed add keeps commit coordinate", beta_id.lnum, 3)
   local beta_jump = ignored:jump_target(beta_row)
   local shifted_add_row = find_row(ignored, function(_, line, t)
-    return t and t.line and line == "VALUE-ADD"
+    return t and t.li and line == "VALUE-ADD"
   end)
   local shifted_add_id = ignored:row_identity(ignored.row_map[shifted_add_row])
   h.assert_eq("whitespace model: add after inserted blank maps to semantic commit",
@@ -3555,7 +3555,7 @@ do
   h.assert_eq("whitespace model: add after inserted blank keeps shifted coordinate",
     shifted_add_id.lnum, 3)
   local shifted_del_row = find_row(ignored, function(_, line, t)
-    return t and t.line and line == "VALUE-DEL"
+    return t and t.li and line == "VALUE-DEL"
   end)
   local shifted_del_id = ignored:row_identity(ignored.row_map[shifted_del_row])
   h.assert_eq("whitespace model: add after removed blank maps to semantic commit",
@@ -3633,7 +3633,7 @@ do
   local runtime_buf = runtime.buf
   local normal_header = api.nvim_buf_get_lines(runtime.buf, 0, 1, false)[1]
   local whitespace_row = find_row(runtime, function(row, line, t)
-    return t and t.line and line == "   " and runtime.row_hl[row] == "GleanAdd"
+    return t and t.li and line == "   " and runtime.row_hl[row] == "GleanAdd"
   end)
   h.assert_true("whitespace runtime: found removable cursor row", whitespace_row ~= nil)
   api.nvim_win_set_cursor(runtime.win, { whitespace_row + 1, 0 })
@@ -3647,15 +3647,15 @@ do
   h.assert_true("whitespace runtime: progress changes with projection",
     ignored_header ~= normal_header)
   h.assert_true("whitespace runtime: direct toggle removes whitespace rows",
-    find_row(runtime, function(row, line, t) return t and t.line and line == "   " and runtime.row_hl[row] == "GleanAdd" end) == nil)
+    find_row(runtime, function(row, line, t) return t and t.li and line == "   " and runtime.row_hl[row] == "GleanAdd" end) == nil)
   h.assert_eq("whitespace runtime: toggle clears undo", #runtime.undo_stack, 0)
   h.assert_eq("whitespace runtime: toggle clears redo", #runtime.redo_stack, 0)
   local restored = runtime.row_map[runtime:cursor_row()]
   local restored_file = runtime:row_file(restored)
   h.assert_eq("whitespace runtime: cursor stays in the same file",
     restored_file and restored_file.path, "semantic.txt")
-  local restored_dl = restored_file and restored.hunk and restored.line
-    and restored_file.hunks[restored.hunk].lines[restored.line] or nil
+  local restored_dl = restored_file and restored.hunk and restored.li
+    and restored_file.hunks[restored.hunk].lines[restored.li] or nil
   local restored_lnum = restored_dl and (restored_dl.new_lnum or restored_dl.old_lnum)
   h.assert_true("whitespace runtime: cursor restores near hidden coordinate",
     restored_lnum ~= nil and math.abs(restored_lnum - 2) <= 1)
@@ -3672,7 +3672,7 @@ do
   wmap.callback()
   settle()
   h.assert_true("whitespace runtime: W restores exact rows",
-    find_row(runtime, function(row, line, t) return t and t.line and line == "   " and runtime.row_hl[row] == "GleanAdd" end) ~= nil)
+    find_row(runtime, function(row, line, t) return t and t.li and line == "   " and runtime.row_hl[row] == "GleanAdd" end) ~= nil)
   h.assert_true("whitespace runtime: header clears inactive mode",
     api.nvim_buf_get_lines(runtime.buf, 0, 1, false)[1]
       :find("ignore-whitespace", 1, true) == nil)
@@ -3686,7 +3686,7 @@ do
   h.assert_true("whitespace runtime: conflicting reopen applies requested mode",
     reopened.ignore_whitespace)
   h.assert_true("whitespace runtime: conflicting reopen rebuilds projection",
-    find_row(reopened, function(row, line, t) return t and t.line and line == "   " and reopened.row_hl[row] == "GleanAdd" end) == nil)
+    find_row(reopened, function(row, line, t) return t and t.li and line == "   " and reopened.row_hl[row] == "GleanAdd" end) == nil)
   h.assert_eq("whitespace cache: exact lineage remains synthetic-free",
     #live.lineage_commits, 2)
 end
@@ -3718,7 +3718,7 @@ do
   for row = 0, api.nvim_buf_line_count(s.buf) - 1 do
     local line = api.nvim_buf_get_lines(s.buf, row, row + 1, false)[1]
     local t = s.row_map[row]
-    if t and t.line and line == "   " and s.row_hl[row] == "GleanAdd" then space_rows[#space_rows + 1] = row end
+    if t and t.li and line == "   " and s.row_hl[row] == "GleanAdd" then space_rows[#space_rows + 1] = row end
   end
   h.assert_eq("whitespace state: repeated whitespace rows present", #space_rows, 2)
   local second_space = space_rows[2]
@@ -3726,16 +3726,16 @@ do
   local hidden_id = s:row_identity(s.row_map[second_space])
   s:add_comment_at(second_space, "second whitespace note")
   local semantic_row = find_row(s, function(_, line, t)
-    return t and t.line and line == "SEMANTIC"
+    return t and t.li and line == "SEMANTIC"
   end)
   s:add_comment_at(semantic_row, "semantic note")
 
   s:toggle_ignore_whitespace()
   vim.wait(100, function() return s.ignore_whitespace
-    and find_row(s, function(_, line, t) return t and t.line and line == "SEMANTIC" end) ~= nil
+    and find_row(s, function(_, line, t) return t and t.li and line == "SEMANTIC" end) ~= nil
   end, 5)
   local ignored_semantic = find_row(s, function(_, line, t)
-    return t and t.line and line == "SEMANTIC"
+    return t and t.li and line == "SEMANTIC"
   end)
   local semantic_id = s:row_identity(s.row_map[ignored_semantic])
 
@@ -3786,7 +3786,7 @@ do
     s:id_seen(semantic_id))
 
   local restored_space = find_row(s, function(row, line, t)
-    local target = t and t.line and line == "   " and s.row_hl[row] == "GleanAdd"
+    local target = t and t.li and line == "   " and s.row_hl[row] == "GleanAdd"
       and s:comment_target(row) or nil
     return target and target.lnum == hidden_target.lnum
   end)
@@ -3866,12 +3866,12 @@ do
     end
   end
   local add_row = find_row(s, function(_, line, t)
-    return t and t.line and line == "value beta here"
+    return t and t.li and line == "value beta here"
   end)
   local del_row = find_row(s, function(_, line, t)
-    return t and t.line and line == "value alpha here"
+    return t and t.li and line == "value alpha here"
   end)
-  local ctx_row = find_row(s, function(_, line, t) return t and t.line and line == "keep" end)
+  local ctx_row = find_row(s, function(_, line, t) return t and t.li and line == "keep" end)
   h.assert_eq("marker: intra-line refinement ran", mark(add_row).hl_group, "GleanAddText")
   api.nvim_win_set_cursor(s.win or 0, { add_row + 1, 0 })
   s._cursor_hunk_state = nil
@@ -4230,7 +4230,7 @@ do
     s:toggle_seen(row)
   end
   local function row_of(s, text)
-    return find_row(s, function(_, line, t) return t and t.line and line == text end)
+    return find_row(s, function(_, line, t) return t and t.li and line == text end)
   end
   local function seen_at(s, path, lnum)
     local st = s:file_status(path)

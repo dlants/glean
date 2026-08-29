@@ -723,6 +723,8 @@ function M.del_identity(sha, path, lnum)
   return { kind = "del", sha = sha, path = path, lnum = lnum }
 end
 
+-- `lnum` is positional by `dkind`: a work-tree line number for an add, a
+-- tip-commit (H) line number for a del.
 function M.wt_identity(path, lnum, dkind)
   return { kind = "wt", path = path, lnum = lnum, dkind = dkind }
 end

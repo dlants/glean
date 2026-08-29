@@ -40,7 +40,7 @@ local function find_row(s, pred)
   end
 end
 local function row_with_text(s, text)
-  return find_row(s, function(_, line, t) return t and t.line and line == text end)
+  return find_row(s, function(_, line, t) return t and t.li and line == text end)
 end
 local function put(s, row) api.nvim_win_set_cursor(s.win, { row + 1, 0 }) end
 local function cursor_target(s) return s.row_map[s:cursor_row()] end
@@ -110,7 +110,7 @@ do
   s:set_scope("combined")
   h.assert_true("deleted line: TEMP absent from combined", row_with_text(s, "TEMP") == nil)
   h.assert_eq("deleted line: cursor stays in the file", cursor_path(s), "a.txt")
-  h.assert_true("deleted line: cursor is on a diff line", cursor_target(s).line ~= nil)
+  h.assert_true("deleted line: cursor is on a diff line", cursor_target(s).li ~= nil)
 end
 
 -- Round trip returns to the row we started on.
@@ -128,7 +128,7 @@ end
 do
   local s = open("combined")
   local header = find_row(s, function(_, line, t)
-    return t and t.cfile and not t.hunk and not t.line and line:find("a.txt", 1, true)
+    return t and t.cfile and not t.hunk and not t.li and line:find("a.txt", 1, true)
   end)
   h.assert_true("collapsed: found combined a.txt header", header ~= nil)
   put(s, header)
@@ -147,14 +147,14 @@ end
 do
   local s = open("combined")
   local header = find_row(s, function(_, line, t)
-    return t and t.cfile and not t.hunk and not t.line and line:find("b.txt", 1, true)
+    return t and t.cfile and not t.hunk and not t.li and line:find("b.txt", 1, true)
   end)
   h.assert_true("header: found combined b.txt header", header ~= nil)
   put(s, header)
   s:set_scope("commits")
   local t = cursor_target(s)
   h.assert_eq("header: landed on a b.txt header", cursor_path(s), "b.txt")
-  h.assert_true("header: landed on a header row", t.line == nil)
+  h.assert_true("header: landed on a header row", t.li == nil)
 end
 
 h.finish()

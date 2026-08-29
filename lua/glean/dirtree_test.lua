@@ -202,7 +202,7 @@ for _, scope in ipairs({ "combined", "commits" }) do
     local s = open(scope)
     local frow
     for r, t in pairs(s.row_map) do
-      if (t.file or t.cfile) and not t.hunk and not t.line
+      if (t.file or t.cfile) and not t.hunk and not t.li
         and line_at(s, r):find("root%.txt") then frow = r end
     end
     s:toggle_collapse(frow)
@@ -217,7 +217,7 @@ for _, scope in ipairs({ "combined", "commits" }) do
     -- src/a.txt's single hunk changes two lines; mark just the first.
     local hrow
     for r, t in pairs(s.row_map) do
-      if t.line and line_at(s, r):find("A1", 1, true) then hrow = r end
+      if t.li and line_at(s, r):find("A1", 1, true) then hrow = r end
     end
     s:mark_visual_range(hrow, hrow)
     s:toggle_collapse(dir_row(s, "src"))
@@ -234,7 +234,7 @@ end
 
 local function file_row(s, name)
   for r, t in pairs(s.row_map) do
-    if (t.file or t.cfile) and not t.hunk and not t.line then
+    if (t.file or t.cfile) and not t.hunk and not t.li then
       local line = text_at(s, r)
       if line:find(name, 1, true) then return r, line end
     end
@@ -280,7 +280,7 @@ do
   })
   local line
   for r, t in pairs(s.row_map) do
-    if t.cfile and not t.hunk and not t.line then line = text_at(s, r) end
+    if t.cfile and not t.hunk and not t.li then line = text_at(s, r) end
   end
   h.assert_true("chain: lone file renders its path exactly once",
     line:find("a/b/c/one.txt", 1, true) ~= nil

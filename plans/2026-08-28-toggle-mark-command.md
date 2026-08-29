@@ -57,6 +57,16 @@ Mechanical renames, no behaviour change, landed before the feature so the new
 code has unambiguous names to use. Suite must stay green (`nvim -l
 lua/glean/run_tests.lua`).
 
+Status: done (stage 2). `row_map` targets now use `li` (renamed from `line`)
+across `init.lua` and every test suite; construction sites and all predicate
+reads updated. Doc comments added at the `lnum` boundaries that lacked one:
+`state.M.wt_identity` (work-tree line for an add, tip-commit line for a del) and
+the `row_map` target shape above `Session:build` (both `hunk` and `li` are
+indices, never line numbers). The other boundaries (`line_identity`,
+`combined_owner`/`commit_owner`, `wt_seen_sets`, `apply_wt_seen`,
+`gutter.project`, `Session:file_status`, `baseline.lua`'s header) already
+documented their coordinate space and were left as-is. Suite green.
+
 Status: done (stage 1). `Session:wt_base_lines`→`wt_head_lines`,
 `_wt_base`→`_wt_head`, `wt_versions`'s `base`/`base_hash`→`head`/`head_hash`,
 `baseline.seen_sets/mark/unmark`'s first parameter→`head`, and the persisted

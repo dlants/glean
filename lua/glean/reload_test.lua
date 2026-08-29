@@ -169,7 +169,7 @@ do
   local function row_with(session, text)
     for row, target in pairs(session.row_map) do
       local line = api.nvim_buf_get_lines(session.buf, row, row + 1, false)[1]
-      if target and target.line and line == text then return row end
+      if target and target.li and line == text then return row end
     end
   end
 

@@ -84,7 +84,7 @@ do
   for r = 0, api.nvim_buf_line_count(s.buf) - 1 do
     local t = s.row_map[r]
     local line = api.nvim_buf_get_lines(s.buf, r, r + 1, false)[1]
-    if t and t.line and line and line:find("TWO", 1, true) then row = r break end
+    if t and t.li and line and line:find("TWO", 1, true) then row = r break end
   end
   h.assert_true("idempotent: found +TWO row", row ~= nil)
   local id = s:row_identity(s.row_map[row])
