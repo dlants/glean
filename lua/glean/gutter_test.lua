@@ -224,6 +224,16 @@ api.nvim_buf_set_name(other, repo.root .. "/absent.txt")
 api.nvim_buf_set_lines(other, 0, -1, false, { "x" })
 gutter.refresh(other)
 h.assert_eq("unknown file untouched", signs(other), "")
+-- ── Per-buffer toggle ───────────────────────────────────────────────────────
+gutter.refresh(fbuf)
+h.assert_true("painted before toggle", signs(fbuf) ~= "")
+h.assert_eq("toggle off returns false", gutter.toggle(fbuf), false)
+h.assert_eq("toggle clears the buffer", signs(fbuf), "")
+gutter.refresh(fbuf)
+h.assert_eq("a toggled-off buffer stays clear across refreshes", signs(fbuf), "")
+h.assert_eq("toggle on returns true", gutter.toggle(fbuf), true)
+h.assert_true("toggle repaints", signs(fbuf) ~= "")
+
 -- ── Foreign provider suppression ────────────────────────────────────────────
 local calls = {} --- @type string[]
 local fake = {

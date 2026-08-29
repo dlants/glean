@@ -193,8 +193,13 @@ end
 -- there is nothing the gutter can prove: no session, a commit-targeted one
 -- (whose post-image is a snapshot the buffer may have moved past), a buffer
 -- outside the session's repo, or a buffer edited since the last model refresh.
+-- Per-buffer opt-out, flipped by `M.toggle`. A buffer turned off is treated as
+-- if it were not part of the review at all, so the sign column (and the foreign
+-- provider it was taken from) goes back to how it was before glean touched it.
+local off = {}
 local function buf_target(bufnr, allow_modified)
   if M.config and M.config.enabled == false then return nil end
+  if off[bufnr] then return nil end
   local session = require("glean.init").current_session()
   if not (session and session.worktree) then return nil end
   if vim.bo[bufnr].modified and not allow_modified then return nil end
@@ -318,6 +323,30 @@ function M.refresh(bufnr)
   end
 end
 
+--- Toggle the glean projection for one buffer. Turning it on when there is no
+--- live work-tree review opens the default (`:Glean`) one in the background, so
+--- the gutter can start a review rather than only shadow one. Returns the new
+--- state.
+function M.toggle(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  if not off[bufnr] and buf_target(bufnr, true) then
+    off[bufnr] = true
+    M.refresh(bufnr)
+    return false
+  end
+  off[bufnr] = nil
+  local init = require("glean.init")
+  if not init.current_session() then
+    local ok, err = pcall(init.open_dirty, { open_window = false })
+    if not ok then
+      vim.notify(tostring(err):match("(glean: .*)") or tostring(err), vim.log.levels.WARN)
+      return false
+    end
+  end
+  M.refresh(bufnr)
+  return true
+end
+
 --- Clear the marks from every buffer we painted and hand the sign column back
 --- to the foreign provider on every buffer we took it from.
 function M.clear_all()
@@ -340,7 +369,8 @@ end
 
 function M.setup(cfg)
   M.config =
-    vim.tbl_extend("force", { enabled = true, suppress = "auto", keymaps = true }, cfg or {})
+    vim.tbl_extend("force",
+      { enabled = true, suppress = "auto", keymaps = true, toggle_key = "gt" }, cfg or {})
   M.setup_highlights()
   local group = api.nvim_create_augroup("GleanGutter", { clear = true })
   api.nvim_create_autocmd({ "BufReadPost", "BufWinEnter", "BufWritePost", "FileChangedShellPost" }, {
@@ -360,6 +390,14 @@ function M.setup(cfg)
     pattern = "GleanReviewChanged",
     callback = function() refresh_all() end,
   })
+  api.nvim_create_autocmd({ "BufWipeout" }, {
+    group = group,
+    callback = function(args) off[args.buf] = nil end,
+  })
+  if M.config.toggle_key then
+    vim.keymap.set("n", M.config.toggle_key, function() M.toggle() end,
+      { silent = true, desc = "glean: toggle the gutter for this buffer" })
+  end
   api.nvim_create_autocmd("VimLeavePre", { group = group, callback = function() M.clear_all() end })
 end
 
