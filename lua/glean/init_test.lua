@@ -4300,4 +4300,41 @@ do
   h.assert_true("no-worktree: no baselines written",
     wt == nil or wt.baselines == nil)
 end
+-- `.gleanignore` declares generated files: their lines are seen without any
+-- store write, so the file collapses and stops counting as unreviewed, and
+-- deleting the pattern makes them unreviewed again.
+do
+  local gr = testutil.make_repo({
+    { msg = "base", files = { ["src/a.txt"] = "one\n", ["gen/api.pb.go"] = "x\n" } },
+    { msg = "edit both", files = { ["src/a.txt"] = "ONE\n", ["gen/api.pb.go"] = "X\n" } },
+  })
+  local function grun(args)
+    local cmd = { "git" }
+    for _, a in ipairs(args) do cmd[#cmd + 1] = a end
+    local res = vim.system(cmd, { cwd = gr.root, env = gr.env, text = true }):wait()
+    return { code = res.code, stdout = res.stdout, stderr = res.stderr }
+  end
+  local function gopen()
+    return glean.open({
+      base = gr.shas[1], target = gr.shas[2], repo_root = gr.root, run = grun,
+      state_dir = vim.fn.tempname(), open_window = false,
+    })
+  end
+  local before = gopen():progress_counts()
+  h.assert_eq("gleanignore: both files unreviewed without the file", before.files, 2)
+  local fd = assert(io.open(gr.root .. "/.gleanignore", "w"))
+  fd:write("*.pb.go\n"); fd:close()
+  local s = gopen()
+  local after = s:progress_counts()
+  h.assert_eq("gleanignore: generated file is not unreviewed", after.files, 1)
+  h.assert_eq("gleanignore: its changed lines don't count", after.adds, 1)
+  h.assert_true("gleanignore: generated path reports as generated",
+    s:is_generated("gen/api.pb.go"))
+  h.assert_eq("gleanignore: other paths are untouched", s:is_generated("src/a.txt"), false)
+  local wt = s.store.data[s.store.wt_shard]
+  h.assert_true("gleanignore: nothing persisted", wt == nil or wt.baselines == nil)
+  os.remove(gr.root .. "/.gleanignore")
+  h.assert_eq("gleanignore: removing the file restores unreviewed status",
+    gopen():progress_counts().files, 2)
+end
 h.finish()

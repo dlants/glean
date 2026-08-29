@@ -90,7 +90,10 @@ content changed. `baseline.lua` holds the pure algebra;
   into `diff(B, W)` before resolving identities and calling the usual
   `Session:perform{kind = "seen"}`. The map is many-to-one, so one row can carry
   its paired del and any attached deletions.
-- `baseline.lua` — pure reviewed-baseline algebra (alignment via `vim.diff`,
+- `ignore.lua` — pure `.gleanignore` matcher (gitignore syntax compiled to vim
+  regex). A matching path is *derived*-seen via `Session:is_generated` short-
+  circuiting `id_seen`, so generated files collapse and leave the unreviewed
+  counts without any store write to unwind when a pattern goes away.- `baseline.lua` — pure reviewed-baseline algebra (alignment via `vim.diff`,
   seen classification, mark/unmark as edits to R). No git, no store.
 - `provenance.lua` — pure `git blame -p` porcelain parser for per-line ownership
   in the combined view; git invocation injected by the caller.

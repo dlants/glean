@@ -59,6 +59,9 @@ Files are grouped under a row per directory component; a directory row rolls up 
 
 A collapsed row (file or directory) reports what it hides as `(n seen / m unseen)`, counted in hunks; a hunk with only some of its lines marked counts as unseen.
 
+### Generated files (`.gleanignore`)
+A repo can declare its generated files in a `.gleanignore` at its root, using gitignore syntax (negation, `**`, anchoring and directory patterns all behave as they do in `.gitignore`). Matching files are treated as already seen, so they render collapsed in the seen section and drop out of the unreviewed counts. This is derived, not recorded: nothing is written to the review store, so removing a pattern brings the file back as unreviewed. The file is re-read on every reload.
+
 ## Comments
 
 Comments are content-addressed records attached per path and re-anchored to their matching diff line on every render, so they follow the code as the diff changes. A comment whose anchor disappears is flagged outdated and shown in the file summary as `(outdated)`. If its anchor is merely a whitespace-only row hidden by ignore-whitespace mode, the summary instead labels it `(hidden)`. Pressing `<CR>` on that summary entry disables the mode, reveals the original row, and jumps to the inline comment.
