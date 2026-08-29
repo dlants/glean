@@ -317,20 +317,46 @@ function Store:set_baseline(path, base_hash, lines) end --- nil/equal-to-base pr
   All of the above are covered in `lua/glean/baseline_test.lua` (30 asserts),
   plus empty-endpoint cases (new file, whole-file deletion).
 
-## Store: baselines replace block records
+## Store: baselines replace block records — DONE
 
-- Goal: `Store:baseline` / `set_baseline` persist under `baselines[path]` in the
-  `WORKTREE` shard; block-record APIs and their pruning are removed.
+- [x] Goal: `Store:baseline` / `set_baseline` persist under `baselines[path]` in
+  the `WORKTREE` shard.
+- Decisions:
+  - The anchor is `M.content_hash(lines)` (sha256 of the newline-joined file),
+    new in `state.lua`. `set_baseline` prunes when `lines` is nil *or* hashes to
+    `base_hash` — that is how "equal to the base is nothing reviewed" is decided
+    without the store ever seeing the base content.
+  - A stale record is left on disk rather than deleted on read: `baseline`
+    returns nil on anchor mismatch, and only a write replaces the record. Reads
+    are therefore side-effect free and a mismatched read cannot destroy state
+    the correct anchor would still find.
+  - `wt_prune` now also considers `baselines`, so set+clear restores
+    byte-identical shard JSON.
+- Deviations:
+  - **Block-record removal deferred to stage 3.** `seen_records` /
+    `add_seen_record` / `set_seen_records` and `M.resolve`'s seen callers are
+    still live because `init.lua` (`wt_seen_ords`, `apply_wt_mark`,
+    `apply_wt_unmark`) is the only reader and is rewired in stage 3. Deleting
+    them here would leave the tree red for a whole stage.
+  - **Legacy `seen_marks` are not migrated.** Folding block records into a
+    baseline requires resolving them against the file's live diff and then
+    against H/W content, none of which the store has — it is a Session-level
+    computation, and the resolve is exactly the lossy operation this plan
+    exists to delete. Legacy records are instead abandoned (worktree marks are
+    cheap to recreate, the same call `M.migrate_shard` already makes for
+    pre-line-identity worktree data). The test asserts a legacy shard loads,
+    keeps its unrelated state, and reads as unreviewed; stage 3 drops the
+    records from the shard when the readers go.
 - Tests (`state_test.lua`):
   - A baseline read back with a different `base_hash` returns nil, and the stale
     record is not resurrected by a later read with the original hash.
   - Set then clear a baseline restores byte-identical shard JSON, and the shard
     is pruned when it holds nothing else (the existing round-trip property).
   - A baseline equal to the base content is not persisted.
-  - A store carrying legacy `seen_marks` loads without error and, on first
-    write, is migrated: the legacy records are resolved once with the old
-    algorithm, folded into a baseline, and dropped. Assert the resulting seen
-    set matches what the old code reported for the same store.
+  - A store carrying legacy `seen_marks` loads without error, keeps its
+    unrelated worktree state (sticky marks), and reads as unreviewed.
+  All covered in `lua/glean/state_test.lua` (the two `do` blocks preceding the
+  branch-anchored-shard suite).
 
 ## Session: classification and marking through R
 

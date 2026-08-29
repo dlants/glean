@@ -245,6 +245,63 @@ do
     vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
 end
 
+-- Reviewed baselines: anchored to the base content, pruned when they say
+-- nothing, and round-tripping to byte-identical JSON when cleared.
+do
+  local dir = vim.fn.tempname()
+  local s = state.new({ dir = dir })
+  s:load({ state.COMMENTS_ID })
+  local empty = vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} })
+  local base = { "a", "b", "c" }
+  local hb = state.content_hash(base)
+
+  h.assert_true("baseline: absent reads nil", s:baseline("f.txt", hb) == nil)
+
+  s:set_baseline("f.txt", hb, { "a", "B", "c" })
+  h.assert_eq("baseline: reads back", s:baseline("f.txt", hb)[2], "B")
+
+  -- A different base content reads as unreviewed, and does not destroy the
+  -- record: the original anchor still finds it.
+  local moved = state.content_hash({ "a", "b", "c", "d" })
+  h.assert_true("baseline: anchor mismatch reads nil", s:baseline("f.txt", moved) == nil)
+  h.assert_true("baseline: stale read leaves record", s:baseline("f.txt", hb) ~= nil)
+
+  s:save_commit(state.COMMENTS_ID)
+  local s2 = state.new({ dir = dir })
+  s2:load({ state.COMMENTS_ID })
+  h.assert_eq("baseline: persists on reload", s2:baseline("f.txt", hb)[2], "B")
+  h.assert_true("baseline: mismatch after reload", s2:baseline("f.txt", moved) == nil)
+
+  -- A baseline equal to the base is nothing reviewed, so it is not persisted.
+  s:set_baseline("g.txt", hb, base)
+  h.assert_true("baseline: equal-to-base not stored", s:baseline("g.txt", hb) == nil)
+
+  s:set_baseline("f.txt", hb, nil)
+  h.assert_true("baseline: cleared", s:baseline("f.txt", hb) == nil)
+  h.assert_eq("baseline: set+clear restores JSON",
+    vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
+end
+
+-- A legacy shard carrying block-record `seen_marks` loads without error and
+-- carries no baseline: the records are not migrated (they cannot be — folding
+-- them into a baseline needs the base/worktree content the store never sees),
+-- so the path reads as unreviewed once the baseline model owns seen-ness.
+do
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  local shard = {
+    worktree = true, files = {},
+    seen_marks = { ["f.txt"] = { { anchor = 1, content = { "one", "two" } } } },
+    sticky = { ["f.txt"] = { [state.line_hash("one")] = true } },
+  }
+  vim.fn.writefile({ vim.json.encode(shard) }, dir .. "/" .. state.COMMENTS_ID .. ".json")
+  local s = state.new({ dir = dir })
+  s:load({ state.COMMENTS_ID })
+  h.assert_true("legacy seen_marks: unrelated state kept", s:is_sticky("f.txt", "one"))
+  h.assert_true("legacy seen_marks: path unreviewed",
+    s:baseline("f.txt", state.content_hash({ "one" })) == nil)
+end
+
 -- Stage 2 — branch-anchored worktree shard. The store routes all
 -- content-addressed (kind="wt") seen/comment access through `wt_shard`, so a mark
 -- made on branch A's shard is invisible when the same identity is queried under

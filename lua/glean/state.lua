@@ -429,9 +429,59 @@ local function wt_prune(store)
   local cm_empty = not c.comments or next(c.comments) == nil
   local f_empty = not c.files or next(c.files) == nil
   local st_empty = not c.sticky or next(c.sticky) == nil
-  if sm_empty and cm_empty and f_empty and st_empty then
+  local bl_empty = not c.baselines or next(c.baselines) == nil
+  if sm_empty and cm_empty and f_empty and st_empty and bl_empty then
     store.data[store.wt_shard] = nil
   end
+end
+
+-- ── Reviewed baselines (the uncommitted seen model) ────────────────────────
+-- Uncommitted seen-ness is stored as a *reviewed baseline* R: the content of
+-- the file the reviewer has signed off on, anchored to the content of the
+-- review's tip-commit blob H. A displayed line's seen-ness is decided by
+-- diffing (never by searching for stored text), so a record can neither resolve
+-- at the wrong place nor outlive its subject. Because R only means anything
+-- relative to the H it was reviewed against, the anchor is checked on every
+-- read: a mismatch reads as "nothing reviewed" rather than as a diff against
+-- stale content, so committing part of the work resets exactly the paths whose
+-- base content moved.
+
+-- Content key for a whole file's lines — the baseline anchor.
+function M.content_hash(lines)
+  return vim.fn.sha256(table.concat(lines or {}, "\n"))
+end
+
+-- The reviewed baseline lines for `path`, or nil when none is stored or the
+-- stored anchor is not `base_hash`. A stale record is left in place (a later
+-- read with its original hash still finds it); only a write replaces it.
+function Store:baseline(path, base_hash)
+  local c = self.data[self.wt_shard]
+  local rec = c and c.baselines and c.baselines[path]
+  if not rec or rec.base ~= base_hash then return nil end
+  return rec.lines
+end
+
+-- Store `path`'s reviewed baseline. `lines` nil, or content-identical to the
+-- base the hash names (nothing reviewed), prunes the record — and the worktree
+-- slice when it then carries nothing else, so a mark fully undone restores
+-- byte-identical JSON.
+function Store:set_baseline(path, base_hash, lines)
+  local prune = lines == nil or M.content_hash(lines) == base_hash
+  local c = self.data[self.wt_shard]
+  if not c then
+    if prune then return end
+    c = wt_slice(self)
+  end
+  if prune then
+    if c.baselines then
+      c.baselines[path] = nil
+      if next(c.baselines) == nil then c.baselines = nil end
+    end
+  else
+    c.baselines = c.baselines or {}
+    c.baselines[path] = { base = base_hash, lines = lines }
+  end
+  wt_prune(self)
 end
 
 -- Append a seen-mark block record { anchor, content = {...} } for `path`.
