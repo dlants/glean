@@ -1,10 +1,6 @@
 # glean
 
-A git diff reviewer that renders the diff between two refs in a single
-
-test test test test
-
-foldable, navigable neovim buffer. The buffer is a read-only projection of a review model; all interaction happens through actions that mutate a persistent review store, so seen-marks and comments survive across sessions.
+A git diff reviewer that renders the diff between two refs in a single foldable, navigable neovim buffer. The buffer is a read-only projection of a review model; all interaction happens through actions that mutate a persistent review store, so seen-marks and comments survive across sessions.
 
 ## Opening
 
@@ -98,6 +94,8 @@ The projection is deliberately conservative: nothing is painted unless the revie
 `:Glean toggle-mark` marks lines seen from the file itself. With no range it acts on the whole hunk under the cursor; `:'<,'>Glean toggle-mark` acts on the selected lines. Polarity is "complete, don't flip": the selection is marked unless every line in it is already seen, in which case it is unmarked. Because a gutter row folds in the deletions attached to it, marking a row also marks the deleted lines its `▁` reports. Marks land wherever the reviewed lines belong — per-commit seen ranges for lines blame attributes to a commit in the review, the reviewed work-tree baseline otherwise — exactly as marking the same lines in the review buffer would, and the sign column repaints immediately.
 
 It refuses to act (with a message, leaving the model untouched) on a modified buffer or one whose contents no longer match the work tree the live diff was built from — the latter kicks off a refresh, so re-running it once acts on a fresh model — and on a file whose blame ownership is still loading.
+
+While a buffer is part of the review it also gets glean's buffer-local keymaps: `]c` / `[c` jump to the next / previous hunk (wrapping at the ends of the file, matching the review buffer's mapping), `gj` opens the review at the current line (`:Glean jump`) and `gm` toggles the mark — the cursor's hunk in normal mode, the selection in visual mode. They are installed and removed with the review, alongside the sign column. Set `keymaps = false` in the `gutter` config to keep your own.
 
 Because it owns the sign column, glean detaches the other sign provider from those buffers (gitsigns, by name, under the default `suppress = "auto"`) and reattaches it when the buffer leaves the review, when the review closes and on exit. Set `suppress = false` to leave the other plugin alone, or pass `{ detach = fn(bufnr), attach = fn(bufnr) }` to drive a different one.
 

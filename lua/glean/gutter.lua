@@ -119,6 +119,43 @@ function M.project(hunks, is_seen)
   return marks
 end
 
+--- Pure. The first post-image row of each hunk present in `marks`, ascending.
+--- A row folds several diff lines, so it starts a hunk when it is the lowest
+--- row any of that hunk's lines were folded into.
+--- @return integer[]
+function M.hunk_starts(marks)
+  local first = {}
+  for lnum, m in pairs(marks or {}) do
+    for _, s in ipairs(m.sources or {}) do
+      if not first[s.hunk] or lnum < first[s.hunk] then first[s.hunk] = lnum end
+    end
+  end
+  local seen, rows = {}, {}
+  for _, lnum in pairs(first) do
+    if not seen[lnum] then
+      seen[lnum] = true
+      rows[#rows + 1] = lnum
+    end
+  end
+  table.sort(rows)
+  return rows
+end
+
+--- Pure. The row `]c` / `[c` land on from `cur`, wrapping around the file.
+--- nil when there is nothing to move to.
+function M.next_hunk_row(rows, cur, dir)
+  if #rows == 0 then return nil end
+  if dir > 0 then
+    for _, r in ipairs(rows) do
+      if r > cur then return r end
+    end
+    return rows[1]
+  end
+  for i = #rows, 1, -1 do
+    if rows[i] < cur then return rows[i] end
+  end
+  return rows[#rows]
+end
 -- ── Rendering ───────────────────────────────────────────────────────────────
 
 local ns = api.nvim_create_namespace("glean_gutter")
@@ -166,6 +203,50 @@ local function buf_target(bufnr, allow_modified)
   local path = git.relpath(session.git.repo_root, name)
   if not path then return nil end
   return session, path
+end
+
+-- ── Buffer-local keymaps ────────────────────────────────────────────────────
+--
+-- The maps ride on *membership* in the review, not on paintedness: a buffer
+-- momentarily modified is still the review's file, and `gm` there refuses with
+-- a message rather than silently doing nothing because its map vanished.
+local mapped = {}
+local MAPS = {
+  { "n", "]c", function() M.goto_hunk(1) end, "glean: next hunk" },
+  { "n", "[c", function() M.goto_hunk(-1) end, "glean: previous hunk" },
+  { "n", "gj", "<Cmd>Glean jump<CR>", "glean: jump to the review" },
+  { "n", "gm", "<Cmd>Glean toggle-mark<CR>", "glean: toggle mark on this hunk" },
+  { "x", "gm", ":Glean toggle-mark<CR>", "glean: toggle mark on selection" },
+}
+
+local function set_maps(bufnr)
+  if mapped[bufnr] or not (M.config and M.config.keymaps ~= false) then return end
+  mapped[bufnr] = true
+  for _, m in ipairs(MAPS) do
+    vim.keymap.set(m[1], m[2], m[3], { buffer = bufnr, silent = true, desc = m[4] })
+  end
+end
+
+local function unset_maps(bufnr)
+  if not mapped[bufnr] then return end
+  mapped[bufnr] = nil
+  if not api.nvim_buf_is_valid(bufnr) then return end
+  for _, m in ipairs(MAPS) do
+    pcall(vim.keymap.del, m[1], m[2], { buffer = bufnr })
+  end
+end
+
+--- Move the cursor to the first row of the next (`dir > 0`) or previous hunk,
+--- wrapping at the ends of the file.
+function M.goto_hunk(dir)
+  local bufnr = api.nvim_get_current_buf()
+  local session, path = buf_target(bufnr)
+  local marks = session and session:file_status(path) or nil
+  if not marks then return end
+  local row = M.next_hunk_row(M.hunk_starts(marks), api.nvim_win_get_cursor(0)[1], dir)
+  if not row or row > api.nvim_buf_line_count(bufnr) then return end
+  vim.cmd("normal! m'")
+  api.nvim_win_set_cursor(0, { row, 0 })
 end
 
 local function clear(bufnr)
@@ -219,7 +300,13 @@ function M.refresh(bufnr)
   -- momentarily modified (and so cleared) is still the review's file, and
   -- handing the column back to the other plugin for one keystroke would flicker.
   local member, mpath = buf_target(bufnr, true)
-  if member and member:file_status(mpath) then suppress(bufnr) else restore(bufnr) end
+  if member and member:file_status(mpath) then
+    suppress(bufnr)
+    set_maps(bufnr)
+  else
+    restore(bufnr)
+    unset_maps(bufnr)
+  end
   local session, path = buf_target(bufnr)
   local marks = session and session:file_status(path) or nil
   clear(bufnr)
@@ -238,6 +325,7 @@ function M.clear_all()
   painted = {}
   for bufnr in pairs(suppressed) do restore(bufnr) end
   suppressed = {}
+  for bufnr in pairs(mapped) do unset_maps(bufnr) end
 end
 
 -- Every loaded, named buffer that could belong to a review: the painted ones
@@ -251,7 +339,8 @@ local function refresh_all()
 end
 
 function M.setup(cfg)
-  M.config = vim.tbl_extend("force", { enabled = true, suppress = "auto" }, cfg or {})
+  M.config =
+    vim.tbl_extend("force", { enabled = true, suppress = "auto", keymaps = true }, cfg or {})
   M.setup_highlights()
   local group = api.nvim_create_augroup("GleanGutter", { clear = true })
   api.nvim_create_autocmd({ "BufReadPost", "BufWinEnter", "BufWritePost", "FileChangedShellPost" }, {

@@ -252,9 +252,35 @@ gutter.setup({ suppress = { detach = function() error("boom") end, attach = func
 gutter.refresh(fbuf)
 h.assert_true("painted despite a throwing provider", signs(fbuf) ~= "")
 
+-- ── Hunk navigation ─────────────────────────────────────────────────────────
+local nav_marks = {
+  [4] = { sources = { { hunk = 1, li = 2 } } },
+  [5] = { sources = { { hunk = 1, li = 3 } } },
+  [20] = { sources = { { hunk = 2, li = 1 } } },
+}
+local starts = gutter.hunk_starts(nav_marks)
+h.assert_eq("one start per hunk, ascending", table.concat(starts, ","), "4,20")
+h.assert_eq("no marks, no starts", #gutter.hunk_starts({}), 0)
+h.assert_eq("next from before the first", gutter.next_hunk_row(starts, 1, 1), 4)
+h.assert_eq("next skips the rest of the hunk", gutter.next_hunk_row(starts, 5, 1), 20)
+h.assert_eq("next wraps at the end", gutter.next_hunk_row(starts, 20, 1), 4)
+h.assert_eq("prev from inside a hunk", gutter.next_hunk_row(starts, 20, -1), 4)
+h.assert_eq("prev wraps at the top", gutter.next_hunk_row(starts, 4, -1), 20)
+h.assert_eq("nothing to move to", gutter.next_hunk_row({}, 1, 1), nil)
+
+local function has_map(bufnr, mode, lhs)
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, mode)) do
+    if m.lhs == lhs then return true end
+  end
+  return false
+end
+h.assert_true("]c mapped in the reviewed buffer", has_map(fbuf, "n", "]c"))
+h.assert_true("gm mapped in visual mode", has_map(fbuf, "x", "gm"))
 -- Closing the review clears every painted buffer.
 gutter.setup({ suppress = false })
 glean.close_current()
 h.assert_eq("cleared on close", signs(fbuf), "")
+h.assert_true("maps removed on close", not has_map(fbuf, "n", "]c"))
+
 
 h.finish("gutter")
