@@ -774,6 +774,23 @@ function Session:file_seen(commit, file)
   return true
 end
 
+-- Is every file under a directory row fully seen? In the combined scope a file
+-- whose ownership hasn't loaded yet counts as unseen: its identities aren't
+-- resolvable, so treating it as seen would vacuously collapse a loading tree.
+function Session:dir_seen(target)
+  if self.scope == "commits" then
+    local commit = self.commits[target.commit]
+    for _, i in ipairs(target.dirfiles) do
+      if not self:file_seen(commit, commit.files[i]) then return false end
+    end
+    return true
+  end
+  for _, i in ipairs(target.dirfiles) do
+    local cf = self.combined_files and self.combined_files[i]
+    if not cf or self:owner_status(cf.path) ~= "loaded" then return false end
+  end
+  return self:ids_all_seen(self:target_identities(target))
+end
 -- Is a whole commit fully seen?
 function Session:commit_seen(commit)
   for _, file in ipairs(commit.files) do
@@ -1595,12 +1612,11 @@ function Session:build()
           local indent = ("  "):rep(node.depth)
           if node.kind == "dir" then
             local key = dir_key(commit.sha, node.prefix)
-            local collapsed = self.collapse[key] or false
-            local seen = true
-            for _, i in ipairs(node.files) do
-              if not self:file_seen(commit, commit.files[i]) then seen = false break end
-            end
             local dtarget = { commit = ci, dir = node.prefix, dirfiles = node.files }
+            local seen = self:dir_seen(dtarget)
+            local ov = self.collapse[key]
+            local collapsed = seen
+            if ov ~= nil then collapsed = ov end
             emit(("%s%s %s %s/%s"):format(indent, collapsed and CHEVRON_CLOSED or CHEVRON_OPEN,
               seen and "✓" or " ", node.prefix, collapsed and summary(dtarget) or ""),
               dtarget, "GleanFileHeader")
@@ -1635,8 +1651,10 @@ function Session:build()
       if not cskip and node.kind == "dir" then
         section("dir:" .. ni .. ":" .. node.prefix, function()
           local key = cdir_key(node.prefix)
-          local collapsed = self.collapse[key] or false
           local dtarget = { dir = node.prefix, dirfiles = node.files }
+          local ov = self.collapse[key]
+          local collapsed = ov
+          if collapsed == nil then collapsed = self:dir_seen(dtarget) end
           emit(("%s%s %s/%s"):format(("  "):rep(node.depth),
             collapsed and CHEVRON_CLOSED or CHEVRON_OPEN, node.prefix,
             collapsed and summary(dtarget) or ""), dtarget, "GleanFileHeader")
@@ -2638,9 +2656,13 @@ function Session:collapse_action(target)
     local key = (self.scope == "combined") and cdir_key(target.dir)
       or dir_key(self.commits[target.commit].sha, target.dir)
     local prev = self.collapse[key]
+    -- Like files/commits, a directory defaults to collapsed once fully seen, so
+    -- the toggle flips the effective state rather than the raw override.
+    local cur = prev
+    if cur == nil then cur = self:dir_seen(target) end
     return {
-      kind = "collapse", key = key, value = not prev,
-      field_value = not prev, prev = prev, prev_field_value = nil,
+      kind = "collapse", key = key, value = not cur,
+      field_value = not cur, prev = prev, prev_field_value = nil,
     }
   end
   if target.marker then
@@ -3006,6 +3028,12 @@ function Session:toggle_seen(row)
   -- explicitly expanded: clearing the override restores the collapsed default.
   if op == "mark" then
     for k in pairs(seen_keys) do self.collapse[k] = nil end
+    -- A directory mark also drops its own collapse override so the now-fully-seen
+    -- default (collapsed) applies, even if it had been explicitly expanded.
+    if target.dir then
+      self.collapse[(self.scope == "combined") and cdir_key(target.dir)
+        or dir_key(self.commits[target.commit].sha, target.dir)] = nil
+    end
   end
   -- Resolve the next hunk to land on *before* marking: marking relocates rows
   -- (the cursor's row number is preserved by render but its semantic target

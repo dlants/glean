@@ -83,14 +83,14 @@ local function inject_run(args)
   return { code = res.code, stdout = res.stdout, stderr = res.stderr }
 end
 
-local function open(scope)
+local function open(scope, state_dir)
   return glean.open({
     base = repo.shas[1],
     target = repo.shas[2],
     repo_root = repo.root,
     run = inject_run,
     open_window = false,
-    state_dir = vim.fn.tempname(),
+    state_dir = state_dir or vim.fn.tempname(),
     scope = scope,
   })
 end
@@ -151,8 +151,12 @@ for _, scope in ipairs({ "combined", "commits" }) do
     h.assert_true(label .. "mark: nothing seen initially", not seen_state(s, "src").any)
     s:toggle_seen(dir_row(s, "src"))
     h.assert_true(label .. "mark: both files under src/ marked seen", seen_state(s, "src").all)
+    h.assert_true(label .. "mark: a fully seen directory collapses",
+      buftext(s):find("▶ .*src/") ~= nil)
+    s:toggle_collapse(dir_row(s, "src"))
     h.assert_true(label .. "mark: seen header is indented beneath its file",
       buftext(s):find("\n    ▶ seen (1 hunks)", 1, true) ~= nil)
+    s:toggle_collapse(dir_row(s, "src"))
     h.assert_true(label .. "mark: root.txt untouched",
       buftext(s):find("\nR", 1, true) ~= nil)
     s:toggle_seen(dir_row(s, "src"))
@@ -160,6 +164,19 @@ for _, scope in ipairs({ "combined", "commits" }) do
       not seen_state(s, "src").any)
   end
 
+  do
+    -- A directory that is already fully seen opens collapsed.
+    local dir = vim.fn.tempname()
+    glean.close_current()
+    local s = open(scope, dir)
+    s:toggle_seen(dir_row(s, "src"))
+    glean.close_current()
+    local s2 = open(scope, dir)
+    h.assert_true(label .. "init: fully seen directory starts collapsed",
+      buftext(s2):find("▶ .*src/") ~= nil)
+    h.assert_true(label .. "init: unseen sibling stays expanded",
+      buftext(s2):find("\nR", 1, true) ~= nil)
+  end
   do
     -- A partially seen directory marks (rather than unmarks) the remainder.
     local s = open(scope)
