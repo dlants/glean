@@ -12,6 +12,7 @@ foldable, navigable neovim buffer. The buffer is a read-only projection of a rev
 :Glean                  " review current branch + dirty work tree
 :Glean log              " browse commits, then open one or a selected range
 :Glean jump             " from a file buffer, jump to that file+line in the review
+:Glean toggle-mark      " from a file buffer, mark/unmark the hunk or selection seen
 :Glean prs              " browse currently open GitHub pull requests
 :Glean <base>           " review <base> + dirty work tree
 :Glean <base> <target>  " review <base>..<target> (no dirty work tree)
@@ -93,6 +94,10 @@ In a buffer that carries comments, `u` and `<C-r>` undo and redo glean's comment
 While a work-tree review is open, every file it touches carries the review's own sign column: `▎` on added and changed lines and `▁` where lines were removed, coloured by seen status — unseen lines link to `DiffAdd`/`DiffChange`/ `DiffDelete`, marked lines grey out to `Comment`, so what still needs review is what draws the eye. The glyphs come straight from the model the review buffer renders, so marking a hunk seen in the review repaints the file immediately.
 
 The projection is deliberately conservative: nothing is painted unless the review targets the work tree (so a post-image line _is_ a buffer line) and the buffer is unmodified since the last model refresh. Editing clears the marks until the next poll. Display-only `min_seen_run` demotion is not applied here — the gutter answers "is this line marked" from the persisted model.
+
+`:Glean toggle-mark` marks lines seen from the file itself. With no range it acts on the whole hunk under the cursor; `:'<,'>Glean toggle-mark` acts on the selected lines. Polarity is "complete, don't flip": the selection is marked unless every line in it is already seen, in which case it is unmarked. Because a gutter row folds in the deletions attached to it, marking a row also marks the deleted lines its `▁` reports. Marks land wherever the reviewed lines belong — per-commit seen ranges for lines blame attributes to a commit in the review, the reviewed work-tree baseline otherwise — exactly as marking the same lines in the review buffer would, and the sign column repaints immediately.
+
+It refuses to act (with a message, leaving the model untouched) on a modified buffer or one whose contents no longer match the work tree the live diff was built from — the latter kicks off a refresh, so re-running it once acts on a fresh model — and on a file whose blame ownership is still loading.
 
 Because it owns the sign column, glean detaches the other sign provider from those buffers (gitsigns, by name, under the default `suppress = "auto"`) and reattaches it when the buffer leaves the review, when the review closes and on exit. Set `suppress = false` to leave the other plugin alone, or pass `{ detach = fn(bufnr), attach = fn(bufnr) }` to drive a different one.
 

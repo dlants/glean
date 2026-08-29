@@ -84,6 +84,12 @@ content changed. `baseline.lua` holds the pure algebra;
   ordinary file buffers (add/change/delete glyphs coloured by seen status), and
   detaches/reattaches the foreign sign provider (gitsigns) for those buffers.
   `M.project` is pure and headless-tested.
+  Each projected row also retains the `{hunk, li}` coordinates of the diff lines
+  folded into it, which is the inverse the file-buffer marking path
+  (`:Glean toggle-mark` → `M.toggle_mark` → `Session:toggle_marks`) rides back
+  into `diff(B, W)` before resolving identities and calling the usual
+  `Session:perform{kind = "seen"}`. The map is many-to-one, so one row can carry
+  its paired del and any attached deletions.
 - `baseline.lua` — pure reviewed-baseline algebra (alignment via `vim.diff`,
   seen classification, mark/unmark as edits to R). No git, no store.
 - `provenance.lua` — pure `git blame -p` porcelain parser for per-line ownership

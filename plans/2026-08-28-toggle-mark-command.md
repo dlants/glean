@@ -148,6 +148,15 @@ the plan's wording; same suite runner, better colocation): pending-ownership
 inertness plus `wt_matches` for matching / edited / truncated / unknown-path
 content. Suite green.
 
+Status: done (stage 6). `README.md` gains `:Glean toggle-mark` in the command
+list and two paragraphs in the "Review status in ordinary files" section (the
+cursor-hunk vs. range forms, the complete-don't-flip polarity, the many-to-one
+row → deletions consequence, where marks land, and the modified / stale / blame
+-pending refusals). `context.md`'s `gutter.lua` entry records that projected rows
+retain `{hunk, li}` and that this is the inverse `:Glean toggle-mark` rides back
+into `diff(B, W)`. No keymap or `<Plug>` mapping ships for the command, so
+nothing to document there. Suite green.
+
 Why deferred coordinates rather than pre-resolved identities:
 
 - `line_identity` needs `owner(dl)`, i.e. loaded blame provenance. Resolving during projection would make the gutter depend on it; resolving at mark time keeps `M.project` pure and headless-testable.
