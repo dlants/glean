@@ -60,6 +60,7 @@ Files are grouped under a row per directory component; a directory row rolls up 
 A collapsed row (file or directory) reports what it hides as `(n seen / m unseen)`, counted in hunks; a hunk with only some of its lines marked counts as unseen.
 
 ### Generated files (`.gleanignore`)
+
 A repo can declare its generated files in a `.gleanignore` at its root, using gitignore syntax (negation, `**`, anchoring and directory patterns all behave as they do in `.gitignore`). Matching files are treated as already seen, so they render collapsed in the seen section and drop out of the unreviewed counts. This is derived, not recorded: nothing is written to the review store, so removing a pattern brings the file back as unreviewed. The file is re-read on every reload.
 
 ## Comments
@@ -100,8 +101,7 @@ It refuses to act (with a message, leaving the model untouched) on a modified bu
 
 While a buffer is part of the review it also gets glean's buffer-local keymaps: `]c` / `[c` jump to the next / previous hunk (wrapping at the ends of the file, matching the review buffer's mapping), `gj` opens the review at the current line (`:Glean jump`) and `gm` toggles the mark — the cursor's hunk in normal mode, the selection in visual mode. They are installed and removed with the review, alongside the sign column. Set `keymaps = false` in the `gutter` config to keep your own.
 
-`gt` (global, `gutter.toggle_key`) toggles the gutter for the current buffer: off, it clears the marks, drops the buffer-local keymaps and hands the sign column back to the other provider until toggled on again. Toggling on with no review open starts the default (`:Glean`) one in the background, so the gutter is also a way into a review without leaving the file.
-Because it owns the sign column, glean detaches the other sign provider from those buffers (gitsigns, by name, under the default `suppress = "auto"`) and reattaches it when the buffer leaves the review, when the review closes and on exit. Set `suppress = false` to leave the other plugin alone, or pass `{ detach = fn(bufnr), attach = fn(bufnr) }` to drive a different one.
+`gt` (global, `gutter.toggle_key`) toggles the gutter for the current buffer: off, it clears the marks, drops the buffer-local keymaps and hands the sign column back to the other provider until toggled on again. Toggling on with no review open starts the default (`:Glean`) one in the background, so the gutter is also a way into a review without leaving the file. Because it owns the sign column, glean detaches the other sign provider from those buffers (gitsigns, by name, under the default `suppress = "auto"`) and reattaches it when the buffer leaves the review, when the review closes and on exit. Set `suppress = false` to leave the other plugin alone, or pass `{ detach = fn(bufnr), attach = fn(bufnr) }` to drive a different one.
 
 Highlight groups: `GleanGutterAdd`, `GleanGutterChange`, `GleanGutterDelete` and the `GleanGutterAddSeen` / `GleanGutterChangeSeen` / `GleanGutterDeleteSeen` variants — all plain, overridable groups.
 
@@ -169,10 +169,6 @@ require("glean.init").setup({
 When you revisit code you previously reviewed and an agent has since changed it, a single combined-scope hunk can end up with short, scattered runs of previously-seen lines interleaved with newer unseen changes. `min_seen_run` is a display-only threshold (default `5`): in the combined scope, a seen run shorter than `min_seen_run` lines inside an otherwise-unseen hunk is rendered as ordinary unseen `+`/`-` rows instead of a collapsed `✓ marked N lines` marker, so you no longer have to unmark scattered lines by hand. Longer seen runs still collapse to a marker. Set `min_seen_run` to `1` (or `0`) to disable demotion.
 
 The persisted seen store is never touched by this — it stays the plain `(commit, line)` model. If you explicitly re-mark a demoted line as seen in the current context, that mark is recorded as a content-addressed sticky override that keeps the line seen across renders and reopens, and self-invalidates once the line's content changes again.
-
-### Removed: `max_blame_jobs`
-
-Combined-scope ownership no longer runs `git blame` per file — it is composed from a single `git log -p` walk of the range — so the `max_blame_jobs` option is gone. Passing it to `setup` has no effect.
 
 ## Related plugins
 
