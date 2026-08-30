@@ -157,12 +157,19 @@ local api = vim.api
 local glean = require("glean.init")
 local testutil = require("glean.testutil")
 local repo = testutil.make_repo({
-  { msg = "base", files = { ["f.txt"] = "one\ntwo\nthree\n" } },
+  { msg = "base", files = { ["f.txt"] = "one\ntwo\nthree\n", ["d.txt"] = "a\nb\nc\nd\ne\n" } },
   { msg = "c1", files = { ["f.txt"] = "one\ntwo\nthree\nfour\n" } },
 })
 do
   local f = assert(io.open(repo.root .. "/f.txt", "w"))
   f:write("one\ntwo more\nthree\nfour\nfive\n")
+  f:close()
+end
+
+-- d.txt only loses lines in the work tree, so its glyph is a deletion mark.
+do
+  local f = assert(io.open(repo.root .. "/d.txt", "w"))
+  f:write("a\nd\ne\n")
   f:close()
 end
 local function inject_run(args)
@@ -218,6 +225,23 @@ h.assert_eq("modified buffer cleared", signs(fbuf), "")
 vim.cmd("silent edit!")
 gutter.refresh(fbuf)
 h.assert_true("repainted after revert", signs(fbuf) ~= "")
+
+-- An uncommitted deletion's glyph follows the same seen model the review buffer
+-- reads: marking the row it folds onto flips it to the seen highlight, and
+-- unmarking flips it back.
+do
+  vim.cmd("edit " .. vim.fn.fnameescape(repo.root .. "/d.txt"))
+  local dbuf = api.nvim_get_current_buf()
+  gutter.refresh(dbuf)
+  h.assert_eq("deletion glyph", signs(dbuf), "1:GleanGutterDelete")
+  h.assert_true("marked the deletion", session:toggle_marks("d.txt", 1, 1) == true)
+  gutter.refresh(dbuf)
+  h.assert_eq("deletion glyph seen", signs(dbuf), "1:GleanGutterDeleteSeen")
+  h.assert_true("unmarked the deletion", session:toggle_marks("d.txt", 1, 1) == true)
+  gutter.refresh(dbuf)
+  h.assert_eq("deletion glyph unseen again", signs(dbuf), "1:GleanGutterDelete")
+  vim.cmd("buffer " .. fbuf)
+end
 -- A buffer outside the session's file set is untouched.
 local other = api.nvim_create_buf(true, false)
 api.nvim_buf_set_name(other, repo.root .. "/absent.txt")

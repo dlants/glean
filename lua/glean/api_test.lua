@@ -458,4 +458,39 @@ do
   wipe(s)
 end
 
+-- Uncommitted deletions through the api: an agent paging hunks must see the
+-- same seen model the buffer does, so a marked deletion reads seen and unmark
+-- restores it. Deletions are stored as explicit tip-commit line ranges, which
+-- is what makes a repeated line ("--" here) markable at all.
+do
+  local drepo, drun = make({
+    { msg = "base", files = { ["d.txt"] = "--\nkeep\n--\ndrop one\n--\ndrop two\n" } },
+  })
+  do
+    local f = assert(io.open(drepo.root .. "/d.txt", "w"))
+    f:write("--\nkeep\n")
+    f:close()
+  end
+  local ds = glean.open({
+    base = drepo.shas[1], target = glean.WORKTREE, repo_root = drepo.root,
+    run = drun, open_window = false, state_dir = vim.fn.tempname(), scope = "combined",
+  })
+  local hk = gapi.hunks(ds.id, { limit = 100 }).hunks[1]
+  h.assert_eq("wt del: all four lines are deletions", hk.dels, 4)
+  h.assert_eq("wt del: unseen to start", hk.unseen_lines, 4)
+  local res = gapi.mark(ds.id, hk.id)
+  h.assert_eq("wt del: every deletion changed", res.lines, 4)
+  local after = gapi.hunks(ds.id, { limit = 100 }).hunks[1]
+  h.assert_eq("wt del: hunk reads seen", after.seen, true)
+  h.assert_eq("wt del: no unseen lines left", after.unseen_lines, 0)
+  for _, l in ipairs(after.lines) do
+    if l.kind == "del" then
+      h.assert_eq("wt del: line " .. l.lnum .. " seen", l.seen, true)
+    end
+  end
+  gapi.mark(ds.id, hk.id, false)
+  local back = gapi.hunks(ds.id, { limit = 100 }).hunks[1]
+  h.assert_eq("wt del: unmark restores unseen", back.unseen_lines, 4)
+end
+
 h.finish()

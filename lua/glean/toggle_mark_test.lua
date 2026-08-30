@@ -11,12 +11,20 @@ local testutil = require("glean.testutil")
 local h = testutil.new()
 
 local repo = testutil.make_repo({
-  { msg = "base", files = { ["f.txt"] = "one\ntwo\nthree\n" } },
+  { msg = "base", files = { ["f.txt"] = "one\ntwo\nthree\n", ["d.txt"] = "a\nb\nc\nd\ne\n" } },
   { msg = "c1", files = { ["f.txt"] = "one\ntwo\nthree\nfour\n" } },
 })
 do
   local f = assert(io.open(repo.root .. "/f.txt", "w"))
   f:write("one\ntwo more\nthree\nfour\nfive\n")
+  f:close()
+end
+
+-- d.txt loses two lines in the work tree and gains none: every changed line is
+-- an uncommitted deletion, folded onto a neighbouring post-image row.
+do
+  local f = assert(io.open(repo.root .. "/d.txt", "w"))
+  f:write("a\nd\ne\n")
   f:close()
 end
 
@@ -110,6 +118,34 @@ do
   h.assert_eq("edited buffer is stale", s:wt_matches("f.txt", edited), false)
   h.assert_eq("shorter buffer is stale", s:wt_matches("f.txt", { wt[1] }), false)
   h.assert_eq("unknown path is stale", s:wt_matches("nope.txt", {}), false)
+end
+
+-- Uncommitted deletions, marked from the file buffer. d.txt drops head lines
+-- 2 and 3 ("b", "c"), which fold onto post-image row 1. Marking that row must
+-- name the same head lines the review buffer names, and the model must then
+-- report them seen — the property that broke when del-seen-ness was derived by
+-- re-diffing the reviewed baseline.
+do
+  local s = open()
+  local st = s:file_status("d.txt")
+  h.assert_eq("deletion folds onto row 1", st[1].del_below, true)
+  h.assert_eq("deleted row starts unseen", st[1].seen, false)
+
+  h.assert_true("marking the del row", s:toggle_marks("d.txt", 1, 1) == true)
+  for _, lnum in ipairs({ 2, 3 }) do
+    local id = require("glean.state").wt_identity("d.txt", lnum, "del")
+    h.assert_eq("head line " .. lnum .. " seen", s:id_seen(id), true)
+  end
+  h.assert_eq("del row reads seen", s:file_status("d.txt")[1].seen, true)
+
+  -- Explicit head-line ranges, not an implicit hole in the reviewed baseline.
+  local v = s:wt_versions("d.txt")
+  h.assert_eq("dels recorded", vim.inspect(v.dels), vim.inspect({ { 2, 3 } }))
+  h.assert_eq("baseline stays head-identical", vim.inspect(v.reviewed), vim.inspect(v.head))
+
+  h.assert_true("unmarking the del row", s:toggle_marks("d.txt", 1, 1) == true)
+  h.assert_eq("del row unseen again", s:file_status("d.txt")[1].seen, false)
+  h.assert_eq("dels cleared", #s:wt_versions("d.txt").dels, 0)
 end
 
 h.finish()

@@ -323,13 +323,31 @@ surface; the deprecated del path stays covered by the session-level suites.
 
 ## 3. surfaces and docs
 
+**Status: done** (stage 3 commit). No production code changed: stage 2 already
+routed every surface through `Session:line_identity` / `id_seen` / `perform`, so
+the file-buffer path, the gutter projection and `api.lua` were correct by
+construction. This stage pins that down with tests and fixes the docs.
+
+Deviations:
+- `toggle_mark_test.lua` and `gutter_test.lua` grow a second fixture file
+  (`d.txt`, present at the base commit and shortened in the work tree) so a
+  hunk of pure uncommitted deletions exists to mark; the existing `f.txt`
+  assertions are untouched.
+- The `api_test.lua` case opens its own `WORKTREE`-targeted session (the
+  existing hunks/marking block targets a commit and has no uncommitted lines).
+  Its fixture repeats `--` between the deleted blocks, the shape from the bug
+  report.
+- `toggle_mark_test.lua` additionally asserts the *representation*: after
+  marking, `wt_versions().dels == {{2,3}}` and R is byte-identical to H — i.e.
+  the file-buffer path writes explicit del ranges rather than a hole in R.
+
 - Goal: the file-buffer marking path (`:Glean toggle-mark` → `M.toggle_mark` →
   `Session:toggle_marks`), the gutter projection and the `api.lua` seen-marking
   entry points all agree with the review buffer on uncommitted deletions.
   `plans/2026-08-28-reviewed-baseline.md` gains a superseding note, and
   `context.md`'s statement of the algebra is corrected to describe the split
   model.
-- Tests:
+- Tests (all three written and passing):
   - `toggle_mark_test.lua`: marking a deleted line from the *file buffer*
     (where a deletion is folded onto a neighbouring row) marks the same head
     line the review buffer would, and the review buffer then renders it seen.

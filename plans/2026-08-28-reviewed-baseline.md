@@ -1,5 +1,15 @@
 # Objective and Context
 
+> **Superseded in part by `plans/2026-08-29-explicit-del-seen.md`.** The reviewed
+> baseline R described below covered *both* halves of the uncommitted diff: adds
+> via `diff(R, W)` and dels via `diff(H, R)`. Composing those two independent
+> alignments is ill-posed when a line's text repeats nearby, so deletions were
+> split out. R now covers additions only and is never shrunk below H
+> (`diff(H, R)` is add-only); approved deletions are stored explicitly as
+> inclusive ranges of tip-commit line numbers in `baselines[path].dels`.
+> Everything below about *additions*, the anchoring on `content_hash(H)`, and the
+> record's lifecycle still holds; read the del half as historical.
+
 Replace the content-addressed representation of seen-ness for **uncommitted**
 lines with a stored *reviewed baseline* per file.
 

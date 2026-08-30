@@ -46,23 +46,30 @@ Line identities come in three kinds:
   for an added line and the tip-commit line for a deleted one
 
 The first two are stable because both endpoints of a committed pair are
-immutable. The third is not stable across edits, and is not asked to be: the
-work-tree pair's seen-ness is not stored per line but derived from a **reviewed
-baseline** R — the content the reviewer signed off on, persisted per path in the
-`WORKTREE` shard and anchored by a hash of the tip-commit content it was
-reviewed against.
+immutable. The third is not, and the two halves of an uncommitted diff are
+therefore stored differently, by the stability of the coordinate each is named
+in. With H the file at the review's tip commit and W the work tree:
 
-With H the file at the review's tip commit, W the work tree and R the baseline,
-the displayed uncommitted diff is `diff(H, W)`; an added line is seen iff it is
-not an added line of `diff(R, W)`, and a deleted line is seen iff it is a
-deleted line of `diff(H, R)`. Each comparison is by line number in the version
-the two diffs share, so no text is searched for and nothing partially matches.
-Marking advances R toward W over the selected lines (a partial patch
-application); unmarking retreats it toward H. Editing a marked line therefore
-makes exactly that line unseen and leaves its neighbours seen, and a moved H
-(a commit) drops the anchor-mismatched baseline for exactly the paths whose
-content changed. `baseline.lua` holds the pure algebra;
-`plans/2026-08-28-reviewed-baseline.md` holds the reasoning.
+- A **deleted** line is named by its H line number. H is immutable while the
+  record lives (the record is anchored by a hash of H's content, and a moved tip
+  drops it wholesale), so approved deletions are stored *explicitly* as
+  inclusive ranges of head line numbers. No diff is consulted: marking is a
+  range insert, unmarking a range remove, classification a `covers` test. A
+  repeated line's seen-ness therefore cannot depend on a diff picking the
+  "right" copy of it.
+- An **added** line is named by its work-tree line number, which shifts under
+  editing, so its seen-ness is derived from a **reviewed baseline** R — the
+  content the reviewer signed off on, persisted per path in the `WORKTREE`
+  shard. An added line is seen iff it is not an added line of `diff(R, W)`.
+  Marking advances R toward W over the selected lines; unmarking retreats it
+  toward H. R is never shrunk below H, so `diff(H, R)` is add-only: R is exactly
+  "H plus the approved additions". Editing a marked line makes exactly that line
+  unseen and leaves its neighbours seen.
+
+A moved H (a commit) drops the anchor-mismatched record — dels included — for
+exactly the paths whose content changed. `baseline.lua` holds the pure adds-only
+algebra; `plans/2026-08-28-reviewed-baseline.md` holds the original reasoning and
+`plans/2026-08-29-explicit-del-seen.md` the split.
 
 ## Layout (`lua/glean/`)
 
@@ -79,7 +86,9 @@ content changed. `baseline.lua` holds the pure algebra;
   `skills/glean-review/skill.md`, which dotfiles symlinks into `~/.claude/skills`.- `state.lua` — the persisted ReviewStore. Keyed by commit sha, sharded one JSON
   file per commit on disk (`<dir>/<sha>.json`), merged in memory. Holds seen
   ranges, del ranges, and — in the `WORKTREE` shard — content-addressed comments
-  and the per-path reviewed baselines that stand in for worktree seen ranges.
+  and the per-path uncommitted records (`{ head, lines, dels }`: the reviewed
+  baseline for approved additions, explicit head-line ranges for approved
+  deletions).
 - `gutter.lua` — projects the live work-tree review into the sign column of
   ordinary file buffers (add/change/delete glyphs coloured by seen status), and
   detaches/reattaches the foreign sign provider (gitsigns) for those buffers.
@@ -93,8 +102,10 @@ content changed. `baseline.lua` holds the pure algebra;
 - `ignore.lua` — pure `.gleanignore` matcher (gitignore syntax compiled to vim
   regex). A matching path is *derived*-seen via `Session:is_generated` short-
   circuiting `id_seen`, so generated files collapse and leave the unreviewed
-  counts without any store write to unwind when a pattern goes away.- `baseline.lua` — pure reviewed-baseline algebra (alignment via `vim.diff`,
-  seen classification, mark/unmark as edits to R). No git, no store.
+  counts without any store write to unwind when a pattern goes away.
+- `baseline.lua` — pure reviewed-baseline algebra for *additions only*
+  (alignment via `vim.diff`, `seen_adds` classification, `mark_adds`/
+  `unmark_adds` as edits to R). Deletions are not its business. No git, no store.
 - `provenance.lua` — pure `git blame -p` porcelain parser for per-line ownership
   in the combined view; git invocation injected by the caller.
 - `intraline.lua` — pure word-level intra-line diff highlighting helpers
