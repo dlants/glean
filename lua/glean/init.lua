@@ -1059,33 +1059,72 @@ function Session:wt_head_lines(path)
   return lines
 end
 
--- The three versions a path's uncommitted seen-ness is defined by: the tip
--- commit (H), the reviewed baseline (R, read under H's content anchor so a
--- moved tip reads as unreviewed) and the work tree (W).
+-- Recover the explicit del set from a legacy baseline record, which encoded
+-- approved deletions implicitly as lines missing from R. Returns the ranges of
+-- head lines R dropped, plus R re-canonicalized to "head plus approved adds"
+-- so diff(head, reviewed) is add-only from here on.
+local function migrate_baseline(head, reviewed)
+  local dels, lines = {}, {}
+  for _, op in ipairs(baseline.align(head, reviewed)) do
+    if op.kind == "del" then
+      dels[#dels + 1] = { op.a_lnum, op.a_lnum }
+    end
+    lines[#lines + 1] = op.text
+  end
+  return state_mod.merge(dels), lines
+end
+
+-- The versions and ranges a path's uncommitted seen-ness is defined by: the tip
+-- commit (H), the reviewed baseline (R, covering approved *additions*), the
+-- approved deletions as inclusive ranges of H line numbers, and the work tree
+-- (W). The record is read under H's content anchor, so a moved tip reads as
+-- unreviewed.
 function Session:wt_versions(path)
   self._wt_versions = self._wt_versions or {}
   local cached = self._wt_versions[path]
   if cached then return cached end
   local head = self:wt_head_lines(path)
   local head_hash = state_mod.content_hash(head)
+  local rec = self.store:baseline(path, head_hash)
+  local reviewed, dels = head, {}
+  if rec then
+    reviewed = rec.lines or head
+    if rec.dels then
+      dels = rec.dels
+    else
+      -- Legacy record: deletions live implicitly in R. Recover them once; the
+      -- migrated pair is written back on this path's next mark.
+      dels, reviewed = migrate_baseline(head, reviewed)
+    end
+  end
   local v = {
     head = head,
     head_hash = head_hash,
-    reviewed = self.store:baseline(path, head_hash) or head,
+    reviewed = reviewed,
+    dels = dels,
     worktree = self:wt_file_lines(path) or {},
   }
   self._wt_versions[path] = v
   return v
 end
 
--- Seen-ness of `path`'s uncommitted lines: `add[<work-tree lnum>]` and
--- `del[<tip lnum>]`, decided by diffing against the reviewed baseline.
+-- Seen-ness of `path`'s uncommitted lines: `add[<work-tree lnum>]` decided by
+-- diffing against the reviewed baseline, `del[<tip lnum>]` read straight off
+-- the stored head-line ranges (no diff, so a repeated line cannot be confused
+-- for another copy of itself).
 function Session:wt_seen_sets(path)
   self._wt_seen = self._wt_seen or {}
   local cached = self._wt_seen[path]
   if cached then return cached end
   local v = self:wt_versions(path)
-  local sets = baseline.seen_sets(v.head, v.reviewed, v.worktree)
+  local sets = {
+    add = baseline.seen_adds(v.reviewed, v.worktree),
+    del = setmetatable({}, {
+      __index = function(_, p)
+        return state_mod.covers(v.dels, p)
+      end,
+    }),
+  }
   self._wt_seen[path] = sets
   return sets
 end
@@ -2353,23 +2392,28 @@ function Session:apply_seen(a, op)
   for sha in pairs(touched) do self.store:save_commit(sha) end
 end
 
--- Advance (mark) or retreat (unmark) `path`'s reviewed baseline over the
--- selected uncommitted lines: an add is named by its work-tree line, a del by
--- its tip-commit line, the coordinates each diff shares with the displayed one.
--- The write is content-anchored on the tip blob, so it is discarded wholesale
--- once that blob moves.
+-- Advance (mark) or retreat (unmark) `path`'s uncommitted seen record over the
+-- selected lines. An add is named by its work-tree line and moves the reviewed
+-- baseline; a del is named by its tip-commit line and is a plain range insert
+-- or removal, so a repeated line's seen-ness never depends on a diff picking
+-- the "right" copy. The write is content-anchored on the tip blob, so it is
+-- discarded wholesale once that blob moves.
 function Session:apply_wt_seen(path, ids, op)
   local v = self:wt_versions(path)
-  local sel = { add = {}, del = {} }
+  local sel_add, dels = {}, v.dels
   for _, id in ipairs(ids) do
     if id.lnum then
-      local list = id.dkind == "del" and sel.del or sel.add
-      list[#list + 1] = id.lnum
+      if id.dkind == "del" then
+        local range = { id.lnum, id.lnum }
+        dels = op == "mark" and state_mod.add(dels, range) or state_mod.remove(dels, range)
+      else
+        sel_add[#sel_add + 1] = id.lnum
+      end
     end
   end
-  local fn = op == "mark" and baseline.mark or baseline.unmark
-  local reviewed = fn(v.head, v.reviewed, v.worktree, sel)
-  self.store:set_baseline(path, v.head_hash, reviewed)
+  local reviewed = op == "mark" and baseline.mark_adds(v.reviewed, v.worktree, sel_add)
+    or baseline.unmark_adds(v.head, v.reviewed, v.worktree, sel_add)
+  self.store:set_baseline(path, v.head_hash, reviewed, dels)
   self._wt_versions[path] = nil
   if self._wt_seen then self._wt_seen[path] = nil end
 end

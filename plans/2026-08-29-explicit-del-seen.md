@@ -270,6 +270,26 @@ surface; the deprecated del path stays covered by the session-level suites.
 
 ## 2. store + session: explicit del ranges
 
+**Status: done** (stage 2 commit). Deviations:
+- The deprecated `baseline.seen_sets`/`mark`/`unmark` are deleted here, as
+  stage 1 deferred; `baseline.lua`'s header comment now states the split model.
+- `Store:baseline` returns the raw record, so the three call sites in
+  `state_test.lua` / `init_test.lua` that indexed the returned lines directly
+  now go through `.lines`.
+- `Session:wt_seen_sets().del` is a `__index` metatable view over `v.dels`
+  rather than a materialized table, so it stays O(1) per read and needs no
+  bound on head length. Only `Session:id_seen` reads it, and only by index.
+- The legacy-record test lives in `wt_dup_lines_test.lua` (it needs the real
+  repo harness) and asserts *recovery*, not perfection: on the duplicate-heavy
+  fixture the migration inherits the old mis-attribution for one of the six
+  deletions (5/6 read seen), then the first mark rewrites the record with
+  explicit `dels` and add-only `lines` and the hunk closes. This is the
+  behaviour the design section anticipated.
+- Live check ran green: base `1b1a9f16` + WORKTREE on
+  `~/src/gatherus/custom-fields-to-person-sheet`, hunk
+  `@@ -149,34 +150,6 @@` of `packages/backend/db/schema.sql`, marked through a
+  throwaway state dir → `hunk_seen = true`.
+
 - Goal: deletions are marked, unmarked and classified through
   `baselines[path].dels`; `Session:wt_seen_sets` composes `baseline.seen_adds`
   with a `covers` view; `apply_wt_seen` writes both halves in one

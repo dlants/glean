@@ -443,28 +443,38 @@ end
 -- read: a mismatch reads as "nothing reviewed" rather than as a diff against
 -- stale content, so committing part of the work resets exactly the paths whose
 -- tip-commit content moved.
+-- R covers only *additions*, because work-tree line numbers shift under
+-- editing. Approved deletions are named in H's coordinates, which are immutable
+-- for the life of the record, so they are stored explicitly as inclusive ranges
+-- of head line numbers (`dels`) rather than derived by re-diffing -- a
+-- derivation that is ill-posed when a deleted line's text repeats nearby. See
+-- plans/2026-08-29-explicit-del-seen.md.
 
 -- Content key for a whole file's lines — the baseline anchor.
 function M.content_hash(lines)
   return vim.fn.sha256(table.concat(lines or {}, "\n"))
 end
 
--- The reviewed baseline lines for `path`, or nil when none is stored or the
--- stored anchor is not `head_hash`. A stale record is left in place (a later
--- read with its original hash still finds it); only a write replaces it.
+-- The whole baseline record for `path` (`{ head, lines, dels }`), or nil when
+-- none is stored or the stored anchor is not `head_hash`. A stale record is
+-- left in place (a later read with its original hash still finds it); only a
+-- write replaces it.
 function Store:baseline(path, head_hash)
   local c = self.data[self.wt_shard]
   local rec = c and c.baselines and c.baselines[path]
   if not rec or rec.head ~= head_hash then return nil end
-  return rec.lines
+  return rec
 end
 
--- Store `path`'s reviewed baseline. `lines` nil, or content-identical to the
--- head the hash names (nothing reviewed), prunes the record — and the worktree
--- slice when it then carries nothing else, so a mark fully undone restores
--- byte-identical JSON.
-function Store:set_baseline(path, head_hash, lines)
-  local prune = lines == nil or M.content_hash(lines) == head_hash
+-- Store `path`'s uncommitted seen record: the reviewed baseline `lines` (which
+-- covers additions) and `dels`, the inclusive ranges of tip-commit line numbers
+-- whose deletion has been approved. Nothing reviewed on *either* side — `lines`
+-- nil or content-identical to the head the hash names, and no del ranges —
+-- prunes the record, and the worktree slice when it then carries nothing else,
+-- so a mark fully undone restores byte-identical JSON.
+function Store:set_baseline(path, head_hash, lines, dels)
+  dels = M.merge(dels or {})
+  local prune = (lines == nil or M.content_hash(lines) == head_hash) and #dels == 0
   local c = self.data[self.wt_shard]
   if not c then
     if prune then return end
@@ -477,7 +487,10 @@ function Store:set_baseline(path, head_hash, lines)
     end
   else
     c.baselines = c.baselines or {}
-    c.baselines[path] = { head = head_hash, lines = lines }
+    local rec = { head = head_hash }
+    if lines and M.content_hash(lines) ~= head_hash then rec.lines = lines end
+    if #dels > 0 then rec.dels = dels end
+    c.baselines[path] = rec
   end
   wt_prune(self)
 end

@@ -6,10 +6,14 @@
 --   reviewed (R) the content the reviewer has signed off on,
 --   worktree (W) the file as it is right now.
 --
--- The displayed diff is D = diff(H, W). Seen-ness is decided by exact line
--- numbers in the version each pair of diffs shares: an added line of D (a W
--- line) against diff(R, W), a deleted line of D (an H line) against
--- diff(H, R). Nothing is ever located by text search.
+-- The displayed diff is D = diff(H, W). This module decides only its *added*
+-- lines: an add at work-tree line N is seen iff it is not an add of
+-- diff(R, W), an exact line-number comparison in the version those two diffs
+-- share. Nothing is ever located by text search. Deleted lines are not decided
+-- here at all -- H is immutable while a baseline record lives, so approved
+-- deletions are stored explicitly as H line numbers by the session (see
+-- plans/2026-08-29-explicit-del-seen.md). R therefore only ever grows toward
+-- W, and diff(H, R) is add-only.
 --
 -- No git, no store, no nvim API beyond `vim.diff`, so this is headless-testable
 -- like glean.diff and glean.intraline.
@@ -135,101 +139,6 @@ function M.unmark_adds(head, reviewed, worktree, sel_add)
       if not drop_r[op.b_lnum] then out[#out + 1] = op.text end
     else -- context, or a head line missing from R: keep the head line
       out[#out + 1] = op.text
-    end
-  end
-  return out
-end
-
--- DEPRECATED (removed in stage 2 of plans/2026-08-29-explicit-del-seen.md):
--- the del-aware surface, kept only until the session stores deletions as
--- explicit head line ranges. New code uses seen_adds/mark_adds/unmark_adds.
-
---- Seen-ness for one file, as dense predicates over line numbers of the
---- displayed diff D = diff(head, worktree):
----   `add[N]` for a displayed add at worktree line N,
----   `del[P]` for a displayed del at head line P.
---- Lines that are not part of D are still keyed (they read as seen); callers
---- only ever ask about lines D actually displays.
---- @return { add: table<integer, boolean>, del: table<integer, boolean> }
-function M.seen_sets(head, reviewed, worktree)
-  local u = M.align(reviewed, worktree)
-  local a = M.align(head, reviewed)
-  local add, del = {}, {}
-  for n = 1, #worktree do
-    add[n] = true
-  end
-  for _, op in ipairs(u) do
-    -- Present in W but not in R: the reviewer has not approved this text.
-    if op.kind == "add" then add[op.b_lnum] = false end
-  end
-  for p = 1, #head do
-    del[p] = false
-  end
-  for _, op in ipairs(a) do
-    -- Absent from R as well as from W: the removal is approved.
-    if op.kind == "del" then del[op.a_lnum] = true end
-  end
-  return { add = add, del = del }
-end
-
---- Normalize a selection of displayed lines into lookup sets.
-local function sel_sets(sel)
-  local add, del = {}, {}
-  for _, n in ipairs((sel or {}).add or {}) do
-    add[n] = true
-  end
-  for _, p in ipairs((sel or {}).del or {}) do
-    del[p] = true
-  end
-  return add, del
-end
-
---- R' after marking `sel` seen: advance R toward W over the selected lines.
---- `sel` is `{ add = { <worktree lnum>, ... }, del = { <head lnum>, ... } }`.
---- @return string[]
-function M.mark(head, reviewed, worktree, sel)
-  local sel_add, sel_del = sel_sets(sel)
-  local a = M.align(head, reviewed)
-  -- A selected displayed del still lives in R (it is unseen), at the line the
-  -- head line maps forward to through diff(head, reviewed).
-  local drop_r = {}
-  for p in pairs(sel_del) do
-    local r = M.map_forward(a, p)
-    if r then drop_r[r] = true end
-  end
-  local out = {}
-  for _, op in ipairs(M.align(reviewed, worktree)) do
-    if op.kind == "context" then
-      out[#out + 1] = op.text
-    elseif op.kind == "add" then
-      if sel_add[op.b_lnum] then out[#out + 1] = op.text end
-    else -- del: a line of R absent from W; keep it unless its removal is marked
-      if not drop_r[op.a_lnum] then out[#out + 1] = op.text end
-    end
-  end
-  return out
-end
-
---- R' after unmarking `sel`: retreat R toward head over the selected lines.
---- @return string[]
-function M.unmark(head, reviewed, worktree, sel)
-  local sel_add, sel_del = sel_sets(sel)
-  local u = M.align(reviewed, worktree)
-  -- A selected displayed add is already in R (it is seen), at the line the
-  -- worktree line maps back to through diff(reviewed, worktree).
-  local drop_r = {}
-  for n in pairs(sel_add) do
-    local r = M.map_back(u, n)
-    if r then drop_r[r] = true end
-  end
-  local out = {}
-  for _, op in ipairs(M.align(head, reviewed)) do
-    if op.kind == "context" then
-      out[#out + 1] = op.text
-    elseif op.kind == "add" then
-      if not drop_r[op.b_lnum] then out[#out + 1] = op.text end
-    else -- del: approved removal of a head line; restore it when unmarked
-      if sel_del[op.a_lnum] then out[#out + 1] = op.text end
     end
   end
   return out

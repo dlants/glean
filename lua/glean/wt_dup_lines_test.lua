@@ -12,6 +12,7 @@ package.path = lua_root .. "/?.lua;" .. lua_root .. "/?/init.lua;" .. package.pa
 
 local glean = require("glean.init")
 local testutil = require("glean.testutil")
+local baseline = require("glean.baseline")
 local h = testutil.new()
 
 -- Two comment-delimited blocks sharing their `--` separator text, of the shape
@@ -143,6 +144,39 @@ do
   h.assert_eq("unmark reopens the hunk", s:hunk_seen(hunk, cf.path, owner), false)
   s:perform({ kind = "seen", ids = ids, op = "mark" })
   h.assert_eq("re-mark closes it again", s:hunk_seen(hunk, cf.path, owner), true)
+end
+
+-- A record written by the pre-explicit-dels code has `lines` and no `dels`: its
+-- deletions live implicitly in R. It must read as it read before, and the next
+-- mark must rewrite it in the new shape (explicit `dels`, add-only `lines`).
+do
+  local s = open()
+  local cf, hunk, owner = subject(s)
+  local v = s:wt_versions(cf.path)
+  local legacy = vim.split(WT_TEXT, "\n", { plain = true })
+  legacy[#legacy] = nil
+  s.store:set_baseline(cf.path, v.head_hash, legacy, {})
+  s.store.data[s.store.wt_shard].baselines[cf.path].dels = nil
+  s._wt_versions, s._wt_seen = {}, {}
+  local seen_before = 0
+  for _, id in ipairs(s:changed_lines(hunk, cf.path, owner)) do
+    if s:id_seen(id) then seen_before = seen_before + 1 end
+  end
+  -- The record is recovered, not discarded: its approved deletions survive.
+  -- (A legacy record may still mis-attribute one duplicate at the moment of
+  -- migration -- that is the old bug, frozen into the stored R -- so this only
+  -- asserts that the state came across, not that it is perfect.)
+  h.assert_true("legacy record: recovered, not discarded", seen_before >= 5)
+  local ids = s:changed_lines(hunk, cf.path, owner)
+  s:perform({ kind = "seen", ids = ids, op = "mark" })
+  local rec = s.store:baseline(cf.path, v.head_hash)
+  h.assert_true("legacy record: rewritten with explicit dels", (rec or {}).dels ~= nil)
+  local add_only = true
+  for _, op in ipairs(baseline.align(v.head, (rec or {}).lines or v.head)) do
+    if op.kind == "del" then add_only = false end
+  end
+  h.assert_true("legacy record: rewritten lines are add-only", add_only)
+  h.assert_eq("legacy record: markable after migration", s:hunk_seen(hunk, cf.path, owner), true)
 end
 
 h.finish()

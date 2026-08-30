@@ -2021,7 +2021,7 @@ do
   h.assert_true("wt brace: second `}` NOT seen (no file-wide bleed)", not s:id_seen(id2))
 
   -- The reviewed baseline holds exactly the marked line on top of the tip blob.
-  local r = s.store:baseline("t.txt", state.content_hash({ "x" }))
+  local r = s.store:baseline("t.txt", state.content_hash({ "x" })).lines
   h.assert_eq("wt brace: baseline is base plus the marked line", #r, 2)
   h.assert_eq("wt brace: marked line in the baseline", r[2], "}")
 end

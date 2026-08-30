@@ -123,7 +123,7 @@ do
   s:save_commit("WORKTREE")
   local s2 = state.new({ dir = dir })
   s2:load({ "WORKTREE" })
-  h.assert_eq("wt roundtrip: baseline lines", (s2:baseline("f.txt", hash) or {})[3], "three")
+  h.assert_eq("wt roundtrip: baseline lines", ((s2:baseline("f.txt", hash) or {}).lines or {})[3], "three")
   h.assert_eq("wt roundtrip: comment", s2:wt_comments_for("WORKTREE", "f.txt", "four")[1].text, "hi")
 end
 
@@ -223,7 +223,7 @@ do
   h.assert_true("baseline: absent reads nil", s:baseline("f.txt", hb) == nil)
 
   s:set_baseline("f.txt", hb, { "a", "B", "c" })
-  h.assert_eq("baseline: reads back", s:baseline("f.txt", hb)[2], "B")
+  h.assert_eq("baseline: reads back", s:baseline("f.txt", hb).lines[2], "B")
 
   -- A different base content reads as unreviewed, and does not destroy the
   -- record: the original anchor still finds it.
@@ -234,7 +234,7 @@ do
   s:save_commit(state.COMMENTS_ID)
   local s2 = state.new({ dir = dir })
   s2:load({ state.COMMENTS_ID })
-  h.assert_eq("baseline: persists on reload", s2:baseline("f.txt", hb)[2], "B")
+  h.assert_eq("baseline: persists on reload", s2:baseline("f.txt", hb).lines[2], "B")
   h.assert_true("baseline: mismatch after reload", s2:baseline("f.txt", moved) == nil)
 
   -- A baseline equal to the base is nothing reviewed, so it is not persisted.
@@ -245,6 +245,40 @@ do
   h.assert_true("baseline: cleared", s:baseline("f.txt", hb) == nil)
   h.assert_eq("baseline: set+clear restores JSON",
     vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
+end
+
+-- Explicit del ranges: the approved deletions of a path's tip-commit content
+-- live in the same record as the reviewed baseline, and share its anchor and
+-- its pruning rule (a record with neither adds nor dels leaves no trace).
+do
+  local dir = vim.fn.tempname()
+  local s = state.new({ dir = dir })
+  s:load({ state.COMMENTS_ID })
+  local empty = vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} })
+  local base = { "a", "b", "c" }
+  local hb = state.content_hash(base)
+  s:set_baseline("f.txt", hb, nil, { { 2, 2 } })
+  h.assert_eq("dels: stored without a baseline", #s:baseline("f.txt", hb).dels, 1)
+  h.assert_true("dels: no lines when R == H", s:baseline("f.txt", hb).lines == nil)
+  s:set_baseline("f.txt", hb, nil, { { 2, 2 }, { 3, 3 } })
+  h.assert_eq("dels: merged on write", vim.inspect(s:baseline("f.txt", hb).dels),
+    vim.inspect({ { 2, 3 } }))
+  s:save_commit(state.COMMENTS_ID)
+  local s2 = state.new({ dir = dir })
+  s2:load({ state.COMMENTS_ID })
+  h.assert_eq("dels: persist on reload", s2:baseline("f.txt", hb).dels[1][2], 3)
+  local moved = state.content_hash({ "a", "b", "c", "d" })
+  h.assert_true("dels: hidden on anchor mismatch", s2:baseline("f.txt", moved) == nil)
+  s:set_baseline("f.txt", hb, nil, {})
+  h.assert_true("dels: cleared", s:baseline("f.txt", hb) == nil)
+  h.assert_eq("dels: set+clear restores JSON",
+    vim.json.encode(s.data[state.COMMENTS_ID] or { files = {} }), empty)
+  -- Adds still hold the record open once the dels are gone, and vice versa.
+  s:set_baseline("f.txt", hb, { "a", "B2", "c" }, { { 1, 1 } })
+  s:set_baseline("f.txt", hb, { "a", "B2", "c" }, {})
+  h.assert_eq("dels: adds keep the record alive", s:baseline("f.txt", hb).lines[2], "B2")
+  s:set_baseline("f.txt", hb, base, { { 1, 1 } })
+  h.assert_eq("dels: dels keep the record alive", #s:baseline("f.txt", hb).dels, 1)
 end
 
 -- A legacy shard carrying block-record `seen_marks` loads without error and
