@@ -39,6 +39,7 @@ local baseline = require("glean.baseline")
 local comments_mod = require("glean.comments")
 local overlay = require("glean.overlay")
 local gutter = require("glean.gutter")
+local bufundo = require("glean.bufundo")
 local ignore_mod = require("glean.ignore")
 local M = {}
 local api = vim.api
@@ -646,7 +647,6 @@ end
 function Session:start_owner_loader()
   self._load_gen = (self._load_gen or 0) + 1
   if self.scope ~= "combined" then return end
-  if self._suspended then return end
   self.combined_files = self.combined_files or self:compute_combined()
   self:load_lineage()
 end
@@ -985,7 +985,7 @@ end
 --- to (the no-range, cursor-row case). Polarity is mark unless every addressed
 --- identity is already seen, so a partial selection completes rather than flips.
 --- Returns false plus a reason when there is nothing to act on.
-function Session:toggle_marks(path, srow, erow, expand_hunk)
+function Session:toggle_marks(path, srow, erow, expand_hunk, detached)
   local marks = self:file_status(path)
   if not marks then return false, "no live review for this file" end
   local file = file_with_path(self.combined_files, path)
@@ -1025,9 +1025,12 @@ function Session:toggle_marks(path, srow, erow, expand_hunk)
   end
   if #ids == 0 then return false, "no reviewable lines in the selection" end
   local op = self:ids_all_seen(ids) and "unmark" or "mark"
-  self:perform({ kind = "seen", op = op, ids = ids, sticky = sticky })
+  local action = { kind = "seen", op = op, ids = ids, sticky = sticky }
+  -- `detached`: the caller owns the undo record (the file buffer's own layered
+  -- stack), so the action is applied without entering the review's stacks.
+  if detached then self:apply_action(action) else self:perform(action) end
   self:render()
-  return true
+  return true, action
 end
 --- Whether `lines` is the work-tree content the live diff was built from. The
 --- gutter's rows are `diff(H, W)` rows, so acting on a buffer whose content has
@@ -4284,7 +4287,7 @@ function Session:poll(opts)
     jobs.untracked = function(done) self.git:untracked_sig_async(done) end
   end
   git_mod.join(jobs, function(res)
-    if self._suspended or not api.nvim_buf_is_valid(self.buf) then return end
+    if not api.nvim_buf_is_valid(self.buf) then return end
     local sig, head, diff_text = res.poll[1], res.poll[2], res.poll[3]
     local usig = res.untracked and res.untracked[1]
     local changed = sig ~= self._sig or (usig ~= nil and usig ~= self._untracked_sig)
@@ -4306,7 +4309,7 @@ end
 -- made outside the editor -- notably new untracked files, which `git diff HEAD`
 -- cannot see, so the timer tick is the one that pays for the tree walk.
 function Session:start_live()
-  if not self.worktree or self._timer or self._suspended then return end
+  if not self.worktree or self._timer then return end
   self:poll({ baseline = true, untracked = true })
   self._live_group = api.nvim_create_augroup("glean_live_" .. self.buf, { clear = true })
   api.nvim_create_autocmd({ "BufWritePost", "FocusGained" }, {
@@ -4326,35 +4329,29 @@ function Session:start_live()
   end)
 end
 
--- A buffer that is in no window is detached from all background work: the live
--- poll timer and any pending repaint (the ownership generation is bumped, so a
--- render still in flight drops itself on its existing guard). Nothing is
--- persisted or discarded -- the model stays put,
--- only the machinery that keeps it fresh stops.
+-- A buffer that is in no window drops the work only a viewer benefits from:
+-- pending streaming repaints (the ownership generation is bumped, so a render
+-- still in flight drops itself on its existing guard) and the sticky float.
+-- The model itself -- poll, refresh and ownership -- stays live: the gutter and
+-- marking from ordinary file buffers read it with the review nowhere in sight.
+-- Nothing is persisted or discarded.
 function Session:suspend()
   if self._suspended then return end
   self._suspended = true
-  self:stop_live()
-  self:bump_refresh()
   self._load_gen = (self._load_gen or 0) + 1
   self._render_dirty = false
   self:close_sticky()
 end
 
--- Re-attach. The work tree may have moved while we were hidden, so reconcile
--- against the signature captured at suspend time: reload on change, otherwise
--- just repaint.
+-- Re-attach the view. The model kept tracking the work tree while we were
+-- hidden, so this only has to repaint -- plus one immediate poll, since the
+-- timer's next tick may be seconds away and the reviewer is looking now.
 function Session:resume()
   if not self._suspended then return end
   self._suspended = false
-  self:poll({
-    untracked = true,
-    unchanged = function()
-      self:start_owner_loader()
-      self:render()
-    end,
-  })
-  self:start_live()
+  self:start_owner_loader()
+  self:render()
+  self:poll({ untracked = true })
 end
 
 function Session:stop_live()
@@ -4867,6 +4864,15 @@ end
 --   - from_root (internal): base is the empty tree and history includes root.
 --   - open_window (optional, default true).
 
+--- Reconcile the live session's per-view work with whether its buffer is on
+--- screen. Polling is not part of this: the model must track the work tree
+--- whenever the session is live, since the gutter and the file-buffer marking
+--- path read it from ordinary file buffers with the review nowhere in sight.
+function M.sync_active()
+  local s = M.current_session()
+  if not s then return end
+  if #vim.fn.win_findbuf(s.buf) > 0 then s:resume() else s:suspend() end
+end
 -- The single live review session, or nil.
 function M.current_session()
   if not (current and current.session) then return nil end
@@ -4896,8 +4902,23 @@ function M.toggle_mark(line1, line2)
     line2 = line1
   end
   if line1 > line2 then line1, line2 = line2, line1 end
-  local ok, err = session:toggle_marks(path, line1, line2, expand)
-  if not ok then warn(err) end
+  local ok, res = session:toggle_marks(path, line1, line2, expand, true)
+  if not ok then return warn(res) end
+  -- Marking changes no text, so it cannot occupy a slot in the file buffer's
+  -- own undo tree; glean.bufundo layers it on top. The session is looked up
+  -- again on every step: the review it belonged to may have been closed and
+  -- reopened, and only a live one can carry the reversal.
+  local function step(method)
+    return function()
+      local s = M.current_session()
+      if not s then return end
+      s[method](s, res)
+      s:render()
+    end
+  end
+  bufundo.activate(bufnr)
+  bufundo.push(bufnr,
+    { apply = step("apply_action"), reverse = step("reverse_action"), cursor = line1 })
 end
 -- The only teardown path for a review: stop its background work (timer +
 -- augroup), close its sticky float, and wipe its buffer. `current` is cleared
@@ -4985,11 +5006,7 @@ function M.open(opts)
     -- rebuild the model. Visibility is re-derived from `win_findbuf` rather than
     -- tracked per event, since BufWinLeave fires before the window is gone and
     -- one split of two closing must not detach the still-visible buffer.
-    local function sync_active()
-      local s = M.current_session()
-      if not (s and s.buf == buf) then return end
-      if #vim.fn.win_findbuf(buf) > 0 then s:resume() else s:suspend() end
-    end
+    local function sync_active() M.sync_active() end
     -- `:e` in a review is a hard reset: tear down the session and rebuild it
     -- from the same options against a blank buffer, so a wedged render or stale
     -- extmark state recovers without reopening the review.
@@ -5092,8 +5109,10 @@ function M.open(opts)
   if open_window then
     session.win = show_buffer_in_window(buf)
     setup_keymaps(buf, session)
-    session:start_live()
   end
+  -- Polling follows the session, not its window: the gutter and the
+  -- file-buffer marking path read this model with the review off screen.
+  session:start_live()
 
   session:refresh_model()
   return session

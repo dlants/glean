@@ -87,7 +87,8 @@ You can also leave comments from any file. `:Glean comment` comments on the curs
 
 Setting `overlay = { overlay_keymaps = "<leader>c" }` wires the defaults under a prefix (`c`, `s`, `e`, `d`, `r`, `n`, `p`, `t`).
 
-In a buffer that carries comments, `u` and `<C-r>` undo and redo glean's comment actions first and fall through to the buffer's own undo once there are none — the same rule the review buffer follows. A comment mutation changes no text, so it never enters the buffer's undo tree; a novel edit wipes the comment stack.
+In a buffer that carries comments, or one where you have marked lines from the gutter, `u` and `<C-r>` undo and redo glean's actions first and fall through to the buffer's own undo once there are none — the same rule the review buffer follows.
+A comment or a mark changes no text, so it never enters the buffer's undo tree; undo and redo park the cursor on the row the action touched, and a novel edit wipes the glean stack.
 
 ### Review status in ordinary files
 

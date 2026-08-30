@@ -13,6 +13,7 @@
 local api = vim.api
 local comments = require("glean.comments")
 local git = require("glean.git")
+local bufundo = require("glean.bufundo")
 
 local M = {}
 
@@ -245,89 +246,36 @@ end
 
 -- ── Authoring ───────────────────────────────────────────────────────────────
 
--- Undo state, layered on top of the buffer's own undo tree: a comment mutation
--- changes no text, so it cannot occupy a slot in that tree. `seq` is the
--- `undotree().seq_last` observed when the stacks were last touched; it grows
--- only when a novel state is created (undo/redo/`g-` move `seq_cur` and leave
--- it alone), which is what tells a fresh edit from a time-travel apart.
-local stacks = {}
 
-local function stack(bufnr)
-  local s = stacks[bufnr]
-  if not s then
-    s = { undo = {}, redo = {}, seq = vim.fn.undotree().seq_last }
-    stacks[bufnr] = s
+-- Comment mutations change no text, so they cannot occupy a slot in the
+-- buffer's own undo tree; glean.bufundo layers them on top of it.
+local function perform(bufnr, ctx, action, cursor)
+  local function step(reverse)
+    return function()
+      local target = buf_target(bufnr)
+      if not target then return end
+      if reverse then comments.reverse(target, action) else comments.apply(target, action) end
+    end
   end
-  return s
-end
-
--- Wipe the comment stacks when the buffer's text has genuinely changed: a
--- comment undo interleaved with text the user has since rewritten would restore
--- a comment onto lines that no longer mean what they did.
-local function note_text_change(bufnr)
-  local s = stacks[bufnr]
-  if not s then return end
-  local seq = vim.fn.undotree().seq_last
-  if seq ~= s.seq then
-    s.undo, s.redo, s.seq = {}, {}, seq
-  end
-end
-
-local function perform(bufnr, ctx, action)
-  note_text_change(bufnr)
   comments.apply(ctx, action)
-  local s = stack(bufnr)
-  s.undo[#s.undo + 1] = action
-  s.redo = {}
+  bufundo.push(bufnr, { apply = step(false), reverse = step(true), cursor = cursor })
   M.refresh(bufnr)
 end
 
--- Step the buffer's own undo tree, reporting whether anything moved.
-local function text_step(cmd)
-  local before = vim.fn.undotree().seq_cur
-  pcall(vim.cmd, cmd)
-  return vim.fn.undotree().seq_cur ~= before
-end
 
--- `u` in a commented buffer undoes glean actions first, then falls through to
--- the buffer's own undo — the same rule the glean buffer follows.
+--- `u` in a commented buffer undoes glean actions first, then falls through to
+--- the buffer's own undo. Returns whether a glean action was what moved.
 function M.undo(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
-  note_text_change(bufnr)
-  local s = stack(bufnr)
-  local a = table.remove(s.undo)
-  if not a then
-    text_step("undo")
-    M.refresh(bufnr)
-    return false
-  end
-  local ctx = buf_target(bufnr)
-  if ctx then comments.reverse(ctx, a) end
-  s.redo[#s.redo + 1] = a
-  M.refresh(bufnr)
-  return true
+  return bufundo.undo(bufnr)
 end
 
--- The mirror image: the buffer's own redo goes first and glean actions follow,
--- so redo replays the undos in the reverse of the order they were taken. The
--- buffer's undo tree is its own record of what is left to redo; only when it
--- has nothing does a glean action come back.
+
 function M.redo(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
-  note_text_change(bufnr)
-  if text_step("redo") then
-    M.refresh(bufnr)
-    return false
-  end
-  local s = stack(bufnr)
-  local a = table.remove(s.redo)
-  if not a then return false end
-  local ctx = buf_target(bufnr)
-  if ctx then comments.apply(ctx, a) end
-  s.undo[#s.undo + 1] = a
-  M.refresh(bufnr)
-  return true
+  return bufundo.redo(bufnr)
 end
+
 
 
 -- Provenance of a selection read out of a file buffer: the commit the file
@@ -369,7 +317,7 @@ function M.add_range(bufnr, srow, erow)
     perform(bufnr, ct.ctx, {
       kind = "comment", op = "add", path = ct.path,
       record = { lnum = ct.lnum, content = ct.content, text = text, origin = ct.origin },
-    })
+    }, ct.lnum)
   end)
 end
 
@@ -408,7 +356,7 @@ function M.delete_at(bufnr, lnum)
   with_record(bufnr, lnum, "glean: delete comment", function(record)
     perform(bufnr, ctx, {
       kind = "comment", op = "remove", path = path, record = snapshot(record),
-    })
+    }, lnum)
   end)
 end
 
@@ -426,7 +374,7 @@ function M.edit_at(bufnr, lnum)
         new.text = text
         perform(bufnr, ctx, {
           kind = "comment", op = "edit", path = path, old_record = old, record = new,
-        })
+        }, lnum)
       end)
   end)
 end
@@ -445,7 +393,7 @@ function M.reply_at(bufnr, lnum)
         perform(bufnr, ctx, {
           kind = "comment", op = "reply", path = path, record = old,
           reply = text, old_reply = old.reply,
-        })
+        }, lnum)
       end)
   end)
 end
@@ -480,22 +428,14 @@ local function refresh_dir(dir)
 end
 
 -- Buffer-local wiring, installed the first time a buffer is found to carry
--- comments. `u`/`<C-r>` are static from then on and fall through to the
--- buffer's own undo when the glean stack is empty; installing and removing them
--- as the stack fills would race with the very keypress that empties it.
+-- comments: it hands the buffer to glean.bufundo, whose `u`/`<C-r>` spend the
+-- comment stack before the buffer's own undo tree.
 function activate(bufnr)
   if active[bufnr] then return end
   active[bufnr] = true
-  vim.keymap.set("n", "u", function() M.undo(bufnr) end,
-    { buffer = bufnr, nowait = true, silent = true })
-  vim.keymap.set("n", "<C-r>", function() M.redo(bufnr) end,
-    { buffer = bufnr, nowait = true, silent = true })
-  api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-    buffer = bufnr,
-    group = api.nvim_create_augroup("GleanOverlayBuf" .. bufnr, { clear = true }),
-    callback = function() note_text_change(bufnr) end,
-  })
+  bufundo.activate(bufnr, function() M.refresh(bufnr) end)
 end
+
 
 -- `<Plug>` mappings only: a file buffer is the user's editing surface, so glean
 -- claims no key unless the user asks for it via `overlay_keymaps`.

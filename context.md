@@ -27,11 +27,12 @@ path + `state.line_hash(text)`, persisted in the always-loaded `WORKTREE` shard
 alongside comments) that exempts a line from demotion across renders/reopens and
 self-invalidates when the line's content changes.
 
-Background work (the live work-tree poll timer and the background `git blame`
-loader) is attached to *visibility*, not to session lifetime: when no window
-shows the glean buffer the session suspends, and it resumes — reconciling
-against the work-tree signature captured at suspend time — when it is displayed
-again.
+A live session always tracks the work tree: the poll timer and the model
+refresh follow the *session*, not its window, because the gutter and the
+file-buffer marking path read the model with the review nowhere on screen.
+Visibility only gates the view work — pending streaming repaints and the sticky
+float — which a hidden buffer drops and re-attaches (with one immediate poll)
+when it is displayed again.
 
 Because both scopes derive a line's identity from its owning commit (commit
 scope directly, combined scope via composed blame provenance), the same physical

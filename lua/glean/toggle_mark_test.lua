@@ -163,4 +163,31 @@ do
   h.assert_eq("foreign window cursor untouched", vim.api.nvim_win_get_cursor(win)[1], 37)
 end
 
+-- End to end, through `M.toggle_mark` and a real file buffer: edit a reviewed
+-- file while the review buffer is hidden (so the session is suspended), write
+-- it, and mark the edited row. The write has to reconcile the model even
+-- though nothing is polling for the hidden review; before it did not, so the
+-- stale-buffer guard rejected every attempt forever.
+do
+  local s = open()
+  glean.setup({})
+  local fbuf = vim.fn.bufadd(repo.root .. "/f.txt")
+  vim.fn.bufload(fbuf)
+  vim.api.nvim_win_set_buf(0, fbuf)
+  s:suspend()
+
+  vim.api.nvim_buf_set_lines(fbuf, 4, 5, false, { "five edited" })
+  vim.cmd("silent write")
+
+  vim.wait(5000, function()
+    return s:wt_matches("f.txt", vim.api.nvim_buf_get_lines(fbuf, 0, -1, false))
+  end, 20)
+  h.assert_eq("the write reconciled the model",
+    s:wt_matches("f.txt", vim.api.nvim_buf_get_lines(fbuf, 0, -1, false)), true)
+
+  vim.api.nvim_win_set_cursor(0, { 5, 0 })
+  glean.toggle_mark(5, 5)
+  h.assert_eq("the edited row marks seen", s:file_status("f.txt")[5].seen, true)
+end
+
 h.finish()

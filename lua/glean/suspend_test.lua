@@ -1,5 +1,7 @@
--- A glean buffer that is in no window detaches from all background work (live
--- work-tree poll + blame loader) and re-attaches when it is displayed again.
+-- A glean buffer that is in no window detaches from the work only a viewer
+-- benefits from (the blame loader, streaming repaints, the sticky float) and
+-- re-attaches when it is displayed again. The work-tree poll is not part of
+-- that: a live session tracks the work tree whether or not it is on screen.
 -- Run with:
 --   nvim -l lua/glean/suspend_test.lua
 local this_script = debug.getinfo(1, "S").source:sub(2)
@@ -49,30 +51,20 @@ end
 
 write("one\nTWO\nthree\n")
 
--- A suspended session runs nothing: the background entry points are inert, no
--- git subprocess is spawned, and the buffer keeps its pre-suspend content even
--- though the work tree moved underneath it.
+-- A hidden session keeps tracking the work tree: the gutter and the
+-- file-buffer marking path read the model with the review off screen.
 do
   local s = open()
-  local before = body(s)
-  h.assert_true("suspend: TWO rendered before suspend", before:find("TWO", 1, true) ~= nil)
-
+  h.assert_true("suspend: TWO rendered before suspend", body(s):find("TWO", 1, true) ~= nil)
   s:suspend()
-  write("one\nTHREE_X\nthree\n")
-  local n = calls
-  s:start_live()
-  s:start_owner_loader()
-  s:streaming_render(s._load_gen)
-  h.assert_true("suspend: no git calls while suspended", calls == n)
-  h.assert_true("suspend: no live timer while suspended", s._timer == nil)
-  h.assert_true("suspend: buffer unchanged while suspended", body(s) == before)
+  h.assert_true("suspend: live timer keeps running", s._timer ~= nil)
 
-  -- Resume reconciles against the work tree that moved while we were hidden.
+  write("one\nTHREE_X\nthree\n")
+  s:poll()
+  vim.wait(2000, function() return body(s):find("THREE_X", 1, true) ~= nil end, 20)
+  h.assert_true("suspend: a hidden session still picks up work-tree changes",
+    body(s):find("THREE_X", 1, true) ~= nil)
   s:resume()
-  local after = body(s)
-  h.assert_true("resume: picks up the change made while hidden",
-    after:find("THREE_X", 1, true) ~= nil)
-  h.assert_true("resume: live timer running again", s._timer ~= nil)
   s:stop_live()
 end
 
@@ -113,12 +105,13 @@ do
   api.nvim_win_set_buf(win, other)
   vim.wait(200, function() return s._suspended end)
   h.assert_true("visibility: suspends when the buffer leaves its last window", s._suspended)
-  h.assert_true("visibility: timer stopped when hidden", s._timer == nil)
+  h.assert_true("visibility: poll keeps running when hidden", s._timer ~= nil)
 
   write("one\nHIDDEN_EDIT\nthree\n")
   api.nvim_win_set_buf(win, s.buf)
   vim.wait(200, function() return not s._suspended end)
   h.assert_true("visibility: resumes when re-displayed", not s._suspended)
+  vim.wait(2000, function() return body(s):find("HIDDEN_EDIT", 1, true) ~= nil end, 20)
   h.assert_true("visibility: renders the hidden-time edit on resume",
     body(s):find("HIDDEN_EDIT", 1, true) ~= nil)
 
@@ -133,5 +126,6 @@ do
 
   s:stop_live()
 end
+
 
 h.finish()

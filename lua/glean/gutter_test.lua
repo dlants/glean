@@ -349,6 +349,41 @@ do
     "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
 end
 
+-- ── Marks in the file buffer's undo stack ───────────────────────────────────
+-- A mark changes no text, so it rides glean.bufundo on top of the buffer's own
+-- undo tree: `u` spends it first and only then steps the text.
+do
+  local UNSEEN = "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd"
+  local function feed(keys)
+    vim.api.nvim_feedkeys(api.nvim_replace_termcodes(keys, true, false, true), "x", false)
+    gutter.refresh(fbuf)
+  end
+  api.nvim_win_set_cursor(0, { 4, 0 })
+  feed("gmm")
+  h.assert_eq("marked", signs(fbuf),
+    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+  api.nvim_win_set_cursor(0, { 1, 0 })
+  feed("u")
+  h.assert_eq("u reverses the mark", signs(fbuf), UNSEEN)
+  h.assert_eq("u parks on the row it unmarked", api.nvim_win_get_cursor(0)[1], 4)
+  feed("<C-r>")
+  h.assert_eq("<C-r> replays it", signs(fbuf),
+    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+  feed("u")
+  h.assert_eq("the stack is spent", signs(fbuf), UNSEEN)
+
+  -- A novel edit wipes the mark stack: undoing a mark onto lines the user has
+  -- since rewritten would name rows that no longer mean what they did.
+  feed("gmm")
+  vim.bo[fbuf].modifiable = true
+  feed("A x<Esc>")
+  feed("u")
+  h.assert_eq("text undo, and the mark stayed marked", signs(fbuf),
+    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+  feed("gmm")
+  h.assert_eq("marking still works after the wipe", signs(fbuf), UNSEEN)
+end
+
 -- Closing the review clears every painted buffer.
 gutter.setup({ suppress = false })
 glean.close_current()
