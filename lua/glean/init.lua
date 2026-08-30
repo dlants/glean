@@ -1891,9 +1891,9 @@ function Session:render()
       self.row_marker[hl.row] = hl.virt
     end
   end
-  local win = self.win
+  local win = self:view_win()
   local cur
-  if win and api.nvim_win_is_valid(win) then
+  if win then
     cur = api.nvim_win_get_cursor(win)
   end
 
@@ -2165,7 +2165,7 @@ end
 local SIGN_HL = { GleanAdd = "GleanAddText", GleanDel = "GleanDelText" }
 function Session:highlight_cursor_hunk()
   if not (self.buf and api.nvim_buf_is_valid(self.buf)) then return end
-  if not (self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not self:view_win() then return end
   local t = self.row_map[self:cursor_row()]
   local state = (t and t.hunk) and table.concat({
     t.commit or 0, t.file or 0, t.cfile or 0, t.hunk, self._render_gen or 0,
@@ -2238,8 +2238,8 @@ function Session:close_sticky()
 end
 
 function Session:update_sticky()
-  local win = self.win
-  if not (win and api.nvim_win_is_valid(win)) then
+  local win = self:view_win()
+  if not win then
     return self:close_sticky()
   end
   -- The float is anchored to `win`; it must only exist while that window is
@@ -2332,7 +2332,7 @@ end
 -- it composes in both visual (`vac`) and operator-pending (`dac`, etc.) modes.
 function Session:select_hunk_textobj()
   local lo, hi = self:hunk_range(self:cursor_row())
-  if not (lo and self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not (lo and self:view_win()) then return end
   -- Drop any in-progress visual selection first; otherwise `normal! V` keeps the
   -- original anchor and the range only extends one way from the cursor.
   if api.nvim_get_mode().mode:match("[vV\22]") then
@@ -2549,20 +2549,29 @@ end
 
 -- Byte column of the cursor in the glean buffer, or nil when the window is gone.
 function Session:cursor_col()
-  if self.win and api.nvim_win_is_valid(self.win) then
+  if self:view_win() then
     return api.nvim_win_get_cursor(self.win)[2]
   end
   return nil
 end
+--- `self.win`, but only while it is still displaying the glean buffer. A window
+--- id outlives the buffer shown in it, so a stale `self.win` can name a window
+--- that now holds an ordinary file, whose cursor and view must not be touched.
+function Session:view_win()
+  local win = self.win
+  if win and api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == self.buf then return win end
+  return nil
+end
+
 function Session:cursor_row()
-  if self.win and api.nvim_win_is_valid(self.win) then
+  if self:view_win() then
     return api.nvim_win_get_cursor(self.win)[1] - 1
   end
   return 0
 end
 
 function Session:restore_cursor(row)
-  if not (row and self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not (row and self:view_win()) then return end
   row = math.max(0, math.min(row, api.nvim_buf_line_count(self.buf) - 1))
   pcall(api.nvim_win_set_cursor, self.win, { row + 1, 0 })
 end
@@ -3142,7 +3151,7 @@ end
 -- the bottom shows -- but never so far that the header itself scrolls off the
 -- top. Only ever scrolls down (revealing more of the hunk), never up.
 function Session:move_to_hunk_row(row)
-  if not (self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not self:view_win() then return end
   pcall(api.nvim_win_set_cursor, self.win, { row + 1, 0 })
   local key = hunk_key(self.row_map[row])
   if not key then return end
@@ -3166,7 +3175,7 @@ end
 -- Move the cursor to the rendered header row of the hunk with `key`, if any.
 function Session:move_to_hunk_key(key)
   if not key then return self:move_to_next_hunk() end
-  if not (self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not self:view_win() then return end
   for r, t in pairs(self.row_map) do
     if t.hunk and not t.li and hunk_key(t) == key then
       return self:move_to_hunk_row(r)
@@ -3180,7 +3189,7 @@ end
 -- hunk. Document/buffer order at or after the prior cursor row is exactly the
 -- next remaining work, since render preserves the cursor's row number.
 function Session:move_to_next_hunk()
-  if not (self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not self:view_win() then return end
   local cur = self:cursor_row()
   local best
   for r, t in pairs(self.row_map) do
@@ -3195,7 +3204,7 @@ end
 -- direction. Collapsed sections are absent from row_map, so visible navigation
 -- naturally skips them.
 function Session:nav_to(pred, forward)
-  if not (self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not self:view_win() then return end
   local cur = self:cursor_row()
   local best
   for r, t in pairs(self.row_map) do
@@ -3647,7 +3656,7 @@ end
 function Session:open_comment_file(path, lnum)
   local abs = self.git.repo_root .. "/" .. path
   if vim.fn.filereadable(abs) ~= 1 then return nil end
-  if self.win and api.nvim_win_is_valid(self.win) then
+  if self:view_win() then
     api.nvim_set_current_win(self.win)
   end
   vim.cmd("edit " .. vim.fn.fnameescape(abs))
@@ -3971,7 +3980,7 @@ function Session:diffsplit(row)
   if row == nil then row = self:cursor_row() end
   local ctx = self:diff_context(row)
   if not ctx then return end
-  if self.win and api.nvim_win_is_valid(self.win) then
+  if self:view_win() then
     api.nvim_set_current_win(self.win)
   end
   vim.cmd("rightbelow vsplit")
@@ -4054,7 +4063,7 @@ function Session:safe_row_identity(target)
   return self:row_identity(target)
 end
 function Session:cursor_anchor()
-  if not (self.win and api.nvim_win_is_valid(self.win)) then return nil end
+  if not self:view_win() then return nil end
   local target = self.row_map[self:cursor_row()]
   local file = self:row_file(target)
   if not file then return nil end
@@ -4090,7 +4099,7 @@ end
 -- nearest line (the anchored line was later changed or removed); the nearest
 -- line by display line number in the same file. Then the file header.
 function Session:restore_cursor_anchor(anchor)
-  if not (anchor and self.win and api.nvim_win_is_valid(self.win)) then return end
+  if not (anchor and self:view_win()) then return end
   local header = self:file_header_row(anchor.path)
   if anchor.header then
     if header then self:restore_cursor(header) end

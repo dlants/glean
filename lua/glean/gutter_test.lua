@@ -310,6 +310,45 @@ local function has_map(bufnr, mode, lhs)
 end
 h.assert_true("]c mapped in the reviewed buffer", has_map(fbuf, "n", "]c"))
 h.assert_true("gm mapped in visual mode", has_map(fbuf, "x", "gm"))
+-- ── `gm` as an operator ─────────────────────────────────────────────────────
+-- The maps drive the real operator machinery, so this exercises `operatorfunc`
+-- + `'[`/`']` end to end. f.txt's changed work-tree rows are 2, 4 and 5.
+do
+  gutter.setup({})
+  vim.cmd("buffer " .. fbuf)
+  api.nvim_win_set_buf(0, fbuf)
+  if signs(fbuf):find("Seen") then
+    session:toggle_marks("f.txt", 1, api.nvim_buf_line_count(fbuf))
+  end
+  gutter.refresh(fbuf)
+  h.assert_eq("all unseen to start", signs(fbuf),
+    "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+
+  api.nvim_win_set_cursor(0, { 4, 0 })
+  vim.api.nvim_feedkeys("gmm", "x", false)
+  gutter.refresh(fbuf)
+  h.assert_eq("gmm marks only its line", signs(fbuf),
+    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+  h.assert_eq("gmm leaves the cursor put", api.nvim_win_get_cursor(0)[1], 4)
+
+  vim.api.nvim_feedkeys("gmm", "x", false)
+  gutter.refresh(fbuf)
+  h.assert_eq("gmm toggles back", signs(fbuf),
+    "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+
+  api.nvim_win_set_cursor(0, { 2, 0 })
+  vim.api.nvim_feedkeys("gm2j", "x", false)
+  gutter.refresh(fbuf)
+  h.assert_eq("gm2j marks lines 2..4", signs(fbuf),
+    "2:GleanGutterChangeSeen 4:GleanGutterAddSeen 5:GleanGutterAdd")
+  h.assert_eq("gm2j leaves the cursor at the motion start", api.nvim_win_get_cursor(0)[1], 2)
+
+  vim.api.nvim_feedkeys("gm2j", "x", false)
+  gutter.refresh(fbuf)
+  h.assert_eq("gm2j toggles back", signs(fbuf),
+    "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+end
+
 -- Closing the review clears every painted buffer.
 gutter.setup({ suppress = false })
 glean.close_current()

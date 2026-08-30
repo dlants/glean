@@ -104,7 +104,7 @@ function M.project(hunks, is_seen)
         while i <= #lines and lines[i].kind ~= "context" do
           local cur = lines[i]
           local entry =
-            { dl = cur, seen = is_seen(cur, hunk, i) and true or false, src = { hunk = hi, li = i } }
+          { dl = cur, seen = is_seen(cur, hunk, i) and true or false, src = { hunk = hi, li = i } }
           if cur.kind == "del" then
             dels[#dels + 1] = entry
           else
@@ -156,6 +156,7 @@ function M.next_hunk_row(rows, cur, dir)
   end
   return rows[#rows]
 end
+
 -- ── Rendering ───────────────────────────────────────────────────────────────
 
 local ns = api.nvim_create_namespace("glean_gutter")
@@ -212,16 +213,25 @@ end
 
 -- ── Buffer-local keymaps ────────────────────────────────────────────────────
 --
+--- `operatorfunc` for the `gm` operator: mark the lines the motion covered.
+--- Only the line range matters — marking is line-granular either way — so
+--- charwise and blockwise motions are treated as the lines they touch.
+function M.op()
+  require("glean.init").toggle_mark(vim.fn.line("'["), vim.fn.line("']"))
+end
+
 -- The maps ride on *membership* in the review, not on paintedness: a buffer
 -- momentarily modified is still the review's file, and `gm` there refuses with
 -- a message rather than silently doing nothing because its map vanished.
 local mapped = {}
 local MAPS = {
-  { "n", "]c", function() M.goto_hunk(1) end, "glean: next hunk" },
-  { "n", "[c", function() M.goto_hunk(-1) end, "glean: previous hunk" },
-  { "n", "gj", "<Cmd>Glean jump<CR>", "glean: jump to the review" },
-  { "n", "gm", "<Cmd>Glean toggle-mark<CR>", "glean: toggle mark on this hunk" },
-  { "x", "gm", ":Glean toggle-mark<CR>", "glean: toggle mark on selection" },
+  { "n", "]c",  function() M.goto_hunk(1) end,                                 "glean: next hunk" },
+  { "n", "[c",  function() M.goto_hunk(-1) end,                                "glean: previous hunk" },
+  { "n", "gj",  "<Cmd>Glean jump<CR>",                                         "glean: jump to the review" },
+  { "n", "gm",  "<Cmd>set operatorfunc=v:lua.require'glean.gutter'.op<CR>g@",  "glean: toggle mark over a motion" },
+  { "n", "gmm", "<Cmd>set operatorfunc=v:lua.require'glean.gutter'.op<CR>g@_", "glean: toggle mark on this line" },
+  { "n", "gmc", "<Cmd>Glean toggle-mark<CR>",                                  "glean: toggle mark on this hunk" },
+  { "x", "gm",  ":Glean toggle-mark<CR>",                                      "glean: toggle mark on selection" },
 }
 
 local function set_maps(bufnr)
@@ -369,8 +379,8 @@ end
 
 function M.setup(cfg)
   M.config =
-    vim.tbl_extend("force",
-      { enabled = true, suppress = "auto", keymaps = true, toggle_key = "gt" }, cfg or {})
+      vim.tbl_extend("force",
+        { enabled = true, suppress = "auto", keymaps = true, toggle_key = "gt" }, cfg or {})
   M.setup_highlights()
   local group = api.nvim_create_augroup("GleanGutter", { clear = true })
   api.nvim_create_autocmd({ "BufReadPost", "BufWinEnter", "BufWritePost", "FileChangedShellPost" }, {

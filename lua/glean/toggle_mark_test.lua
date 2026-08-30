@@ -148,4 +148,19 @@ do
   h.assert_eq("dels cleared", #s:wt_versions("d.txt").dels, 0)
 end
 
+-- A window id outlives the buffer it showed: after the review window is reused
+-- for an ordinary file, a render triggered from that file (the gutter marking
+-- path) must not restore the review's cursor row into it.
+do
+  local s = open()
+  local other = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(other, 0, -1, false, vim.fn["repeat"]({ "x" }, 40))
+  local win = vim.api.nvim_get_current_win()
+  s.win = win
+  vim.api.nvim_win_set_buf(win, other)
+  vim.api.nvim_win_set_cursor(win, { 37, 0 })
+  s:render()
+  h.assert_eq("foreign window cursor untouched", vim.api.nvim_win_get_cursor(win)[1], 37)
+end
+
 h.finish()
