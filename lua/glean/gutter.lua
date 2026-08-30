@@ -290,8 +290,11 @@ local function provider()
   return nil
 end
 
+-- Detach on every refresh, not just the first: the foreign plugin re-attaches
+-- itself on its own events (reload, write, explicit attach), so a latch here
+-- would leave its signs interleaved with ours for the rest of the session. The
+-- flag only records that a restore is owed.
 local function suppress(bufnr)
-  if suppressed[bufnr] then return end
   local p = provider()
   if not (p and p.detach) then return end
   suppressed[bufnr] = true
@@ -375,6 +378,22 @@ local function refresh_all()
       M.refresh(bufnr)
     end
   end
+end
+
+--- Turn the gutter on or off for every buffer at once (`:Glean toggle-gutter`).
+--- `config.enabled` is only the starting value of this switch. Enabling also
+--- drops the per-buffer opt-outs, so a global "on" means on everywhere rather
+--- than on-except-wherever-`gt`-was-pressed. Returns the new state.
+function M.set_enabled(on)
+  M.config = M.config or {}
+  M.config.enabled = on and true or false
+  if on then off = {} end
+  refresh_all()
+  return M.config.enabled
+end
+
+function M.toggle_all()
+  return M.set_enabled(not (M.config and M.config.enabled ~= false))
 end
 
 function M.setup(cfg)

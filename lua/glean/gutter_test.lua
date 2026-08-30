@@ -258,6 +258,15 @@ h.assert_eq("a toggled-off buffer stays clear across refreshes", signs(fbuf), ""
 h.assert_eq("toggle on returns true", gutter.toggle(fbuf), true)
 h.assert_true("toggle repaints", signs(fbuf) ~= "")
 
+-- ── Global toggle ───────────────────────────────────────────────────────────
+gutter.toggle(fbuf) -- opt this buffer out, so the global "on" can clear it
+h.assert_eq("global off returns false", gutter.toggle_all(), false)
+h.assert_eq("global off clears painted buffers", signs(fbuf), "")
+gutter.refresh(fbuf)
+h.assert_eq("global off survives refresh", signs(fbuf), "")
+h.assert_eq("global on returns true", gutter.toggle_all(), true)
+h.assert_true("global on overrides the per-buffer opt-out", signs(fbuf) ~= "")
+
 -- ── Foreign provider suppression ────────────────────────────────────────────
 local calls = {} --- @type string[]
 local fake = {
@@ -269,12 +278,16 @@ gutter.clear_all() -- drop the "auto" provider's bookkeeping from the paints abo
 calls = {}
 gutter.refresh(fbuf)
 gutter.refresh(fbuf)
-h.assert_eq("detached once", table.concat(calls, " "), "detach:" .. fbuf)
+-- Detach is re-issued on every refresh: the provider re-attaches itself behind
+-- our back, so suppression has to be re-asserted rather than latched.
+h.assert_eq("detached on each refresh", table.concat(calls, " "),
+  ("detach:%d detach:%d"):format(fbuf, fbuf))
 gutter.refresh(other)
-h.assert_eq("untouched buffer not detached", table.concat(calls, " "), "detach:" .. fbuf)
+h.assert_eq("untouched buffer not detached", table.concat(calls, " "),
+  ("detach:%d detach:%d"):format(fbuf, fbuf))
 gutter.clear_all()
 h.assert_eq("reattached on teardown", table.concat(calls, " "),
-  ("detach:%d attach:%d"):format(fbuf, fbuf))
+  ("detach:%d detach:%d attach:%d"):format(fbuf, fbuf, fbuf))
 
 calls = {}
 gutter.setup({ suppress = false })

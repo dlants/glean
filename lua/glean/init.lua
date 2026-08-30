@@ -5376,6 +5376,11 @@ function M.setup(opts)
       if o.range > 0 then M.toggle_mark(o.line1, o.line2) else M.toggle_mark() end
       return
     end
+    if args[1] == "toggle-gutter" then
+      local on = gutter.toggle_all()
+      vim.notify("glean: gutter " .. (on and "on" or "off"))
+      return
+    end
     if args[1] == "comments" then
       overlay.quickfix()
       vim.cmd("copen")
@@ -5416,7 +5421,8 @@ function M.setup(opts)
     M.open({ base = args[1], target = args[2] })
   end, { nargs = "*", range = true, complete = function(lead)
     local out = {}
-    local subs = { "comment", "comments", "toggle-mark", "jump", "log", "prs", "pr", "branch" }
+    local subs = { "comment", "comments", "toggle-mark", "toggle-gutter", "jump", "log", "prs",
+      "pr", "branch" }
     for _, sub in ipairs(subs) do
       if sub:sub(1, #lead) == lead then out[#out + 1] = sub end
     end

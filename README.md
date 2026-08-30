@@ -9,6 +9,7 @@ A git diff reviewer that renders the diff between two refs in a single foldable,
 :Glean log              " browse commits, then open one or a selected range
 :Glean jump             " from a file buffer, jump to that file+line in the review
 :Glean toggle-mark      " from a file buffer, mark/unmark the hunk or selection seen
+:Glean toggle-gutter    " turn the sign-column projection on/off everywhere
 :Glean prs              " browse currently open GitHub pull requests
 :Glean <base>           " review <base> + dirty work tree
 :Glean <base> <target>  " review <base>..<target> (no dirty work tree)
@@ -104,6 +105,8 @@ While a buffer is part of the review it also gets glean's buffer-local keymaps: 
 
 `gt` (global, `gutter.toggle_key`) toggles the gutter for the current buffer: off, it clears the marks, drops the buffer-local keymaps and hands the sign column back to the other provider until toggled on again. Toggling on with no review open starts the default (`:Glean`) one in the background, so the gutter is also a way into a review without leaving the file. Because it owns the sign column, glean detaches the other sign provider from those buffers (gitsigns, by name, under the default `suppress = "auto"`) and reattaches it when the buffer leaves the review, when the review closes and on exit. Set `suppress = false` to leave the other plugin alone, or pass `{ detach = fn(bufnr), attach = fn(bufnr) }` to drive a different one.
 
+`:Glean toggle-gutter` is the same switch for every buffer at once — it is the runtime form of `gutter.enabled`, so set `enabled = false` to opt in per-session instead of painting automatically. Turning it back on also clears any per-buffer `gt` opt-outs.
+
 Highlight groups: `GleanGutterAdd`, `GleanGutterChange`, `GleanGutterDelete` and the `GleanGutterAddSeen` / `GleanGutterChangeSeen` / `GleanGutterDeleteSeen` variants — all plain, overridable groups.
 
 ### Agents
@@ -154,7 +157,7 @@ require("glean.init").setup({
   hunk_indent = 2,         -- display indent for the active hunk body
   hunk_indent_delay_ms = 50,  -- wait before applying the active-hunk indent
   gutter = {               -- review status in the sign column of ordinary files
-    enabled = true,
+    enabled = true,        -- paint automatically when a review is live (:Glean toggle-gutter flips it)
     suppress = "auto",     -- "auto" | false | { detach = fn(bufnr), attach = fn(bufnr) }
     toggle_key = "gt",     -- global map toggling the gutter for the current buffer (false to skip)
   },
