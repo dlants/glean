@@ -115,6 +115,25 @@ function M.project(hunks, is_seen)
         project_block(marks, dels, adds)
       end
     end
+    -- A hunk reads as one region, so context lines *between* its first and last
+    -- change get a marker too — a thinner, dimmer one, carrying no sources: it
+    -- is never a `]c` stop, never something `gm` can mark, purely connective
+    -- tissue so a hunk stops rendering as a scatter of disconnected rows. The
+    -- leading/trailing context stays bare: the hunk should end where its last
+    -- change is.
+    local lo, hi
+    for li, dl in ipairs(lines) do
+      if dl.kind ~= "context" then
+        lo = lo or li
+        hi = li
+      end
+    end
+    for li = (lo or 1), (hi or 0) do
+      local dl = lines[li]
+      if dl.kind == "context" and dl.new_lnum and not marks[dl.new_lnum] then
+        marks[dl.new_lnum] = { kind = "context", seen = true, sources = {} }
+      end
+    end
   end
   return marks
 end
@@ -122,22 +141,32 @@ end
 --- Pure. The first post-image row of each hunk present in `marks`, ascending.
 --- A row folds several diff lines, so it starts a hunk when it is the lowest
 --- row any of that hunk's lines were folded into.
+--- With `unseen_only`, hunks every row of which is already marked are dropped:
+--- `]c` is a "take me to the next thing to review" motion, so a fully reviewed
+--- hunk is not a stop. Falls back to every hunk when none is left unmarked, so
+--- the motion still navigates a finished file.
 --- @return integer[]
-function M.hunk_starts(marks)
-  local first = {}
+function M.hunk_starts(marks, unseen_only)
+  local first, unseen = {}, {}
   for lnum, m in pairs(marks or {}) do
     for _, s in ipairs(m.sources or {}) do
       if not first[s.hunk] or lnum < first[s.hunk] then first[s.hunk] = lnum end
+      if not m.seen then unseen[s.hunk] = true end
     end
   end
-  local seen, rows = {}, {}
-  for _, lnum in pairs(first) do
-    if not seen[lnum] then
-      seen[lnum] = true
-      rows[#rows + 1] = lnum
+  local function collect(filter)
+    local at, rows = {}, {}
+    for hunk, lnum in pairs(first) do
+      if (not filter or unseen[hunk]) and not at[lnum] then
+        at[lnum] = true
+        rows[#rows + 1] = lnum
+      end
     end
+    table.sort(rows)
+    return rows
   end
-  table.sort(rows)
+  local rows = collect(unseen_only)
+  if unseen_only and #rows == 0 then rows = collect(false) end
   return rows
 end
 
@@ -187,12 +216,17 @@ local painted = {}
 
 -- Shape carries the kind, colour carries the seen status: a marked line keeps
 -- its glyph in place but greys out, so unreviewed work is what draws the eye.
-local GLYPH = { add = "▎", change = "▎", del = "▁" }
-local GROUP = { add = "GleanGutterAdd", change = "GleanGutterChange", del = "GleanGutterDelete" }
+local GLYPH = { add = "▎", change = "▎", del = "▁", context = "▏" }
+local GROUP = {
+  add = "GleanGutterAdd",
+  change = "GleanGutterChange",
+  del = "GleanGutterDelete",
+  context = "GleanGutterContext",
+}
 -- The hunk under the cursor — what `gmc` would act on — is drawn with a heavier
 -- glyph in the same colour, so the target of the keystroke is legible without a
 -- second colour scheme to learn.
-local FOCUS_GLYPH = { add = "█", change = "█", del = "▄" }
+local FOCUS_GLYPH = { add = "█", change = "█", del = "▄", context = "▎" }
 
 function M.setup_highlights()
   local links = {
@@ -202,6 +236,8 @@ function M.setup_highlights()
     GleanGutterAddSeen = "Comment",
     GleanGutterChangeSeen = "Comment",
     GleanGutterDeleteSeen = "Comment",
+    GleanGutterContext = "NonText",
+    GleanGutterContextSeen = "NonText",
   }
   for name, link in pairs(links) do
     api.nvim_set_hl(0, name, { link = link, default = true })
@@ -318,7 +354,7 @@ function M.goto_hunk(dir)
   local session, path = buf_target(bufnr)
   local marks = session and session:file_status(path) or nil
   if not marks then return end
-  local row = M.next_hunk_row(M.hunk_starts(marks), api.nvim_win_get_cursor(0)[1], dir)
+  local row = M.next_hunk_row(M.hunk_starts(marks, true), api.nvim_win_get_cursor(0)[1], dir)
   if not row or row > api.nvim_buf_line_count(bufnr) then return end
   vim.cmd("normal! m'")
   api.nvim_win_set_cursor(0, { row, 0 })

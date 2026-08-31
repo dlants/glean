@@ -57,6 +57,16 @@ do
   h.assert_eq("pure add", dump(marks), "2:add 3:add")
 end
 
+-- Context *between* two changes is connective tissue; the surrounding context
+-- stays bare, so a hunk still ends at its last change.
+do
+  local marks = gutter.project({ hunk(1, { " a", "+b", " c", "+d", " e" }) }, unseen())
+  h.assert_eq("interior context filled", dump(marks), "2:add 3:contextS 4:add")
+  h.assert_eq("context rows are not hunk starts",
+    table.concat(gutter.hunk_starts(marks), ","), "2")
+  h.assert_eq("context rows carry no sources", #marks[3].sources, 0)
+end
+
 -- A del run immediately followed by a similar add run reads as a change.
 do
   local marks = gutter.project({ hunk(1, { " a", "-local x = 1", "+local x = 2", " d" }) }, unseen())
@@ -202,7 +212,7 @@ local function signs(bufnr)
 end
 gutter.refresh(fbuf)
 h.assert_eq("painted rows", signs(fbuf),
-  "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+  "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAdd")
 -- Marking the file seen and firing the event repaints in place, in the seen
 -- highlight.
 local header
@@ -217,7 +227,7 @@ h.assert_true("found file header row", header ~= nil)
 session:toggle_seen(header)
 api.nvim_exec_autocmds("User", { pattern = "GleanReviewChanged", data = {} })
 h.assert_eq("seen rows", signs(fbuf),
-  "2:GleanGutterChangeSeen 4:GleanGutterAddSeen 5:GleanGutterAddSeen")
+  "2:GleanGutterChangeSeen 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAddSeen")
 -- An edited buffer has diverged from the model, so it carries no marks.
 api.nvim_buf_set_lines(fbuf, 0, 1, false, { "ONE" })
 gutter.refresh(fbuf)
@@ -315,6 +325,22 @@ h.assert_eq("prev from inside a hunk", gutter.next_hunk_row(starts, 20, -1), 4)
 h.assert_eq("prev wraps at the top", gutter.next_hunk_row(starts, 4, -1), 20)
 h.assert_eq("nothing to move to", gutter.next_hunk_row({}, 1, 1), nil)
 
+local seen_marks = {
+  [4] = { seen = true, sources = { { hunk = 1, li = 2 } } },
+  [5] = { seen = true, sources = { { hunk = 1, li = 3 } } },
+  [20] = { sources = { { hunk = 2, li = 1 } } },
+}
+h.assert_eq("unseen_only skips a fully marked hunk",
+  table.concat(gutter.hunk_starts(seen_marks, true), ","), "20")
+h.assert_eq("a partially marked hunk still stops",
+  table.concat(gutter.hunk_starts({
+    [4] = { seen = true, sources = { { hunk = 1, li = 2 } } },
+    [5] = { sources = { { hunk = 1, li = 3 } } },
+  }, true), ","), "4")
+seen_marks[20].seen = true
+h.assert_eq("all marked falls back to every hunk",
+  table.concat(gutter.hunk_starts(seen_marks, true), ","), "4,20")
+
 local function range(cur)
   local lo, hi = gutter.hunk_range(nav_marks, cur)
   return lo and (lo .. "-" .. hi) or "nil"
@@ -343,38 +369,38 @@ do
   end
   gutter.refresh(fbuf)
   h.assert_eq("all unseen to start", signs(fbuf),
-    "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+    "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAdd")
 
   api.nvim_win_set_cursor(0, { 4, 0 })
   vim.api.nvim_feedkeys("gmm", "x", false)
   gutter.refresh(fbuf)
   h.assert_eq("gmm marks only its line", signs(fbuf),
-    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+    "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd")
   h.assert_eq("gmm leaves the cursor put", api.nvim_win_get_cursor(0)[1], 4)
 
   vim.api.nvim_feedkeys("gmm", "x", false)
   gutter.refresh(fbuf)
   h.assert_eq("gmm toggles back", signs(fbuf),
-    "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+    "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAdd")
 
   api.nvim_win_set_cursor(0, { 2, 0 })
   vim.api.nvim_feedkeys("gm2j", "x", false)
   gutter.refresh(fbuf)
   h.assert_eq("gm2j marks lines 2..4", signs(fbuf),
-    "2:GleanGutterChangeSeen 4:GleanGutterAddSeen 5:GleanGutterAdd")
+    "2:GleanGutterChangeSeen 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd")
   h.assert_eq("gm2j leaves the cursor at the motion start", api.nvim_win_get_cursor(0)[1], 2)
 
   vim.api.nvim_feedkeys("gm2j", "x", false)
   gutter.refresh(fbuf)
   h.assert_eq("gm2j toggles back", signs(fbuf),
-    "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd")
+    "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAdd")
 end
 
 -- ── Marks in the file buffer's undo stack ───────────────────────────────────
 -- A mark changes no text, so it rides glean.bufundo on top of the buffer's own
 -- undo tree: `u` spends it first and only then steps the text.
 do
-  local UNSEEN = "2:GleanGutterChange 4:GleanGutterAdd 5:GleanGutterAdd"
+  local UNSEEN = "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAdd"
   local function feed(keys)
     vim.api.nvim_feedkeys(api.nvim_replace_termcodes(keys, true, false, true), "x", false)
     gutter.refresh(fbuf)
@@ -382,14 +408,14 @@ do
   api.nvim_win_set_cursor(0, { 4, 0 })
   feed("gmm")
   h.assert_eq("marked", signs(fbuf),
-    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+    "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd")
   api.nvim_win_set_cursor(0, { 1, 0 })
   feed("u")
   h.assert_eq("u reverses the mark", signs(fbuf), UNSEEN)
   h.assert_eq("u parks on the row it unmarked", api.nvim_win_get_cursor(0)[1], 4)
   feed("<C-r>")
   h.assert_eq("<C-r> replays it", signs(fbuf),
-    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+    "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd")
   feed("u")
   h.assert_eq("the stack is spent", signs(fbuf), UNSEEN)
 
@@ -400,7 +426,7 @@ do
   feed("A x<Esc>")
   feed("u")
   h.assert_eq("text undo, and the mark stayed marked", signs(fbuf),
-    "2:GleanGutterChange 4:GleanGutterAddSeen 5:GleanGutterAdd")
+    "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd")
   feed("gmm")
   h.assert_eq("marking still works after the wipe", signs(fbuf), UNSEEN)
 end

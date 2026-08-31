@@ -93,7 +93,7 @@ A comment or a mark changes no text, so it never enters the buffer's undo tree; 
 
 ### Review status in ordinary files
 
-While a work-tree review is open, every file it touches carries the review's own sign column: `▎` on added and changed lines and `▁` where lines were removed, coloured by seen status — unseen lines link to `DiffAdd`/`DiffChange`/ `DiffDelete`, marked lines grey out to `Comment`, so what still needs review is what draws the eye. The glyphs come straight from the model the review buffer renders, so marking a hunk seen in the review repaints the file immediately.
+While a work-tree review is open, every file it touches carries the review's own sign column: `▎` on added and changed lines and `▁` where lines were removed, coloured by seen status — unseen lines link to `DiffAdd`/`DiffChange`/ `DiffDelete`, marked lines grey out to `Comment`, so what still needs review is what draws the eye. Unchanged lines *between* two changes of the same hunk carry a thinner, dimmer `▏`, so a hunk reads as one region rather than a scatter of rows; that marker is decoration only — `]c` never stops on it and `gm` never marks it. The glyphs come straight from the model the review buffer renders, so marking a hunk seen in the review repaints the file immediately.
 
 The projection is deliberately conservative: nothing is painted unless the review targets the work tree (so a post-image line _is_ a buffer line) and the buffer is unmodified since the last model refresh. Editing clears the marks until the next poll. Display-only `min_seen_run` demotion is not applied here — the gutter answers "is this line marked" from the persisted model.
 
@@ -101,7 +101,7 @@ The projection is deliberately conservative: nothing is painted unless the revie
 
 It refuses to act (with a message, leaving the model untouched) on a modified buffer or one whose contents no longer match the work tree the live diff was built from — the latter kicks off a refresh, so re-running it once acts on a fresh model — and on a file whose blame ownership is still loading.
 
-While a buffer is part of the review it also gets glean's buffer-local keymaps: `]c` / `[c` jump to the next / previous hunk (wrapping at the ends of the file, matching the review buffer's mapping), `gj` opens the review at the current line (`:Glean jump`) and `gm` toggles the mark — as an operator taking a motion in normal mode ((`gmm` for the current line, `gmc` for the whole hunk, `gm]c` to the next hunk)), the selection in visual mode. They are installed and removed with the review, alongside the sign column. Set `keymaps = false` in the `gutter` config to keep your own.
+While a buffer is part of the review it also gets glean's buffer-local keymaps: `]c` / `[c` jump to the next / previous hunk (skipping hunks that are fully marked, wrapping at the ends of the file, and falling back to every hunk once the file is fully reviewed), `gj` opens the review at the current line (`:Glean jump`) and `gm` toggles the mark — as an operator taking a motion in normal mode ((`gmm` for the current line, `gmc` for the whole hunk, `gm]c` to the next hunk)), the selection in visual mode. They are installed and removed with the review, alongside the sign column. Set `keymaps = false` in the `gutter` config to keep your own.
 
 The hunk `gmc` would act on is drawn with a heavier glyph (`█`) in the sign column, tracking the cursor, so the target of the keystroke is visible before you press it. Set `focus = false` in the `gutter` config to turn that off.
 
@@ -130,7 +130,7 @@ Highlight groups: `GleanGutterAdd`, `GleanGutterChange`, `GleanGutterDelete` and
 - `d` (visual) — delete all selected comments in the comment summary
 - `dc` — delete a comment attached to the current line
 - `u` / `<C-r>` — undo / redo (seen, comment, collapse actions)
-- `]c` / `[c` — next / previous hunk
+- `]c` / `[c` — next / previous unmarked hunk
 - `]f` / `[f` — next / previous file
 - `<CR>` — jump to the source line (the live file whenever the line still exists verbatim in the work tree, else a read-only `git show` buffer); on a comment-summary row, navigate to the comment/file in the diff instead
 - `D` — open an ephemeral side-by-side diff for the hunk under the cursor

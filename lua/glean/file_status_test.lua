@@ -50,7 +50,8 @@ do
   h.assert_eq("worktree: edited line unseen", st[2] and st[2].seen, false)
   h.assert_eq("worktree: four is an add row", st[4] and st[4].kind, "add")
   h.assert_eq("worktree: five is an add row", st[5] and st[5].kind, "add")
-  h.assert_true("worktree: context untouched", st[1] == nil and st[3] == nil)
+  h.assert_true("worktree: leading context bare", st[1] == nil)
+  h.assert_eq("worktree: interior context is connective tissue", st[3] and st[3].kind, "context")
 
   local header
   for row = 0, api.nvim_buf_line_count(s.buf) - 1 do
