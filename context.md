@@ -100,6 +100,9 @@ algebra; `plans/2026-08-28-reviewed-baseline.md` holds the original reasoning an
   into `diff(B, W)` before resolving identities and calling the usual
   `Session:perform{kind = "seen"}`. The map is many-to-one, so one row can carry
   its paired del and any attached deletions.
+  A cursor-tracked second namespace paints the hunk `gmc` would act on with a
+  heavier glyph (`M.hunk_range`, pure), so the keystroke's target is visible
+  before it is pressed.
 - `ignore.lua` — pure `.gleanignore` matcher (gitignore syntax compiled to vim
   regex). A matching path is *derived*-seen via `Session:is_generated` short-
   circuiting `id_seen`, so generated files collapse and leave the unreviewed

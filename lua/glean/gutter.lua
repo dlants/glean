@@ -141,6 +141,28 @@ function M.hunk_starts(marks)
   return rows
 end
 
+--- Pure. The inclusive post-image row range `gmc` (no-range `:Glean toggle-mark`)
+--- would act on from `cur`: every row any line of the hunks owning `cur` was
+--- folded into. nil when `cur` carries no diff line.
+--- @return integer?, integer?
+function M.hunk_range(marks, cur)
+  local m = marks and marks[cur]
+  if not m then return nil end
+  local want = {}
+  for _, s in ipairs(m.sources or {}) do want[s.hunk] = true end
+  local lo, hi
+  for lnum, other in pairs(marks) do
+    for _, s in ipairs(other.sources or {}) do
+      if want[s.hunk] then
+        if not lo or lnum < lo then lo = lnum end
+        if not hi or lnum > hi then hi = lnum end
+        break
+      end
+    end
+  end
+  return lo, hi
+end
+
 --- Pure. The row `]c` / `[c` land on from `cur`, wrapping around the file.
 --- nil when there is nothing to move to.
 function M.next_hunk_row(rows, cur, dir)
@@ -167,6 +189,10 @@ local painted = {}
 -- its glyph in place but greys out, so unreviewed work is what draws the eye.
 local GLYPH = { add = "▎", change = "▎", del = "▁" }
 local GROUP = { add = "GleanGutterAdd", change = "GleanGutterChange", del = "GleanGutterDelete" }
+-- The hunk under the cursor — what `gmc` would act on — is drawn with a heavier
+-- glyph in the same colour, so the target of the keystroke is legible without a
+-- second colour scheme to learn.
+local FOCUS_GLYPH = { add = "█", change = "█", del = "▄" }
 
 function M.setup_highlights()
   local links = {
@@ -210,6 +236,40 @@ local function buf_target(bufnr, allow_modified)
   if not path then return nil end
   return session, path
 end
+-- Focus marks live in their own namespace: they are recomputed on every cursor
+-- move, far more often than the projection itself.
+local ns_focus = api.nvim_create_namespace("glean_gutter_focus")
+
+--- Re-stamp the "this is what `gmc` acts on" overlay for `bufnr`.
+function M.refresh_focus(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  if not api.nvim_buf_is_valid(bufnr) then return end
+  api.nvim_buf_clear_namespace(bufnr, ns_focus, 0, -1)
+  if not painted[bufnr] then return end
+  if M.config and M.config.focus == false then return end
+  local win = api.nvim_get_current_win()
+  if api.nvim_win_get_buf(win) ~= bufnr then return end
+  local session, path = buf_target(bufnr)
+  local marks = session and session:file_status(path) or nil
+  if not marks then return end
+  local lo, hi = M.hunk_range(marks, api.nvim_win_get_cursor(win)[1])
+  if not lo then return end
+  for lnum = lo, hi do
+    local m = marks[lnum]
+    if m then
+      local kind = m.kind or "del"
+      api.nvim_buf_set_extmark(bufnr, ns_focus, lnum - 1, 0, {
+        sign_text = FOCUS_GLYPH[kind],
+        sign_hl_group = GROUP[kind] .. (m.seen and "Seen" or ""),
+        -- Above the base stamp's default (4096): with a single-width sign
+        -- column only the top sign on a row is drawn, and the focus glyph is
+        -- the one that has to win there.
+        priority = 4097,
+      })
+    end
+  end
+end
+
 
 -- ── Buffer-local keymaps ────────────────────────────────────────────────────
 --
@@ -266,7 +326,10 @@ end
 
 local function clear(bufnr)
   if painted[bufnr] then painted[bufnr] = nil end
-  if api.nvim_buf_is_valid(bufnr) then api.nvim_buf_clear_namespace(bufnr, ns, 0, -1) end
+  if api.nvim_buf_is_valid(bufnr) then
+    api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+    api.nvim_buf_clear_namespace(bufnr, ns_focus, 0, -1)
+  end
 end
 
 -- ── Foreign sign provider suppression ───────────────────────────────────────
@@ -278,8 +341,15 @@ end
 -- break the gutter.
 local suppressed = {}
 
+-- Detaching a buffer gitsigns is not attached to is not a no-op there: it drops
+-- its cache entry while its buffer-attach handler lives on, and the next reload
+-- of that buffer trips an assert inside gitsigns. `get_hunks` returning nil is
+-- its "not attached" answer, so ask before detaching.
 local AUTO = {
-  detach = function(bufnr) require("gitsigns").detach(bufnr) end,
+  detach = function(bufnr)
+    local gs = require("gitsigns")
+    if gs.get_hunks(bufnr) ~= nil then gs.detach(bufnr) end
+  end,
   attach = function(bufnr) require("gitsigns").attach(bufnr) end,
 }
 
@@ -334,6 +404,7 @@ function M.refresh(bufnr)
   for lnum, mark in pairs(marks) do
     if lnum >= 1 and lnum <= total then stamp(bufnr, lnum, mark) end
   end
+  M.refresh_focus(bufnr)
 end
 
 --- Toggle the glean projection for one buffer. Turning it on when there is no
@@ -399,7 +470,8 @@ end
 function M.setup(cfg)
   M.config =
       vim.tbl_extend("force",
-        { enabled = true, suppress = "auto", keymaps = true, toggle_key = "gt" }, cfg or {})
+        { enabled = true, suppress = "auto", keymaps = true, toggle_key = "gt", focus = true },
+        cfg or {})
   M.setup_highlights()
   local group = api.nvim_create_augroup("GleanGutter", { clear = true })
   api.nvim_create_autocmd({ "BufReadPost", "BufWinEnter", "BufWritePost", "FileChangedShellPost" }, {
@@ -418,6 +490,12 @@ function M.setup(cfg)
     group = group,
     pattern = "GleanReviewChanged",
     callback = function() refresh_all() end,
+  })
+  -- The focused hunk follows the cursor, so it is recomputed on every move
+  -- rather than only when the projection changes.
+  api.nvim_create_autocmd({ "CursorMoved", "WinEnter" }, {
+    group = group,
+    callback = function(args) M.refresh_focus(args.buf) end,
   })
   api.nvim_create_autocmd({ "BufWipeout" }, {
     group = group,

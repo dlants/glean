@@ -492,6 +492,15 @@ local CHEVRON_CLOSED = "▶"
 -- `hunk.lines` (inclusive), `lnum_lo`/`lnum_hi` span the run's new-file lines
 -- (nil across a pure-deletion run), and `texts` are the run's line texts (for
 -- the content-addressed marker key).
+-- `{ ...t, [k] = v }`. `vim.tbl_extend` validates its arguments and walks a
+-- vararg list on every call; this runs once per emitted diff row (tens of
+-- thousands of them on a large review), where that overhead dominates.
+local function with_field(t, k, v)
+  local out = {}
+  for tk, tv in pairs(t) do out[tk] = tv end
+  out[k] = v
+  return out
+end
 local function hunk_marker_runs(hunk, is_seen)
   local runs = {}
   local cur = nil
@@ -1048,7 +1057,14 @@ end
 -- baseline is anchored on. An empty list when the path does not exist there (an
 -- untracked or newly added file), which is exactly its content at the tip.
 function Session:wt_head_lines(path)
-  self._wt_head = self._wt_head or {}
+  -- H is immutable for a given tip commit, so this survives across renders and
+  -- is only thrown away when the tip moves. Re-reading it per build costs one
+  -- synchronous `git show` per changed file, which on a large review is the
+  -- entire cost of a re-render (and every mark is a re-render).
+  local head = self._commit_cache_head or "HEAD"
+  if self._wt_head_for ~= head then
+    self._wt_head, self._wt_head_for = {}, head
+  end
   local cached = self._wt_head[path]
   if cached then return cached end
   local out = self.git:show(self._commit_cache_head or "HEAD", path)
@@ -1412,7 +1428,6 @@ function Session:build()
   -- work-tree contents, all of which may have moved since the last render.
   self._wt_seen = {}
   self._wt_versions = {}
-  self._wt_head = {}
   -- Working-tree reads backing off-diff comment resolution, likewise per-render.
   self._wt_lines = {}
   local lines = {}
@@ -1550,7 +1565,7 @@ function Session:build()
           or dl.kind == "del" and "GleanDel"
           or "GleanContext"
         local row = emit(dl.text,
-          vim.tbl_extend("force", target, { li = li }), hl, m)
+          with_field(target, "li", li), hl, m)
         if dl.kind == "del" then
           if #adds > 0 then flush() end
           dels[#dels + 1] = { row = row, text = dl.text }

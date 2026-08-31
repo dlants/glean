@@ -315,6 +315,14 @@ h.assert_eq("prev from inside a hunk", gutter.next_hunk_row(starts, 20, -1), 4)
 h.assert_eq("prev wraps at the top", gutter.next_hunk_row(starts, 4, -1), 20)
 h.assert_eq("nothing to move to", gutter.next_hunk_row({}, 1, 1), nil)
 
+local function range(cur)
+  local lo, hi = gutter.hunk_range(nav_marks, cur)
+  return lo and (lo .. "-" .. hi) or "nil"
+end
+h.assert_eq("focus spans the whole hunk", range(5), "4-5")
+h.assert_eq("focus of a one-row hunk", range(20), "20-20")
+h.assert_eq("no focus off a diff row", range(7), "nil")
+
 local function has_map(bufnr, mode, lhs)
   for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, mode)) do
     if m.lhs == lhs then return true end
@@ -397,6 +405,41 @@ do
   h.assert_eq("marking still works after the wipe", signs(fbuf), UNSEEN)
 end
 
+-- ── Focused hunk ────────────────────────────────────────────────────────────
+-- The overlay says what `gmc` would act on: the rows of the hunk under the
+-- cursor, drawn with the heavier glyph, and nothing when the cursor is off any
+-- hunk.
+local function focus(bufnr)
+  local fns = api.nvim_create_namespace("glean_gutter_focus")
+  local out = {}
+  for _, m in ipairs(api.nvim_buf_get_extmarks(bufnr, fns, 0, -1, { details = true })) do
+    out[#out + 1] = ("%d:%s"):format(m[2] + 1, m[4].sign_text:gsub("%s+$", ""))
+  end
+  table.sort(out)
+  return table.concat(out, " ")
+end
+do
+  gutter.setup({ suppress = false })
+  api.nvim_win_set_buf(0, fbuf)
+  gutter.refresh(fbuf)
+  api.nvim_win_set_cursor(0, { 4, 0 })
+  gutter.refresh_focus(fbuf)
+  local at4 = focus(fbuf)
+  h.assert_true("the focused hunk is drawn heavier", at4:find("█") ~= nil)
+  api.nvim_win_set_cursor(0, { 2, 0 })
+  gutter.refresh_focus(fbuf)
+  h.assert_eq("every row of the hunk is focused, from any of its rows", focus(fbuf), at4)
+  api.nvim_win_set_cursor(0, { 3, 0 })
+  gutter.refresh_focus(fbuf)
+  h.assert_eq("no hunk under the cursor, no focus", focus(fbuf), "")
+  api.nvim_win_set_cursor(0, { 4, 0 })
+  gutter.refresh_focus(fbuf)
+  h.assert_eq("a repaint restores it", focus(fbuf), at4)
+  gutter.setup({ suppress = false, focus = false })
+  gutter.refresh(fbuf)
+  h.assert_eq("focus = false paints nothing", focus(fbuf), "")
+  gutter.setup({ suppress = false })
+end
 -- Closing the review clears every painted buffer.
 gutter.setup({ suppress = false })
 glean.close_current()

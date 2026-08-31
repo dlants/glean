@@ -103,6 +103,8 @@ It refuses to act (with a message, leaving the model untouched) on a modified bu
 
 While a buffer is part of the review it also gets glean's buffer-local keymaps: `]c` / `[c` jump to the next / previous hunk (wrapping at the ends of the file, matching the review buffer's mapping), `gj` opens the review at the current line (`:Glean jump`) and `gm` toggles the mark — as an operator taking a motion in normal mode ((`gmm` for the current line, `gmc` for the whole hunk, `gm]c` to the next hunk)), the selection in visual mode. They are installed and removed with the review, alongside the sign column. Set `keymaps = false` in the `gutter` config to keep your own.
 
+The hunk `gmc` would act on is drawn with a heavier glyph (`█`) in the sign column, tracking the cursor, so the target of the keystroke is visible before you press it. Set `focus = false` in the `gutter` config to turn that off.
+
 `gt` (global, `gutter.toggle_key`) toggles the gutter for the current buffer: off, it clears the marks, drops the buffer-local keymaps and hands the sign column back to the other provider until toggled on again. Toggling on with no review open starts the default (`:Glean`) one in the background, so the gutter is also a way into a review without leaving the file. Because it owns the sign column, glean detaches the other sign provider from those buffers (gitsigns, by name, under the default `suppress = "auto"`) and reattaches it when the buffer leaves the review, when the review closes and on exit. Set `suppress = false` to leave the other plugin alone, or pass `{ detach = fn(bufnr), attach = fn(bufnr) }` to drive a different one.
 
 `:Glean toggle-gutter` is the same switch for every buffer at once — it is the runtime form of `gutter.enabled`, so set `enabled = false` to opt in per-session instead of painting automatically. Turning it back on also clears any per-buffer `gt` opt-outs.
@@ -160,6 +162,7 @@ require("glean.init").setup({
     enabled = true,        -- paint automatically when a review is live (:Glean toggle-gutter flips it)
     suppress = "auto",     -- "auto" | false | { detach = fn(bufnr), attach = fn(bufnr) }
     toggle_key = "gt",     -- global map toggling the gutter for the current buffer (false to skip)
+    focus = true,          -- heavier glyph on the hunk under the cursor (what `gmc` acts on)
   },
 })
 ```
