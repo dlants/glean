@@ -507,4 +507,46 @@ function Git:show(ref, path)
   return self:run({ "show", ref .. ":" .. path })
 end
 
+-- The contents of many paths at one ref, as a `path -> content` map (paths
+-- absent from the ref are simply missing from it). One `git cat-file --batch`
+-- process serves the whole list: a large dirty review needs the tip-commit
+-- content of every changed file, and one subprocess per file is the dominant
+-- cost of opening it. An injected runner (tests) has no stdin channel, so it
+-- falls back to the serial `show` it already stubs.
+function Git:show_many(ref, paths)
+  local out = {}
+  if self._run then
+    for _, path in ipairs(paths) do
+      local content = self:show(ref, path)
+      if content then out[path] = content end
+    end
+    return out
+  end
+  if #paths == 0 then return out end
+  local stdin = {}
+  for _, path in ipairs(paths) do stdin[#stdin + 1] = ref .. ":" .. path end
+  stdin[#stdin + 1] = ""
+  local res = vim.system({ "git", "cat-file", "--batch" },
+    { cwd = self.repo_root, stdin = table.concat(stdin, "\n") }):wait()
+  if res.code ~= 0 then return out end
+  -- `--batch` answers each request with a `<oid> <type> <size>` header (or
+  -- `<request> missing`) followed by exactly `size` bytes and a newline, in
+  -- request order. Walk it by those byte counts rather than by lines: the blobs
+  -- themselves contain newlines.
+  local body, pos, i = res.stdout or "", 1, 1
+  while pos <= #body and i <= #paths do
+    local nl = body:find("\n", pos, true)
+    if not nl then break end
+    local header = body:sub(pos, nl - 1)
+    pos = nl + 1
+    local size = header:match("^%x+ %a+ (%d+)$")
+    if size then
+      out[paths[i]] = body:sub(pos, pos + tonumber(size) - 1)
+      pos = pos + tonumber(size) + 1
+    end
+    i = i + 1
+  end
+  return out
+end
+
 return M

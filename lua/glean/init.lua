@@ -1058,24 +1058,31 @@ end
 -- untracked or newly added file), which is exactly its content at the tip.
 function Session:wt_head_lines(path)
   -- H is immutable for a given tip commit, so this survives across renders and
-  -- is only thrown away when the tip moves. Re-reading it per build costs one
-  -- synchronous `git show` per changed file, which on a large review is the
-  -- entire cost of a re-render (and every mark is a re-render).
+  -- is only thrown away when the tip moves.
   local head = self._commit_cache_head or "HEAD"
   if self._wt_head_for ~= head then
-    self._wt_head, self._wt_head_for = {}, head
+    self._wt_head, self._wt_head_for, self._wt_head_batched = {}, head, false
   end
   local cached = self._wt_head[path]
   if cached then return cached end
-  local out = self.git:show(self._commit_cache_head or "HEAD", path)
-  local lines = {}
-  if out then
-    lines = vim.split(out, "\n", { plain = true })
-    -- `git show` emits a trailing newline; splitting it yields a phantom line.
-    if lines[#lines] == "" then lines[#lines] = nil end
+  -- The first miss under a given tip fetches H for *every* uncommitted path in
+  -- one `cat-file --batch`, since a render that needs one of them generally goes
+  -- on to need most of them.
+  local wanted = { path }
+  if not self._wt_head_batched then
+    self._wt_head_batched = true
+    for _, file in ipairs(self.lineage_worktree_files or {}) do
+      if file.path ~= path then wanted[#wanted + 1] = file.path end
+    end
   end
-  self._wt_head[path] = lines
-  return lines
+  for p, out in pairs(self.git:show_many(head, wanted)) do
+    local lines = vim.split(out, "\n", { plain = true })
+    -- A blob ends in a newline; splitting it yields a phantom last line.
+    if lines[#lines] == "" then lines[#lines] = nil end
+    self._wt_head[p] = lines
+  end
+  for _, p in ipairs(wanted) do self._wt_head[p] = self._wt_head[p] or {} end
+  return self._wt_head[path]
 end
 
 -- Recover the explicit del set from a legacy baseline record, which encoded
@@ -1135,6 +1142,13 @@ function Session:wt_seen_sets(path)
   self._wt_seen = self._wt_seen or {}
   local cached = self._wt_seen[path]
   if cached then return cached end
+  -- No stored record means R == H and no approved deletions, so nothing on this
+  -- path is seen -- an answer that needs neither H nor W.
+  if not self.store:has_baseline(path) then
+    local empty = { add = {}, del = {} }
+    self._wt_seen[path] = empty
+    return empty
+  end
   local v = self:wt_versions(path)
   local sets = {
     add = baseline.seen_adds(v.reviewed, v.worktree),

@@ -459,6 +459,15 @@ end
 -- none is stored or the stored anchor is not `head_hash`. A stale record is
 -- left in place (a later read with its original hash still finds it); only a
 -- write replaces it.
+-- Is any record stored for `path`, whatever its anchor? A path with none has
+-- nothing approved on either side, so a reader can answer "seen?" with `false`
+-- without ever materializing H (one `git show` per file, the dominant cost of
+-- opening a large dirty review).
+function Store:has_baseline(path)
+  local c = self.data[self.wt_shard]
+  return (c and c.baselines and c.baselines[path]) ~= nil
+end
+
 function Store:baseline(path, head_hash)
   local c = self.data[self.wt_shard]
   local rec = c and c.baselines and c.baselines[path]
