@@ -210,8 +210,31 @@ function M.clone(states)
   return out
 end
 
--- Project composed states into the two maps the review model addresses lines
--- by: { [path] = { prov = {...}, del_attr = {...} } }.
+-- Project composed states into the maps the review model addresses lines by:
+-- { [path] = { prov = {...}, base = {...}, del_attr = {...} } }. `base` answers
+-- the complement of `prov`: `base[lnum]` is the base-image line a surviving line
+-- was inherited from, so "written by an in-range commit" and "carried unchanged
+-- from the base" are distinguishable from each other (and from a line the
+-- composition knows nothing about, where both are nil). It is a lazy view over
+-- the segment list -- the trailing segment is open-ended and a whole inherited
+-- file must not be materialized -- so it stays O(segments), never O(lines).
+local function base_view(segs)
+  local ranges, pos = {}, 1
+  for _, s in ipairs(segs) do
+    if s.base then ranges[#ranges + 1] = { pos = pos, n = s.n, base = s.base } end
+    if s.n == nil then break end
+    pos = pos + s.n
+  end
+  return setmetatable({}, { __index = function(_, lnum)
+    if type(lnum) ~= "number" then return nil end
+    for _, r in ipairs(ranges) do
+      if lnum >= r.pos and (r.n == nil or lnum < r.pos + r.n) then
+        return r.base + lnum - r.pos
+      end
+    end
+    return nil
+  end })
+end
 function M.finish(states)
   local out = {}
   for path, st in pairs(states) do
@@ -224,7 +247,7 @@ function M.finish(states)
       end
       pos = pos + s.n
     end
-    out[path] = { prov = prov, del_attr = st.del_attr }
+    out[path] = { prov = prov, base = base_view(st.segs), del_attr = st.del_attr }
   end
   return out
 end

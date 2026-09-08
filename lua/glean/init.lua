@@ -579,7 +579,7 @@ function Session:combined_owner(path)
     -- only seen placement is deferred until the loader populates the cache.
     return function() return nil end
   end
-  local prov, del_attr = e.prov, e.del_attr
+  local prov, base, del_attr = e.prov, e.base, e.del_attr
   return function(dl)
     if dl.kind == "del" then
       local a = del_attr[dl.old_lnum]
@@ -591,7 +591,14 @@ function Session:combined_owner(path)
     -- An add line composition can't attribute (an untracked file has no patch
     -- at all, so its provenance map is empty) is uncommitted content in a work-tree
     -- review: route it to the content-addressed WORKTREE owner so it is markable.
+    -- A line the composition inherited unchanged from the base image is *not*
+    -- that: the displayed diff only calls it an add because it aligned a
+    -- repeated line against a different copy than the composition did. It owns
+    -- no review content, so it is unowned like a context line -- routing it to
+    -- WORKTREE would make it permanently unmarkable, since a clean file's
+    -- reviewed baseline (R == H == W) has no add for a mark to advance over.
     if not p then
+      if base[dl.new_lnum] then return nil end
       if not self.worktree then return nil end
       return M.WORKTREE, dl.new_lnum
     end
@@ -639,12 +646,15 @@ function Session:load_lineage()
   end
   local owner = {}
   for path, maps in pairs(lineage.finish(states)) do
-    owner[path] = { status = "loaded", prov = maps.prov, del_attr = maps.del_attr }
+    owner[path] = {
+      status = "loaded", prov = maps.prov, base = maps.base, del_attr = maps.del_attr,
+    }
   end
   -- A displayed file with no patch of its own (e.g. an untracked file whose
   -- content we couldn't read) still counts as loaded, with no owned lines.
   for _, cf in ipairs(self.combined_files or {}) do
-    owner[cf.path] = owner[cf.path] or { status = "loaded", prov = {}, del_attr = {} }
+    owner[cf.path] = owner[cf.path]
+      or { status = "loaded", prov = {}, base = {}, del_attr = {} }
   end
   self._owner = owner
   return owner

@@ -197,6 +197,9 @@ do
   h.assert_eq("last writer wins", out.f.prov[3].sha, "c2")
   h.assert_eq("earlier writer gone", out.f.prov[3].lnum, 3)
   h.assert_eq("base survivors get no prov entry", out.f.prov[1], nil)
+  h.assert_eq("base survivors are named by the base map", out.f.base[1], 1)
+  h.assert_eq("a written line is not a base survivor", out.f.base[3], nil)
+  h.assert_eq("the open-ended tail is base too", out.f.base[9000], 9000)
 end
 
 do
@@ -229,6 +232,7 @@ do
     { sha = WORKTREE, files = { entry("f", { at = 2, adds = 1, new_lnum = 2 }) } },
   })
   h.assert_eq("work-tree layer is an ordinary layer", out.f.prov[2].sha, WORKTREE)
+  h.assert_eq("base lines shift with the insertion", out.f.base[3], 2)
 end
 
 -- ------------------------------------------------------- 3. real histories
