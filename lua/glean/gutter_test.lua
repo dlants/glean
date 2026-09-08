@@ -228,10 +228,13 @@ session:toggle_seen(header)
 api.nvim_exec_autocmds("User", { pattern = "GleanReviewChanged", data = {} })
 h.assert_eq("seen rows", signs(fbuf),
   "2:GleanGutterChangeSeen 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAddSeen")
--- An edited buffer has diverged from the model, so it carries no marks.
+-- An edited buffer has diverged from the model, so its marks degrade to the
+-- stale placeholder — which keeps the sign column open, so the text does not
+-- reflow mid-edit.
 api.nvim_buf_set_lines(fbuf, 0, 1, false, { "ONE" })
 gutter.refresh(fbuf)
-h.assert_eq("modified buffer cleared", signs(fbuf), "")
+h.assert_eq("modified buffer stale", signs(fbuf),
+  "2:GleanGutterStale 3:GleanGutterStale 4:GleanGutterStale 5:GleanGutterStale")
 vim.cmd("silent edit!")
 gutter.refresh(fbuf)
 h.assert_true("repainted after revert", signs(fbuf) ~= "")

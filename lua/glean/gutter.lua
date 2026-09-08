@@ -227,6 +227,11 @@ local GROUP = {
 -- glyph in the same colour, so the target of the keystroke is legible without a
 -- second colour scheme to learn.
 local FOCUS_GLYPH = { add = "█", change = "█", del = "▄", context = "▎" }
+-- A modified buffer has diverged from the model: its rows can no longer be
+-- trusted, but dropping the signs would resize the sign column and reflow the
+-- text under the cursor. So the column is held open with a dimmed placeholder
+-- until the next poll re-projects it.
+local STALE_GLYPH = "╎"
 
 function M.setup_highlights()
   local links = {
@@ -238,17 +243,28 @@ function M.setup_highlights()
     GleanGutterDeleteSeen = "Comment",
     GleanGutterContext = "NonText",
     GleanGutterContextSeen = "NonText",
+    GleanGutterStale = "NonText",
   }
   for name, link in pairs(links) do
     api.nvim_set_hl(0, name, { link = link, default = true })
   end
 end
 
+-- Buffers whose signs are currently the stale placeholder.
+local stale = {}
+
 local function stamp(bufnr, lnum, mark)
   local kind = mark.kind or "del"
   api.nvim_buf_set_extmark(bufnr, ns, lnum - 1, 0, {
     sign_text = GLYPH[kind],
     sign_hl_group = GROUP[kind] .. (mark.seen and "Seen" or ""),
+  })
+end
+
+local function stamp_stale(bufnr, lnum)
+  api.nvim_buf_set_extmark(bufnr, ns, lnum - 1, 0, {
+    sign_text = STALE_GLYPH,
+    sign_hl_group = "GleanGutterStale",
   })
 end
 
@@ -290,7 +306,10 @@ function M.refresh_focus(bufnr)
   if not marks then return end
   local lo, hi = M.hunk_range(marks, api.nvim_win_get_cursor(win)[1])
   if not lo then return end
-  for lnum = lo, hi do
+  -- The model can lag the buffer (an external edit or reload between refreshes),
+  -- so the projected rows are clamped to what the buffer actually has.
+  local total = api.nvim_buf_line_count(bufnr)
+  for lnum = math.max(lo, 1), math.min(hi, total) do
     local m = marks[lnum]
     if m then
       local kind = m.kind or "del"
@@ -362,6 +381,7 @@ end
 
 local function clear(bufnr)
   if painted[bufnr] then painted[bufnr] = nil end
+  stale[bufnr] = nil
   if api.nvim_buf_is_valid(bufnr) then
     api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
     api.nvim_buf_clear_namespace(bufnr, ns_focus, 0, -1)
@@ -415,13 +435,13 @@ local function restore(bufnr)
 end
 
 --- Recompute and re-stamp `bufnr`. No-op (beyond clearing) when there is no
---- live work-tree session, the buffer is not one of its files, or the buffer
---- has diverged from the model.
+--- live work-tree session or the buffer is not one of its files. A buffer that
+--- has diverged from the model keeps its rows but paints them stale.
 function M.refresh(bufnr)
   bufnr = bufnr or api.nvim_get_current_buf()
   if not api.nvim_buf_is_loaded(bufnr) then return end
-  -- Suppression follows membership in the review, not paintedness: a buffer
-  -- momentarily modified (and so cleared) is still the review's file, and
+  -- Suppression follows membership in the review: a buffer momentarily modified
+  -- (and so painted stale) is still the review's file, and
   -- handing the column back to the other plugin for one keystroke would flicker.
   local member, mpath = buf_target(bufnr, true)
   if member and member:file_status(mpath) then
@@ -431,14 +451,17 @@ function M.refresh(bufnr)
     restore(bufnr)
     unset_maps(bufnr)
   end
-  local session, path = buf_target(bufnr)
-  local marks = session and session:file_status(path) or nil
+  local marks = member and member:file_status(mpath) or nil
   clear(bufnr)
   if not marks or next(marks) == nil then return end
   painted[bufnr] = true
+  local is_stale = vim.bo[bufnr].modified
+  stale[bufnr] = is_stale or nil
   local total = api.nvim_buf_line_count(bufnr)
   for lnum, mark in pairs(marks) do
-    if lnum >= 1 and lnum <= total then stamp(bufnr, lnum, mark) end
+    if lnum >= 1 and lnum <= total then
+      if is_stale then stamp_stale(bufnr, lnum) else stamp(bufnr, lnum, mark) end
+    end
   end
   M.refresh_focus(bufnr)
 end
@@ -515,11 +538,15 @@ function M.setup(cfg)
     callback = function(args) M.refresh(args.buf) end,
   })
   -- An edited buffer has diverged from the model until the next poll, and a
-  -- marker on the wrong row is worse than no marker.
+  -- marker on the wrong row is worse than a placeholder.
   api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = group,
     callback = function(args)
-      if painted[args.buf] then clear(args.buf) end
+      -- An external writer (e.g. an agent) can patch a background buffer and
+      -- leave it matching disk; nvim then defers the change event until the
+      -- buffer is focused. That phantom edit must not wipe a valid gutter.
+      if not vim.bo[args.buf].modified then return end
+      if painted[args.buf] and not stale[args.buf] then M.refresh(args.buf) end
     end,
   })
   api.nvim_create_autocmd("User", {
