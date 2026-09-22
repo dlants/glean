@@ -9,6 +9,7 @@ import { makeRepo } from "../test/repo.ts";
 import {
   nextUnseenHunk,
   planToggleSeen,
+  reviveDest,
   rowOfHunk,
   toggleCollapse,
 } from "./actions.ts";
@@ -71,6 +72,10 @@ describe("actions", () => {
     );
     expect(hp?.op).toBe("mark");
     expect(hp?.ids).toHaveLength(2);
+    const destRow = dest === undefined ? -1 : (rowOfHunk(g, dest) ?? -1);
+    // No seen hunk header is visible after it: land on the file's first unseen hunk.
+    expect(reviveDest(g, destRow)).toBe(dest);
+    expect(reviveDest(g, header)).toBeUndefined();
   });
   it("collapse toggles flip the effective default", async () => {
     const { cls } = await setup();

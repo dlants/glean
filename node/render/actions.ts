@@ -14,6 +14,7 @@ import {
   type Frame,
   keys,
   type RowTarget,
+  type Sec,
 } from "./render.ts";
 
 type Resolved = { file: FileEntry; owner: OwnerFn; sha: string | undefined };
@@ -250,4 +251,30 @@ export function rowOfHunk(frame: Frame, key: string): number | undefined {
     (t) => t.kind === "hunk-header" && hunkKey(t) === key,
   );
   return r < 0 ? undefined : r;
+}
+
+function sameFile(a: FileRef, b: FileRef): boolean {
+  return a.scope === "combined"
+    ? b.scope === "combined" && a.file === b.file
+    : b.scope === "commits" && a.commit === b.commit && a.file === b.file;
+}
+
+/**
+ * Where to land after un-marking the hunk at `row`: the next seen hunk of the
+ * same file after it, else the file's first unseen hunk, else the hunk itself.
+ * Captured before the unmark because the revived hunk's rows relocate.
+ */
+export function reviveDest(frame: Frame, row: number): string | undefined {
+  const target = frame.rows[row];
+  if (!target || (target.kind !== "hunk-header" && target.kind !== "line"))
+    return undefined;
+  const cur = hunkKey(target);
+  const inFile = (t: RowTarget | undefined, sec: Sec) =>
+    t?.kind === "hunk-header" && t.sec === sec && sameFile(t.file, target.file);
+  for (let r = row + 1; r < frame.rows.length; r++) {
+    const t = frame.rows[r];
+    if (t && inFile(t, "seen") && hunkKey(t) !== cur) return hunkKey(t);
+  }
+  const first = frame.rows.find((t) => inFile(t, "unseen"));
+  return first ? hunkKey(first) : cur;
 }
