@@ -165,6 +165,12 @@ Lua ↔ node:
 
 - Goal: port `init.lua` as `session.ts` (model build, refresh, polling), `render.ts` (pure `Model -> {lines, highlights, rowMap}`), `actions.ts` (a reducer over `Action`) and `nvimView.ts` (applies render output in bounded batches and diffs against the previous frame so it doesn't rewrite the whole buffer). Keymaps are defined in Lua and dispatch `Action`s.
 - Tests: port `init_test`, `scope_cursor_test`, `reload_test`, `suspend_test`, `marker_test`, `dirty_combined_test` and `wt_dup_lines_test`, mostly against the pure renderer and reducer. A driver test checks the keymap → action → buffer round trip. A driver test with a huge generated hunk asserts that nvim answers `nvim_eval("1")` within 50 ms during the refresh.
+- Status: not started. `init.lua` is 5.5k lines (~190 functions) with a 4.3k-line `init_test`, too large for one pass. Split into sub-stages, each committed green:
+  - 4a `session.ts` model: owners/lineage loading, `line_identity`, seen classification (`id_seen`, `hunk_seen`, `progress_counts`, `is_generated`, worktree seen sets via `baseline`/ranges), `compute_combined`, `refresh_model`/`poll` over `Poller`+`GenerationGuard`. Tests: the model-level cases of `init_test`, `dirty_combined_test`, `wt_dup_lines_test`, `reload_test`.
+  - 4b `render.ts`: pure `build` → `{lines, highlights, rowMap: RowTarget[]}`, sections, dirtree rows, seen markers with `min_seen_run` demotion and sticky overrides, intraline via `runRefine` + cache. Tests: `marker_test` and render cases of `init_test`.
+  - 4c `actions.ts`: reducer for perform/undo/redo, toggle-seen/visual/unmark*, collapse, comments, nav, scope toggle with cursor anchor. Tests: `scope_cursor_test` and action cases of `init_test`.
+  - 4d `nvimView.ts` + Lua keymaps dispatching `glean.action`, suspend/resume on BufWinEnter/Leave. Tests: `suspend_test`, keymap round-trip driver test, 50 ms responsiveness driver test.
+  - LogView/PrView/jump/diffsplit/sticky float: port in 4d or defer to cutover explicitly.
 
 ## Gutter and file-buffer marking
 
