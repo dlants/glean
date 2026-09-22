@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Git, spawnRunner } from "../git/git.ts";
+import { planToggleSeen } from "../render/actions.ts";
+import { render } from "../render/render.ts";
 import { makeRepo } from "../test/repo.ts";
 import { Session } from "./session.ts";
 
@@ -52,6 +54,29 @@ describe("dirty combined scope", () => {
     expect(fileSeen("f.txt")).toBe(true);
     await s.refresh();
     expect(ids.every((id) => snap().cls.idSeen(id))).toBe(true);
+  });
+
+  it("marks every changed line of a file via its header row", async () => {
+    const { s, snap, fileSeen } = await open();
+    const { cls } = snap();
+    const frame = render({
+      scope: "combined",
+      cls,
+      collapse: s.collapse,
+      isSticky: () => false,
+      minSeenRun: 5,
+      ignoreWhitespace: false,
+    });
+    const idx = snap().model.files.findIndex((f) => f.path === "f.txt");
+    const header = frame.rows.find(
+      (t) => t.kind === "file-header" && t.file.file === idx,
+    );
+    if (!header) throw new Error("no f.txt header row");
+    const plan = planToggleSeen(cls, "combined", header);
+    if (!plan) throw new Error("no plan");
+    expect(plan.op).toBe("mark");
+    await s.perform({ kind: "seen", plan });
+    expect(fileSeen("f.txt")).toBe(true);
   });
 
   it("shows untracked files in both scopes and marks them", async () => {
