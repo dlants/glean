@@ -9,6 +9,7 @@ import { makeRepo } from "../test/repo.ts";
 import {
   nextUnseenHunk,
   planToggleSeen,
+  planVisualMark,
   reviveDest,
   rowOfHunk,
   toggleCollapse,
@@ -76,6 +77,25 @@ describe("actions", () => {
     // No seen hunk header is visible after it: land on the file's first unseen hunk.
     expect(reviveDest(g, destRow)).toBe(dest);
     expect(reviveDest(g, header)).toBeUndefined();
+  });
+  it("visual m marks only the selected changed lines", async () => {
+    const { store, cls } = await setup();
+    const c = cls();
+    const f = render({
+      ...base,
+      scope: "combined",
+      cls: c,
+      collapse: new Map(),
+    });
+    const lineRows = f.rows.flatMap((t, i) => (t.kind === "line" ? [i] : []));
+    const first = lineRows[0] ?? -1;
+    const plan = planVisualMark(c, "combined", f.rows, first + 3, first);
+    expect(plan?.op).toBe("mark");
+    expect(plan?.ids).toHaveLength(2);
+    store.mark(plan?.ids ?? []);
+    const again = planVisualMark(cls(), "commits", f.rows, first, first + 3);
+    expect(again).toBeUndefined();
+    expect(planVisualMark(c, "combined", f.rows, 0, 0)).toBeUndefined();
   });
   it("collapse toggles flip the effective default", async () => {
     const { cls } = await setup();

@@ -164,6 +164,35 @@ export function planToggleSeen(
   return { op, ids: changed, sticky, clear: [...new Set(clear)] };
 }
 
+/**
+ * Visual `m`: mark every selected changed line not already seen. Stickiness is
+ * recorded for all selected changed lines (combined scope), even already-seen
+ * ones, so an explicit mark exempts them from short-run demotion.
+ */
+export function planVisualMark(
+  cls: Classifier,
+  scope: Scope,
+  rows: readonly RowTarget[],
+  srow: number,
+  erow: number,
+): SeenPlan | undefined {
+  const [lo, hi] = srow <= erow ? [srow, erow] : [erow, srow];
+  const ids: LineId[] = [];
+  const sticky: Sticky[] = [];
+  for (let row = lo; row <= hi; row++) {
+    const t = rows[row];
+    if (t?.kind !== "line") continue;
+    const r = resolveFile(cls, t.file);
+    const dl = r?.file.hunks[t.hunk]?.lines[t.li];
+    if (!r || !dl) continue;
+    const id = cls.lineIdentity(dl, r.file.path, r.owner);
+    if (!id) continue;
+    if (!cls.idSeen(id)) ids.push(id);
+    if (scope === "combined") sticky.push({ path: r.file.path, text: dl.text });
+  }
+  if (ids.length === 0 && sticky.length === 0) return undefined;
+  return { op: "mark", ids, sticky, clear: [] };
+}
 /** The collapse key a row toggles and its current effective state. */
 export function collapseTarget(
   cls: Classifier,
