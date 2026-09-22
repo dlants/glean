@@ -17,6 +17,8 @@ import type {
 } from "../core/types.ts";
 import { type Git, type Outcome, Poller } from "../git/git.ts";
 import { GenerationGuard } from "../git/scheduler.ts";
+import type { SeenPlan, Sticky } from "../render/actions.ts";
+import type { CollapseKey, CollapseState } from "../render/render.ts";
 import {
   type BuildOpts,
   buildModel,
@@ -39,6 +41,17 @@ export type SessionOpts = {
 
 export type Snapshot = { model: ModelData; store: Store; cls: Classifier };
 
+/** An undoable user action. `cursor` is the row to restore on undo. */
+export type Undoable =
+  | { kind: "seen"; plan: SeenPlan; cursor?: number }
+  | {
+      kind: "collapse";
+      key: CollapseKey;
+      value: boolean | undefined;
+      prev: boolean | undefined;
+      cursor?: number;
+    };
+
 export type RefreshResult =
   | { kind: "applied"; snapshot: Snapshot }
   | { kind: "stale" }
@@ -51,6 +64,10 @@ export class Session {
   private sig: string | undefined;
   private untrackedSig: string | undefined;
   current: Snapshot | undefined;
+  /** Ephemeral view state: explicit collapse overrides (never persisted). */
+  collapse: CollapseState = new Map();
+  private undoStack: Undoable[] = [];
+  private redoStack: Undoable[] = [];
   /** Called after each applied refresh (the view re-renders from here). */
   onChange: (s: Snapshot) => void = () => {};
 
@@ -157,6 +174,7 @@ export class Session {
   async applySeen(
     ids: readonly LineId[],
     op: "mark" | "unmark",
+    sticky: readonly Sticky[] = [],
   ): Promise<RefreshResult> {
     const cur = this.current;
     if (!cur) return this.refresh();
@@ -204,8 +222,57 @@ export class Session {
       }
       touched.add(store.wtShard);
     }
+    // Applied even when the seen write was a no-op (already-seen lines) so an
+    // explicit re-mark still exempts the line from demotion.
+    for (const s of sticky) {
+      if (op === "mark") store.addSticky(s.path, s.text);
+      else store.removeSticky(s.path, s.text);
+      touched.add(store.wtShard);
+    }
     await Promise.all([...touched].map((id) => store.save(id)));
     return this.reclassify();
+  }
+
+  private setCollapse(key: CollapseKey, v: boolean | undefined) {
+    const next = new Map(this.collapse);
+    if (v === undefined) next.delete(key);
+    else next.set(key, v);
+    this.collapse = next;
+  }
+
+  private async apply(a: Undoable, reverse: boolean): Promise<void> {
+    if (a.kind === "collapse") {
+      this.setCollapse(a.key, reverse ? a.prev : a.value);
+      return;
+    }
+    const { plan } = a;
+    const op = reverse ? (plan.op === "mark" ? "unmark" : "mark") : plan.op;
+    if (!reverse) for (const k of plan.clear) this.setCollapse(k, undefined);
+    await this.applySeen(plan.ids, op, plan.sticky);
+  }
+
+  /** Apply a fresh action, push it for undo, and clear the redo stack. */
+  async perform(a: Undoable): Promise<void> {
+    await this.apply(a, false);
+    this.undoStack.push(a);
+    this.redoStack = [];
+  }
+
+  /** Reverse the last action; returns it (for cursor restore) or undefined. */
+  async undo(): Promise<Undoable | undefined> {
+    const a = this.undoStack.pop();
+    if (!a) return undefined;
+    await this.apply(a, true);
+    this.redoStack.push(a);
+    return a;
+  }
+
+  async redo(): Promise<Undoable | undefined> {
+    const a = this.redoStack.pop();
+    if (!a) return undefined;
+    await this.apply(a, false);
+    this.undoStack.push(a);
+    return a;
   }
 
   startLive(intervalMs: number) {

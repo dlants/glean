@@ -29,6 +29,32 @@ describe("Session", () => {
     expect(s.current?.cls.progressCounts("combined").adds).toBe(1);
   });
 
+  it("perform/undo/redo a seen plan with sticky overrides", async () => {
+    const { s } = session();
+    await s.refresh();
+    const cur = s.current;
+    if (!cur) throw new Error("no snapshot");
+    const f = cur.model.files.find((x) => x.path === "a.txt");
+    if (!f) throw new Error("no file");
+    const owner = cur.cls.combinedOwner(f.path);
+    const ids = f.hunks.flatMap((h) => cur.cls.changedIds(h, f.path, owner));
+    const path = ids[0]?.path;
+    if (!path) throw new Error("no ids");
+    const unseen = () => s.current?.cls.progressCounts("combined").adds;
+    await s.perform({
+      kind: "seen",
+      plan: { op: "mark", ids, sticky: [{ path, text: "X" }], clear: [] },
+    });
+    expect(unseen()).toBe(0);
+    expect(s.current?.store.isSticky(path, "X")).toBe(true);
+    expect((await s.undo())?.kind).toBe("seen");
+    expect(unseen()).toBe(1);
+    expect(s.current?.store.isSticky(path, "X")).toBe(false);
+    await s.redo();
+    expect(unseen()).toBe(0);
+    expect(await s.redo()).toBeUndefined();
+  });
+
   it("drops a refresh superseded by a newer one", async () => {
     const { s } = session();
     const [a, b] = await Promise.all([s.refresh(), s.refresh()]);
