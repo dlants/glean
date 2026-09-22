@@ -343,6 +343,32 @@ export class Classifier {
     return commit.files.every((f) => this.fileSeen(f, owner));
   }
 
+  /**
+   * Is every file under a directory row seen? `fileIndices` index the scope's
+   * file list: the commit's files in the commits scope, `model.files` otherwise.
+   */
+  dirSeen(
+    dir:
+      | {
+          scope: "commits";
+          commit: ModelCommit;
+          fileIndices: readonly number[];
+        }
+      | { scope: "combined"; fileIndices: readonly number[] },
+  ): boolean {
+    if (dir.scope === "commits") {
+      const { commit } = dir;
+      const owner = this.commitOwner(commit);
+      return dir.fileIndices.every((i) => {
+        const f = commit.files[i];
+        return f !== undefined && this.fileSeen(f, owner);
+      });
+    }
+    return dir.fileIndices.every((i) => {
+      const f = this.model.files[i];
+      return f !== undefined && this.fileSeen(f, this.combinedOwner(f.path));
+    });
+  }
   /** Unreviewed work in a scope; a changed line with no identity counts as unseen. */
   progressCounts(scope: Scope): Counts {
     const counts: Counts = { files: 0, hunks: 0, adds: 0, dels: 0 };

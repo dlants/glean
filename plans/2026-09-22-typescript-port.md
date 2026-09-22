@@ -178,7 +178,8 @@ Lua ↔ node:
   - Tests: 5 model cases (build ordering, cross-scope identity equality, committed marks + rollups, worktree baseline/del-range classification, untracked + `.gleanignore`).
   - `node/session/session.ts`: `Session` with `refresh()` (generation-guarded; returns `applied | stale | error | timeout`, fresh `Store` + `.gleanignore` per refresh), `reclassify()` (after store writes), `poll({untracked})` (first call records baseline signatures; refreshes only on change) driven by `Poller` via `startLive`/`stop`, and an `onChange` hook for the view. Tests in `session.test.ts` (refresh, stale drop, poll change detection).
   - `Session.applySeen(ids, op)`: committed ids via store ranges; worktree adds move R (`markAdds`/`unmarkAdds`, H via `showMany`, W from disk), worktree dels are head-line range edits; saves touched shards then `reclassify()`. Sticky overrides and the undo stack belong to the 4c reducer. `wtDupLines.test.ts` ports `wt_dup_lines_test` except the legacy (pre-explicit-dels) record case, which the node `Store` doesn't model (legacy worktree data is dropped, see stage 2).
-  - Remaining for 4a: the committed-lineage cache across content-only reloads (and the patch cache), `dirSeen` (needs dirtree targets, may land with 4b), and porting the model-level cases of `init_test`, `dirty_combined_test`, `wt_dup_lines_test`, `reload_test`.
+  - `Classifier.dirSeen` takes a scope-tagged file-index list (the commits scope also takes its `ModelCommit`). Deviation: in the combined scope it rolls up `fileSeen` per file rather than Lua's `ids_all_seen` over the target's identities. Lua's "ownership not loaded" case doesn't exist because lineage is eager. Tested in `model.test.ts`.
+  - Remaining for 4a: the committed-lineage cache across content-only reloads (and the patch cache), and porting the model-level cases of `init_test`, `dirty_combined_test`, `reload_test`.
 
 ## Gutter and file-buffer marking
 

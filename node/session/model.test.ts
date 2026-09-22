@@ -106,6 +106,29 @@ describe("model", () => {
     expect(cls.commitSeen(model.commits[0] ?? model.commits[1]!)).toBe(true);
   });
 
+  it("rolls seen files up into directory rows in both scopes", async () => {
+    const repo = makeRepo([
+      { files: { "d/a.txt": "1\n", "d/b.txt": "1\n" } },
+      { files: { "d/a.txt": "1\nA\n", "d/b.txt": "1\nB\n" } },
+    ]);
+    const { model, cls, store: s } = await setup(repo, false);
+    const commit = model.commits[0]!;
+    const idx = (list: readonly { path: string }[], p: string) =>
+      list.findIndex((f) => f.path === p);
+    const all = [idx(model.files, "d/a.txt"), idx(model.files, "d/b.txt")];
+    const commitAll = [0, 1];
+    expect(cls.dirSeen({ scope: "combined", fileIndices: all })).toBe(false);
+    s.mark(combinedIds(cls, model, "d/a.txt"));
+    expect(cls.dirSeen({ scope: "combined", fileIndices: [all[0]!] })).toBe(
+      true,
+    );
+    expect(cls.dirSeen({ scope: "combined", fileIndices: all })).toBe(false);
+    s.mark(combinedIds(cls, model, "d/b.txt"));
+    expect(cls.dirSeen({ scope: "combined", fileIndices: all })).toBe(true);
+    expect(
+      cls.dirSeen({ scope: "commits", commit, fileIndices: commitAll }),
+    ).toBe(true);
+  });
   it("decides worktree lines by the reviewed baseline and del ranges", async () => {
     const repo = makeRepo([{ files: { "a.txt": "1\n2\n3\n" } }]);
     writeFileSync(join(repo.root, "a.txt"), "1\nA\nB\n");
