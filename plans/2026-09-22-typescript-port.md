@@ -176,7 +176,8 @@ Lua ↔ node:
   - `loadWorktreeSeen` preloads, for uncommitted paths with a stored record only, H via one `showMany` and W from disk, into `WorktreeSeen {unseenAdds, dels}`. This replaces the lazy `wt_versions`/`wt_seen_sets` so classification stays synchronous and IO-free.
   - `Classifier` (pure, rebuilt per model/store change): `commitOwner`/`combinedOwner` return a `LineOwner` union (`commit | worktree | none`) instead of `sha, lnum` nil pairs; `lineIdentity`, `changedIds`, `isGenerated`, `idSeen`, `hunkSeen`, `fileSeen`, `commitSeen`, `progressCounts(scope)`. Lineage is composed eagerly in the constructor (no per-path pending status; combined ownership is always "loaded").
   - Tests: 5 model cases (build ordering, cross-scope identity equality, committed marks + rollups, worktree baseline/del-range classification, untracked + `.gleanignore`).
-  - Remaining for 4a: `Session` wrapper with `refresh`/`poll` over `Poller` + `GenerationGuard` (and the committed-lineage cache across content-only reloads), `dirSeen`, and porting the model-level cases of `init_test`, `dirty_combined_test`, `wt_dup_lines_test`, `reload_test`.
+  - `node/session/session.ts`: `Session` with `refresh()` (generation-guarded; returns `applied | stale | error | timeout`, fresh `Store` + `.gleanignore` per refresh), `reclassify()` (after store writes), `poll({untracked})` (first call records baseline signatures; refreshes only on change) driven by `Poller` via `startLive`/`stop`, and an `onChange` hook for the view. Tests in `session.test.ts` (refresh, stale drop, poll change detection).
+  - Remaining for 4a: the committed-lineage cache across content-only reloads (and the patch cache), `dirSeen` (needs dirtree targets, may land with 4b), and porting the model-level cases of `init_test`, `dirty_combined_test`, `wt_dup_lines_test`, `reload_test`.
 
 ## Gutter and file-buffer marking
 
