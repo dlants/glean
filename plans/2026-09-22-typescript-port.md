@@ -171,6 +171,12 @@ Lua ↔ node:
   - 4c `actions.ts`: reducer for perform/undo/redo, toggle-seen/visual/unmark*, collapse, comments, nav, scope toggle with cursor anchor. Tests: `scope_cursor_test` and action cases of `init_test`.
   - 4d `nvimView.ts` + Lua keymaps dispatching `glean.action`, suspend/resume on BufWinEnter/Leave. Tests: `suspend_test`, keymap round-trip driver test, 50 ms responsiveness driver test.
   - LogView/PrView/jump/diffsplit/sticky float: port in 4d or defer to cutover explicitly.
+- 4a progress (partial): `node/session/model.ts` + `model.test.ts`.
+  - `buildModel(git, base, Target, {ignoreWhitespace, fromRoot})` runs every git call concurrently (`Promise.all`) and returns `Outcome<ModelData>` (display `files`/`commits` with the WORKTREE layer last, exact `canonicalFiles`/`lineageCommits`/`lineageWorktreeFiles`, resolved `head`). The Lua patch cache (`cached_patches`) is not ported yet.
+  - `loadWorktreeSeen` preloads, for uncommitted paths with a stored record only, H via one `showMany` and W from disk, into `WorktreeSeen {unseenAdds, dels}`. This replaces the lazy `wt_versions`/`wt_seen_sets` so classification stays synchronous and IO-free.
+  - `Classifier` (pure, rebuilt per model/store change): `commitOwner`/`combinedOwner` return a `LineOwner` union (`commit | worktree | none`) instead of `sha, lnum` nil pairs; `lineIdentity`, `changedIds`, `isGenerated`, `idSeen`, `hunkSeen`, `fileSeen`, `commitSeen`, `progressCounts(scope)`. Lineage is composed eagerly in the constructor (no per-path pending status; combined ownership is always "loaded").
+  - Tests: 5 model cases (build ordering, cross-scope identity equality, committed marks + rollups, worktree baseline/del-range classification, untracked + `.gleanignore`).
+  - Remaining for 4a: `Session` wrapper with `refresh`/`poll` over `Poller` + `GenerationGuard` (and the committed-lineage cache across content-only reloads), `dirSeen`, and porting the model-level cases of `init_test`, `dirty_combined_test`, `wt_dup_lines_test`, `reload_test`.
 
 ## Gutter and file-buffer marking
 
