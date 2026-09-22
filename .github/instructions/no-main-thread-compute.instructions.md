@@ -1,5 +1,5 @@
 ---
-applyTo: "**/*.{ts,lua}"
+applyTo: "**/*.ts,**/*.lua"
 ---
 
 # No Main-Thread Compute Review
