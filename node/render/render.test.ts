@@ -73,6 +73,28 @@ describe("render", () => {
       ),
     ).toBe(true);
   });
+  it("emits comment rows after their placed line", async () => {
+    const { cls } = await setup();
+    const record = {
+      id: 7,
+      lnum: 2,
+      content: [],
+      text: "why X?",
+      reply: "because",
+      origin: undefined,
+    };
+    const f = render({
+      ...base,
+      scope: "combined",
+      cls: cls(),
+      collapse: new Map(),
+      comments: () => new Map([[1, [{ record, outdated: false }]]]),
+    });
+    const i = f.rows.findIndex((r) => r.kind === "comment");
+    expect(f.lines[i]).toBe("    💬 why X?");
+    expect(f.lines[i + 1]).toBe("      ↳ because");
+    expect(f.rows[i - 1]).toMatchObject({ kind: "line", li: 1 });
+  });
   it("renders commits with their files", async () => {
     const { cls } = await setup();
     const f = render({

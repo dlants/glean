@@ -14,6 +14,7 @@ import type {
   OwnerFn,
   Scope,
 } from "../session/model.ts";
+import type { PlacedComment } from "./comments.ts";
 import {
   displaySeenSet,
   hunkMarkerRuns,
@@ -65,6 +66,13 @@ export type RowTarget =
   | { kind: "seen-section"; file: FileRef }
   | { kind: "divider"; file: FileRef }
   | { kind: "hunk-header"; file: FileRef; hunk: number; sec: Sec }
+  | {
+      kind: "comment";
+      file: FileRef;
+      hunk: number;
+      li: number;
+      commentId: number;
+    }
   | { kind: "line"; file: FileRef; hunk: number; li: number; sec: Sec }
   | {
       kind: "marker";
@@ -106,6 +114,11 @@ export type RenderInput = {
   isSticky: (path: RepoPath, text: string) => boolean;
   minSeenRun: number;
   ignoreWhitespace: boolean;
+  /** Comments placed per display file, keyed by 0-based flattened line index (see `resolveComments`). */
+  comments?: (
+    ref: FileRef,
+    file: FileEntry,
+  ) => ReadonlyMap<number, readonly PlacedComment[]>;
 };
 
 const sign = (dl: DiffLine) =>
@@ -182,6 +195,31 @@ export function render(input: RenderInput): Frame {
     inSeen: boolean,
   ) => {
     const sec: Sec = inSeen ? "seen" : "unseen";
+    const placed = input.comments?.(ref, file);
+    let base = 0;
+    for (let k = 0; k < hi; k++) base += file.hunks[k]?.lines.length ?? 0;
+    const emitComments = (li: number) => {
+      for (const pc of placed?.get(base + li) ?? []) {
+        const tag = pc.outdated ? " (outdated)" : "";
+        emit(
+          `    💬${tag} ${pc.record.text}`,
+          { kind: "comment", file: ref, hunk: hi, li, commentId: pc.record.id },
+          "GleanComment",
+        );
+        if (pc.record.reply !== undefined)
+          emit(
+            `      ↳ ${pc.record.reply}`,
+            {
+              kind: "comment",
+              file: ref,
+              hunk: hi,
+              li,
+              commentId: pc.record.id,
+            },
+            "GleanCommentReply",
+          );
+      }
+    };
     emit(
       `--- ${hunk.header}`,
       { kind: "hunk-header", file: ref, hunk: hi, sec },
@@ -244,6 +282,7 @@ export function render(input: RenderInput): Frame {
         lineHl(dl),
         sign(dl),
       );
+      emitComments(li);
       if (dl.kind === "del") {
         if (adds.length > 0) flush();
         dels.push({ row, text: dl.text });
