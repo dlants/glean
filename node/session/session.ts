@@ -21,6 +21,7 @@ import {
   type BuildOpts,
   buildModel,
   Classifier,
+  type CommitPatchCache,
   loadWorktreeSeen,
   type ModelData,
   splitLines,
@@ -45,6 +46,7 @@ export type RefreshResult =
 
 export class Session {
   private readonly guard = new GenerationGuard();
+  private readonly patchCache: CommitPatchCache = new Map();
   private readonly poller: Poller;
   private sig: string | undefined;
   private untrackedSig: string | undefined;
@@ -65,7 +67,13 @@ export class Session {
   async refresh(): Promise<RefreshResult> {
     const gen = this.guard.bump();
     const { git, base, target } = this.opts;
-    const built = await buildModel(git, base, target, this.opts.build);
+    const built = await buildModel(
+      git,
+      base,
+      target,
+      this.opts.build,
+      this.patchCache,
+    );
     if (!this.guard.isCurrent(gen)) return { kind: "stale" };
     if (built.kind !== "ok") return built;
     const model = built.value;

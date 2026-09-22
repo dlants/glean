@@ -180,7 +180,8 @@ Lua ↔ node:
   - `Session.applySeen(ids, op)`: committed ids via store ranges; worktree adds move R (`markAdds`/`unmarkAdds`, H via `showMany`, W from disk), worktree dels are head-line range edits; saves touched shards then `reclassify()`. Sticky overrides and the undo stack belong to the 4c reducer. `wtDupLines.test.ts` ports `wt_dup_lines_test` except the legacy (pre-explicit-dels) record case, which the node `Store` doesn't model (legacy worktree data is dropped, see stage 2).
   - `Classifier.dirSeen` takes a scope-tagged file-index list (the commits scope also takes its `ModelCommit`). Deviation: in the combined scope it rolls up `fileSeen` per file rather than Lua's `ids_all_seen` over the target's identities. Lua's "ownership not loaded" case doesn't exist because lineage is eager. Tested in `model.test.ts`.
   - `dirtyCombined.test.ts` ports `dirty_combined_test` at the model level: it drives `Session.applySeen` over file identities instead of row toggles. The header-row toggle case waits for 4c.
-  - Remaining for 4a: the committed-lineage cache across content-only reloads (and the patch cache), and porting the model-level cases of `init_test` and `reload_test`.
+  - Commit patch cache: `buildModel` resolves H first, then reuses a `CommitPatchCache` (per whitespace mode, keyed by H, owned by `Session`) so a content-only reload skips the log walk. `reload.test.ts` checks: no `log` on a work-tree edit, exactly one after a commit. Deviation: the composed lineage is still rebuilt per refresh (cheap relative to git), and the poll's `diff HEAD` is not reused by the rebuild.
+  - Remaining for 4a: porting the model-level cases of `init_test` and the rest of `reload_test` (the idle/untracked cases need the view; the ignore-whitespace cases need render/jump).
 
 ## Gutter and file-buffer marking
 

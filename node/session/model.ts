@@ -47,12 +47,23 @@ export type ModelData = {
 
 export type BuildOpts = { ignoreWhitespace?: boolean; fromRoot?: boolean };
 
+/**
+ * Commit patches keyed by the resolved tip: a reload where only work-tree
+ * content changed reuses them and skips the log walk (port of
+ * `_commit_patch_cache`). One entry per whitespace mode.
+ */
+export type CommitPatchCache = Map<
+  "exact" | "ignore-all-space",
+  { head: Sha; patches: readonly CommitPatch[] }
+>;
+
 /** Every git call of a build runs concurrently; any failure fails the build. */
 export async function buildModel(
   git: Git,
   base: string,
   target: Target,
   opts: BuildOpts = {},
+  cache: CommitPatchCache = new Map(),
 ): Promise<Outcome<ModelData>> {
   const worktree = target.kind === "worktree";
   const commitTarget = target.kind === "worktree" ? "HEAD" : target.ref;
@@ -63,10 +74,22 @@ export async function buildModel(
       : opts.fromRoot
         ? git.diffRefs(base, target.ref, { ignoreWhitespace })
         : git.combinedDiff(base, target.ref, { ignoreWhitespace });
-  const patches = (ignoreWhitespace: boolean) =>
-    opts.fromRoot
+  // Resolved first so the cached patches can be checked against it.
+  const head = await git.revParse(commitTarget);
+  if (head.kind !== "ok") return head;
+  const headSha = head.value;
+  const patches = async (
+    ignoreWhitespace: boolean,
+  ): Promise<Outcome<readonly CommitPatch[]>> => {
+    const key = ignoreWhitespace ? "ignore-all-space" : "exact";
+    const hit = cache.get(key);
+    if (hit?.head === headSha) return { kind: "ok", value: hit.patches };
+    const r = await (opts.fromRoot
       ? git.logPatchesFromRoot(commitTarget, { ignoreWhitespace })
-      : git.logPatches(base, commitTarget, { ignoreWhitespace });
+      : git.logPatches(base, commitTarget, { ignoreWhitespace }));
+    if (r.kind === "ok") cache.set(key, { head: headSha, patches: r.value });
+    return r;
+  };
   const none: Promise<Outcome<FileEntry[]>> = Promise.resolve({
     kind: "ok",
     value: [],
@@ -79,7 +102,6 @@ export async function buildModel(
     exactWt,
     displayWt,
     untracked,
-    head,
   ] = await Promise.all([
     netDiff(ws),
     ws ? netDiff(false) : undefined,
@@ -88,7 +110,6 @@ export async function buildModel(
     worktree ? git.worktreeDiff() : none,
     worktree && ws ? git.worktreeDiff({ ignoreWhitespace: true }) : undefined,
     worktree ? git.untracked() : none,
-    git.revParse(commitTarget),
   ]);
   for (const o of [
     net,
@@ -98,7 +119,6 @@ export async function buildModel(
     exactWt,
     displayWt,
     untracked,
-    head,
   ]) {
     if (o !== undefined && o.kind !== "ok") return o;
   }
@@ -132,7 +152,7 @@ export async function buildModel(
       canonicalFiles,
       lineageCommits: exact,
       lineageWorktreeFiles: [...exactWtFiles, ...untrackedFiles],
-      head: val(head, "" as Sha),
+      head: headSha,
     },
   };
 }
