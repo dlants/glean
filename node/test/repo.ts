@@ -19,6 +19,7 @@ export type TestRepo = {
   root: string;
   run: (args: readonly string[]) => string;
   shas: Sha[];
+  env: NodeJS.ProcessEnv;
 };
 
 const env = {
@@ -35,10 +36,11 @@ const env = {
 
 export function makeRepo(spec: readonly CommitSpec[]): TestRepo {
   const root = mkdtempSync(join(tmpdir(), "glean-repo-"));
+  const repoEnv = { ...env, HOME: root };
   const run = (args: readonly string[]) =>
     execFileSync("git", args, {
       cwd: root,
-      env: { ...env, HOME: root },
+      env: repoEnv,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).replace(/\s+$/, "");
@@ -66,5 +68,5 @@ export function makeRepo(spec: readonly CommitSpec[]): TestRepo {
     }
     shas.push(run(["rev-parse", "HEAD"]) as Sha);
   }
-  return { root, run, shas };
+  return { root, run, shas, env: repoEnv };
 }

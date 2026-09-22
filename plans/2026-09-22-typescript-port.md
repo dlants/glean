@@ -154,6 +154,11 @@ Lua ↔ node:
   - A fake runner covers the git_test cases.
   - During a large refine, an RPC request interleaves (it is answered before the refine finishes).
   - A stale-generation response is dropped.
+- Status: done. Code in `node/git/`.
+  - `git.ts`: `GitRunner`/`GitResult` (`ok | error | timeout`), `spawnRunner(env?)` (pins the diff prefix config, SIGKILLs on timeout, optional stdin), and an all-async `Git` whose fallible methods return `Outcome<T>` (`ok | error`). The Lua sync/async pairs collapsed into one async method each; optional `path`/`ignoreWhitespace` go in a `DiffOpts` object. `join` wasn't ported (`Promise.all` replaces it). `emptyTree` uses `hash-object --stdin` instead of a temp file. `showMany` always uses one `cat-file --batch` process, including under injected runners.
+  - `Poller`: an interval whose `poke()` is a no-op (returns false) while a tick is still in flight.
+  - `scheduler.ts`: `GenerationGuard` (`bump`, `isCurrent`, `settle(gen, promise, apply)` drops stale async results) and `runRefine`, which refines one block per `setImmediate` macrotask and stops once the generation moves on. The refine cache (`_intra_cache`) moves with the renderer in stage 4.
+  - Tests: `git.test.ts` ports every git_test case against real fixture repos (`TestRepo` now exposes `env`), plus timeout, poll and non-overlap cases. `scheduler.test.ts` covers a timer macrotask answered mid-refine (standing in for an RPC request; the real nvim round trip is the stage-4 driver test) and dropping stale results.
 
 ## Model, renderer and actions
 
