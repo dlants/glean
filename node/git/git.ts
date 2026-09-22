@@ -5,10 +5,11 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { type FileEntry, parse } from "../core/diff.ts";
 import type { RepoPath, Sha } from "../core/types.ts";
+import { yieldToLoop } from "./scheduler.ts";
 
 export type GitResult =
   | { kind: "ok"; stdout: string }
@@ -23,9 +24,16 @@ export interface GitRunner {
 
 export type Outcome<T> =
   | { kind: "ok"; value: T }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  | { kind: "timeout"; message: string };
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
+
+/** Untracked files larger than this are listed with a placeholder, not read. */
+export const MAX_UNTRACKED_BYTES = 1_000_000;
+
+/** Commits parsed between event-loop yields in `parseLogPatches`. */
+const LOG_PATCH_YIELD_EVERY = 50;
 
 // Pin diff path-prefix config so paths are always `a/`/`b/` regardless of the
 // user's git config, which the diff parser's prefix stripping assumes.
@@ -82,17 +90,22 @@ export function spawnRunner(env?: NodeJS.ProcessEnv): GitRunner {
 
 export type LogCommit = {
   sha: Sha;
-  shortSha: string;
+  shortSha: ShortSha;
   summary: string;
   parents: Sha[];
 };
+
+export type ShortSha = string & { readonly __brand: "ShortSha" };
 
 export type CommitPatch = { sha: Sha; summary: string; files: FileEntry[] };
 
 export type DiffOpts = { ignoreWhitespace?: boolean; path?: RepoPath };
 
 /** The poll signature plus the text it was computed from, reused by refresh. */
-export type PollResult = { sig: string; head: string; diffText: string };
+export type PollResult = { sig: string; head: Sha; diffText: string };
+
+/** Per-path result of `showMany`: absence at the ref is distinct from failure. */
+export type BlobLookup = { kind: "found"; text: string } | { kind: "missing" };
 
 const LOG_PATCH_ARGS = [
   "log",
@@ -120,15 +133,34 @@ function diffArgs(
   return args;
 }
 
-function parseLogPatches(out: string): CommitPatch[] {
+async function parseLogPatches(out: string): Promise<CommitPatch[]> {
   const patches: CommitPatch[] = [];
-  for (const chunk of out.split("\0").slice(1)) {
-    const m = /^([0-9a-f]+)\t([^\n]*)\n?([\s\S]*)$/.exec(chunk);
-    if (m) {
-      patches.push({ sha: m[1] as Sha, summary: m[2]!, files: parse(m[3]!) });
+  const chunks = out.split("\0").slice(1);
+  for (let i = 0; i < chunks.length; i++) {
+    if (i > 0 && i % LOG_PATCH_YIELD_EVERY === 0) await yieldToLoop();
+    const g = /^(?<sha>[0-9a-f]+)\t(?<summary>[^\n]*)\n?(?<body>[\s\S]*)$/.exec(
+      chunks[i] ?? "",
+    )?.groups;
+    if (
+      g?.sha !== undefined &&
+      g.summary !== undefined &&
+      g.body !== undefined
+    ) {
+      patches.push({
+        sha: g.sha as Sha,
+        summary: g.summary,
+        files: parse(g.body),
+      });
     }
   }
   return patches;
+}
+
+async function mapAsync<A, B>(
+  o: Outcome<A>,
+  f: (a: A) => Promise<B>,
+): Promise<Outcome<B>> {
+  return o.kind === "ok" ? { kind: "ok", value: await f(o.value) } : o;
 }
 
 function map<A, B>(o: Outcome<A>, f: (a: A) => B): Outcome<B> {
@@ -161,17 +193,20 @@ export class Git {
         return { kind: "error", message: r.stderr };
       case "timeout":
         return {
-          kind: "error",
+          kind: "timeout",
           message: `git ${args[0] ?? ""} timed out after ${this.timeoutMs}ms`,
         };
     }
   }
 
-  private async line(args: readonly string[]): Promise<string | undefined> {
-    const r = await this.run(args);
-    if (r.kind !== "ok") return undefined;
-    const v = trimEnd(r.value);
-    return v === "" ? undefined : v;
+  /** A failed git call is `error`/`timeout`; empty output is `ok(undefined)`. */
+  private async line(
+    args: readonly string[],
+  ): Promise<Outcome<string | undefined>> {
+    return map(await this.run(args), (s) => {
+      const v = trimEnd(s);
+      return v === "" ? undefined : v;
+    });
   }
 
   async revParse(ref: string): Promise<Outcome<Sha>> {
@@ -204,11 +239,16 @@ export class Git {
   }
 
   /** Absolute shared git dir: identical across linked worktrees of a repo. */
-  async commonDir(): Promise<string | undefined> {
+  async commonDir(): Promise<Outcome<string>> {
     const out = await this.line(["rev-parse", "--git-common-dir"]);
-    if (out === undefined) return undefined;
-    const abs = isAbsolute(out) ? out : join(this.repoRoot, out);
-    return (await realpath(abs)).replace(/\/$/, "");
+    if (out.kind !== "ok") return out;
+    if (out.value === undefined) {
+      return { kind: "error", message: "empty --git-common-dir" };
+    }
+    const abs = isAbsolute(out.value)
+      ? out.value
+      : join(this.repoRoot, out.value);
+    return { kind: "ok", value: (await realpath(abs)).replace(/\/$/, "") };
   }
 
   /** First-parent history from HEAD, newest first, paged by limit/skip. */
@@ -227,15 +267,23 @@ export class Git {
     return map(await this.run(args), (out) => {
       const commits: LogCommit[] = [];
       for (const raw of out.split("\0").slice(1)) {
-        const m = /^([0-9a-f]+)\t([0-9a-f]+)\t([^\t]*)\t(.*)$/.exec(
-          raw.replace(/\n$/, ""),
-        );
-        if (!m) continue;
+        const g =
+          /^(?<sha>[0-9a-f]+)\t(?<short>[0-9a-f]+)\t(?<parents>[^\t]*)\t(?<summary>.*)$/.exec(
+            raw.replace(/\n$/, ""),
+          )?.groups;
+        if (
+          g?.sha === undefined ||
+          g.short === undefined ||
+          g.parents === undefined ||
+          g.summary === undefined
+        ) {
+          continue;
+        }
         commits.push({
-          sha: m[1] as Sha,
-          shortSha: m[2]!,
-          parents: (m[3]!.match(/[0-9a-f]+/g) ?? []) as Sha[],
-          summary: m[4]!,
+          sha: g.sha as Sha,
+          shortSha: g.short as ShortSha,
+          parents: (g.parents.match(/[0-9a-f]+/g) ?? []) as Sha[],
+          summary: g.summary,
         });
       }
       return commits;
@@ -249,7 +297,7 @@ export class Git {
     opts: { ignoreWhitespace?: boolean } = {},
   ): Promise<Outcome<CommitPatch[]>> {
     const args = diffArgs(LOG_PATCH_ARGS, [`${base}..${target}`], opts);
-    return map(await this.run(args), parseLogPatches);
+    return mapAsync(await this.run(args), parseLogPatches);
   }
 
   /** First-parent patches from the root commit through `target`. */
@@ -258,7 +306,7 @@ export class Git {
     opts: { ignoreWhitespace?: boolean } = {},
   ): Promise<Outcome<CommitPatch[]>> {
     const args = diffArgs(LOG_PATCH_ARGS, ["--root", target], opts);
-    return map(await this.run(args), parseLogPatches);
+    return mapAsync(await this.run(args), parseLogPatches);
   }
 
   /** The object-format-specific empty tree id. */
@@ -315,7 +363,14 @@ export class Git {
       if (p === "") continue;
       let content: string;
       try {
-        content = await readFile(join(this.repoRoot, p), "utf8");
+        const abs = join(this.repoRoot, p);
+        // Reading and splitting a huge generated file would be a large
+        // synchronous chunk of main-thread work; show a placeholder instead.
+        const { size } = await stat(abs);
+        content =
+          size > MAX_UNTRACKED_BYTES
+            ? `[glean: untracked file too large (${size} bytes)]`
+            : await readFile(abs, "utf8");
       } catch {
         continue;
       }
@@ -350,20 +405,24 @@ export class Git {
   }
 
   /** HEAD plus the tracked diff against HEAD; the refresh reuses the text. */
-  async poll(): Promise<PollResult> {
+  async poll(): Promise<Outcome<PollResult>> {
     const [head, diff] = await Promise.all([
       this.run(["rev-parse", "HEAD"]),
       this.run(["diff", "--no-color", "HEAD"]),
     ]);
-    const h = head.kind === "ok" ? trimEnd(head.value) : "";
-    const d = diff.kind === "ok" ? diff.value : "";
-    return { sig: sha256(`${h}\0${d}`), head: h, diffText: d };
+    if (head.kind !== "ok") return head;
+    if (diff.kind !== "ok") return diff;
+    const h = trimEnd(head.value) as Sha;
+    const d = diff.value;
+    return {
+      kind: "ok",
+      value: { sig: sha256(`${h}\0${d}`), head: h, diffText: d },
+    };
   }
 
   /** Signature over the untracked listing (a whole-tree walk: slow tick only). */
-  async untrackedSig(): Promise<string> {
-    const r = await this.run(this.untrackedArgs());
-    return sha256(r.kind === "ok" ? r.value : "");
+  async untrackedSig(): Promise<Outcome<string>> {
+    return map(await this.run(this.untrackedArgs()), sha256);
   }
 
   async fetch(remote: string, refspec: string): Promise<Outcome<true>> {
@@ -376,38 +435,53 @@ export class Git {
 
   /**
    * Contents of many paths at one ref from a single `cat-file --batch`.
-   * Paths absent from the ref are missing from the map.
+   * Every requested path gets an entry; paths absent from the ref are
+   * `missing`. A git failure is an `error`/`timeout` outcome for the whole call.
    */
   async showMany(
     ref: string,
     paths: readonly RepoPath[],
-  ): Promise<Map<RepoPath, string>> {
-    const out = new Map<RepoPath, string>();
-    if (paths.length === 0) return out;
+  ): Promise<Outcome<Map<RepoPath, BlobLookup>>> {
+    const out = new Map<RepoPath, BlobLookup>();
+    if (paths.length === 0) return { kind: "ok", value: out };
     const stdin = `${paths.map((p) => `${ref}:${p}`).join("\n")}\n`;
     const r = await this.runner.run(["cat-file", "--batch"], {
       cwd: this.repoRoot,
       timeoutMs: this.timeoutMs,
       stdin,
     });
-    if (r.kind !== "ok") return out;
+    if (r.kind === "error") return { kind: "error", message: r.stderr };
+    if (r.kind === "timeout") {
+      return {
+        kind: "timeout",
+        message: `git cat-file timed out after ${this.timeoutMs}ms`,
+      };
+    }
     // Walk by byte counts from each `<oid> <type> <size>` header: blobs contain
     // newlines, and `size` is in bytes.
     const body = Buffer.from(r.stdout, "utf8");
     let pos = 0;
     for (const path of paths) {
       const nl = body.indexOf(0x0a, pos);
-      if (nl < 0) break;
+      if (nl < 0) {
+        return { kind: "error", message: "cat-file output truncated" };
+      }
       const header = body.subarray(pos, nl).toString("utf8");
       pos = nl + 1;
       const m = /^[0-9a-f]+ [a-z]+ (\d+)$/.exec(header);
-      if (m) {
-        const size = Number(m[1]);
-        out.set(path, body.subarray(pos, pos + size).toString("utf8"));
-        pos += size + 1;
+      const size = m?.[1];
+      if (size === undefined) {
+        out.set(path, { kind: "missing" });
+        continue;
       }
+      const n = Number(size);
+      out.set(path, {
+        kind: "found",
+        text: body.subarray(pos, pos + n).toString("utf8"),
+      });
+      pos += n + 1;
     }
-    return out;
+    return { kind: "ok", value: out };
   }
 }
 

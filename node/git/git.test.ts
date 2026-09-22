@@ -9,6 +9,7 @@ import {
   Git,
   type GitResult,
   type GitRunner,
+  MAX_UNTRACKED_BYTES,
   type Outcome,
   Poller,
   spawnRunner,
@@ -110,28 +111,53 @@ describe("git against a fixture repo", () => {
   });
 
   it("showMany reads many blobs in one process", async () => {
-    const m = await git.showMany(target, [
-      P("f.txt"),
-      P("missing"),
-      P("g.txt"),
+    const m = ok(
+      await git.showMany(target, [P("f.txt"), P("missing"), P("g.txt")]),
+    );
+    expect(m.get(P("f.txt"))).toEqual({
+      kind: "found",
+      text: "one\nTWO\nTHREE\n",
+    });
+    expect(m.get(P("g.txt"))).toEqual({ kind: "found", text: "gee\n" });
+    expect(m.get(P("missing"))).toEqual({ kind: "missing" });
+  });
+
+  it("showMany walks multi-byte blobs by byte size", async () => {
+    const r = makeRepo([
+      { files: { u: "héllo 🎉\nwörld\n", v: "after\n", w: "last\n" } },
     ]);
-    expect(m.get(P("f.txt"))).toBe("one\nTWO\nTHREE\n");
-    expect(m.get(P("g.txt"))).toBe("gee\n");
-    expect(m.has(P("missing"))).toBe(false);
+    const m = ok(
+      await gitFor(r).showMany(r.shas[0]!, [P("u"), P("v"), P("nope"), P("w")]),
+    );
+    expect(m.get(P("u"))).toEqual({ kind: "found", text: "héllo 🎉\nwörld\n" });
+    expect(m.get(P("v"))).toEqual({ kind: "found", text: "after\n" });
+    expect(m.get(P("nope"))).toEqual({ kind: "missing" });
+    expect(m.get(P("w"))).toEqual({ kind: "found", text: "last\n" });
+  });
+
+  it("untracked skips binary, keeps empty files, placeholders huge ones", async () => {
+    const r = makeRepo([{ files: { a: "a\n" } }]);
+    writeFileSync(join(r.root, "bin"), "a\0b");
+    writeFileSync(join(r.root, "empty"), "");
+    writeFileSync(join(r.root, "huge"), "x".repeat(MAX_UNTRACKED_BYTES + 1));
+    const u = ok(await gitFor(r).untracked());
+    expect(u.map((f) => f.path)).toEqual(["empty", "huge"]);
+    expect(u[0]!.hunks).toEqual([]);
+    expect(u[1]!.hunks[0]!.lines).toHaveLength(1);
   });
 
   it("emptyTree, commonDir", async () => {
     expect(ok(await git.emptyTree())).toBe(
       "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
     );
-    const cd = await git.commonDir();
-    expect(cd?.endsWith(".git")).toBe(true);
+    const cd = ok(await git.commonDir());
+    expect(cd.endsWith(".git")).toBe(true);
     const wt = join(tmpdir(), `glean_wt_${process.pid}_${Date.now()}`);
     repo.run(["worktree", "add", "--detach", wt]);
-    expect(await gitFor(repo, wt).commonDir()).toBe(cd);
+    expect(ok(await gitFor(repo, wt).commonDir())).toBe(cd);
     repo.run(["worktree", "remove", "--force", wt]);
     const other = makeRepo([{ msg: "x", files: { a: "a\n" } }]);
-    expect(await gitFor(other).commonDir()).not.toBe(cd);
+    expect(ok(await gitFor(other).commonDir())).not.toBe(cd);
   });
 
   it("working tree: worktreeDiff, diffToWorktree, untracked, mnemonicPrefix", async () => {
@@ -302,7 +328,11 @@ describe("timeouts and polling", () => {
     };
     const g = new Git({ repoRoot: "/x", runner: hung, timeoutMs: 5 });
     const r = await g.revParse("HEAD");
-    expect(r.kind).toBe("error");
+    expect(r.kind).toBe("timeout");
+    expect((await g.poll()).kind).toBe("timeout");
+    expect((await g.untrackedSig()).kind).toBe("timeout");
+    expect((await g.showMany("HEAD", [P("a")])).kind).toBe("timeout");
+    expect((await g.upstream()).kind).toBe("timeout");
   });
 
   it("spawnRunner kills a process that exceeds its timeout", async () => {
@@ -320,10 +350,10 @@ describe("timeouts and polling", () => {
   it("poll signature changes with the work tree", async () => {
     const repo = makeRepo([{ files: { a: "a\n" } }]);
     const g = gitFor(repo);
-    const before = await g.poll();
+    const before = ok(await g.poll());
     expect(before.head).toBe(repo.shas[0]);
     writeFileSync(join(repo.root, "a"), "b\n");
-    const after = await g.poll();
+    const after = ok(await g.poll());
     expect(after.sig).not.toBe(before.sig);
     expect(after.diffText).toContain("+b");
   });
@@ -345,5 +375,17 @@ describe("timeouts and polling", () => {
     release();
     expect(await first).toBe(true);
     expect(maxRunning).toBe(1);
+  });
+
+  it("Poller keeps polling after a tick rejects", async () => {
+    let fail = true;
+    const p = new Poller(async () => {
+      if (fail) {
+        fail = false;
+        throw new Error("boom");
+      }
+    });
+    await expect(p.poke()).rejects.toThrow("boom");
+    expect(await p.poke()).toBe(true);
   });
 });

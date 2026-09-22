@@ -56,6 +56,9 @@ export async function runRefine<B extends RefineBlock>(
   for (const block of blocks) {
     await yieldToLoop();
     if (!guard.isCurrent(gen)) return "stale";
+    // `refine` bounds its own work per block (MAX_PAIR_CELLS banding,
+    // MAX_BLOCK_ALIGN_CELLS budget, MAX_TOKEN_PRODUCT per pair), so one
+    // macrotask is bounded regardless of block size.
     apply(block, refine(block.dels, block.adds));
   }
   return "done";
