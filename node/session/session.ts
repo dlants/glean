@@ -3,8 +3,18 @@
  * keeps them in step with the repo. Refreshes are generation-guarded so an
  * older build that resolves late is dropped; polls never overlap.
  */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import * as baseline from "../core/baseline.ts";
 import { load as loadIgnore } from "../core/ignore.ts";
-import { Store } from "../core/state.ts";
+import * as ranges from "../core/ranges.ts";
+import { contentHash, Store } from "../core/state.ts";
+import type {
+  HeadLnum,
+  LineId,
+  RepoPath,
+  WorktreeLnum,
+} from "../core/types.ts";
 import { type Git, type Outcome, Poller } from "../git/git.ts";
 import { GenerationGuard } from "../git/scheduler.ts";
 import {
@@ -13,6 +23,7 @@ import {
   Classifier,
   loadWorktreeSeen,
   type ModelData,
+  splitLines,
   type Target,
 } from "./model.ts";
 
@@ -126,6 +137,67 @@ export class Session {
     if (first || !changed) return "unchanged";
     const r = await this.refresh();
     return r.kind === "applied" || r.kind === "stale" ? "refreshed" : "error";
+  }
+
+  /**
+   * Mark or unmark exactly `ids`, persist the touched shards, and reclassify.
+   * Committed ids fold through the store's ranges. A worktree add moves the
+   * path's reviewed baseline R over just that line; a worktree del is a plain
+   * head-line range edit, so a repeated line never depends on a diff picking
+   * the "right" copy.
+   */
+  async applySeen(
+    ids: readonly LineId[],
+    op: "mark" | "unmark",
+  ): Promise<RefreshResult> {
+    const cur = this.current;
+    if (!cur) return this.refresh();
+    const { store } = cur;
+    const touched = new Set<string>();
+    const committed = ids.filter(
+      (id) => id.kind === "committed-add" || id.kind === "committed-del",
+    );
+    if (op === "mark") store.mark(committed);
+    else store.unmark(committed);
+    for (const id of committed)
+      touched.add(id.kind === "committed-add" ? id.sha : id.removerSha);
+    const byPath = new Map<RepoPath, LineId[]>();
+    for (const id of ids) {
+      if (id.kind !== "worktree-add" && id.kind !== "worktree-del") continue;
+      byPath.set(id.path, [...(byPath.get(id.path) ?? []), id]);
+    }
+    if (byPath.size > 0) {
+      const { git } = this.opts;
+      const heads = await git.showMany(cur.model.head, [...byPath.keys()]);
+      if (heads.kind !== "ok") return heads;
+      for (const [path, pathIds] of byPath) {
+        const blob = heads.value.get(path);
+        const head = blob?.kind === "found" ? splitLines(blob.text) : [];
+        const headHash = contentHash(head);
+        const wt = await readFile(join(git.repoRoot, path), "utf8").then(
+          splitLines,
+          () => [],
+        );
+        const rec = store.baseline(path, headHash);
+        let dels: ranges.RangeSet<HeadLnum> = rec?.dels ?? [];
+        const adds: WorktreeLnum[] = [];
+        for (const id of pathIds) {
+          if (id.kind === "worktree-del") {
+            const r: ranges.Range<HeadLnum> = [id.lnum, id.lnum];
+            dels = op === "mark" ? ranges.add(dels, r) : ranges.remove(dels, r);
+          } else if (id.kind === "worktree-add") adds.push(id.lnum);
+        }
+        const reviewed = rec?.lines ?? head;
+        const next =
+          op === "mark"
+            ? baseline.markAdds(reviewed, wt, adds)
+            : baseline.unmarkAdds(head, reviewed, wt, adds);
+        store.setBaseline(path, headHash, next, dels);
+      }
+      touched.add(store.wtShard);
+    }
+    await Promise.all([...touched].map((id) => store.save(id)));
+    return this.reclassify();
   }
 
   startLive(intervalMs: number) {
