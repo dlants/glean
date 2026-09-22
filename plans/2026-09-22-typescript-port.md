@@ -123,7 +123,7 @@ Lua ↔ node:
     - `general-typescript.instructions.md` and `test-coverage.instructions.md`, adapted.
     - `no-main-thread-compute.instructions.md` (new): flags any Lua work beyond dispatch, any synchronous superlinear work on the node main thread, and git calls without a timeout.
 - Tests: a driver test starts nvim, runs `:Glean ping`, and asserts node received it. Killing node leaves nvim usable and removes `:Glean`.
-- Status: done.
+- Status: done (05042d0), reviewed clean.
   - Layout: flat `node/` (`index.ts`, `glean.ts`, `boot.mjs`, `nvim/` with `nvim-node/` copied verbatim and `buffer.ts`/`window.ts`/`extmarks.ts`/`nvim.ts` trimmed of magenta-specific helpers), `node/test/driver.ts` (`withNvim`, `startBackend`, `pollUntil`), `scripts/build.mjs` → `dist/glean.mjs` (gitignored), `tsconfig.json`, `biome.json`, `vitest.config.ts`, `pre-commit`. Commands: `npx tsc -p .`, `npx vitest run`, `npx biome check .`, `npm run bundle`.
   - Deviation: until cutover the Lua implementation still owns `:Glean`, so the bridge lives in `lua/glean/node.lua` and registers `:GleanNode` (the ping test runs `:GleanNode ping`; the crash test asserts `:GleanNode` is removed). Node is started explicitly via `require("glean.node").start()`, not from `setup`. Rename to `:Glean` and wire into `setup` at cutover.
   - `start` sets `env.NVIM = vim.v.servername` (starting a server if needed): an inherited `$NVIM` (nvim run from a `:terminal`, or tests run under another nvim) otherwise attaches node to the wrong instance. magenta has the same latent bug.
