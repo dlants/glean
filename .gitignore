@@ -1,1 +1,4 @@
 doc/tags
+node_modules/
+dist/
+node/test/tmp/

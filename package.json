@@ -1,0 +1,27 @@
+{
+  "name": "glean",
+  "type": "module",
+  "private": true,
+  "description": "a git diff reviewer for neovim",
+  "scripts": {
+    "start": "node --experimental-transform-types node/index.ts",
+    "build": "npm ci && node scripts/build.mjs",
+    "bundle": "node scripts/build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p .",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "setup-precommit": "ln -sf ../../pre-commit .git/hooks/pre-commit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.6",
+    "@types/node": "^22.10.5",
+    "esbuild": "^0.28.0",
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "msgpackr": "^1.11.2",
+    "winston": "^3.17.0"
+  }
+}

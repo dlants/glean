@@ -1,0 +1,58 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.6/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "ignoreUnknown": true,
+    "includes": ["**/*.ts", "**/*.js", "**/*.mjs", "**/*.cjs"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "noVoid": "off",
+        "noBannedTypes": "off"
+      },
+      "correctness": {
+        "noUnusedVariables": {
+          "level": "error",
+          "options": {
+            "ignoreRestSiblings": true
+          }
+        }
+      },
+      "style": {
+        "noCommonJs": "error",
+        "noNamespace": "error",
+        "useThrowOnlyError": "error",
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "error",
+        "useAwait": "off",
+        "noImplicitAnyLet": "off",
+        "noAssignInExpressions": "off",
+        "noControlCharactersInRegex": "off"
+      }
+    },
+    "includes": [
+      "**",
+
+      "!**/node/test/tmp/**",
+      "!node/nvim/nvim-node/cli/**",
+      "!dist/**"
+    ]
+  },
+  "javascript": {
+    "formatter": { "quoteStyle": "double" }
+  },
+  "assist": {
+    "enabled": true,
+    "actions": { "source": { "organizeImports": "on" } }
+  }
+}
