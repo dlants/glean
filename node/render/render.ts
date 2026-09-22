@@ -47,6 +47,9 @@ export type FileRef =
   | { scope: "commits"; commit: number; file: number }
   | { scope: "combined"; file: number };
 
+/** Which section of its file a hunk renders in. */
+export type Sec = "seen" | "unseen";
+
 export type RowTarget =
   | { kind: "blank" }
   | { kind: "mode-header" }
@@ -61,8 +64,8 @@ export type RowTarget =
   | { kind: "file-header"; file: FileRef }
   | { kind: "seen-section"; file: FileRef }
   | { kind: "divider"; file: FileRef }
-  | { kind: "hunk-header"; file: FileRef; hunk: number }
-  | { kind: "line"; file: FileRef; hunk: number; li: number }
+  | { kind: "hunk-header"; file: FileRef; hunk: number; sec: Sec }
+  | { kind: "line"; file: FileRef; hunk: number; li: number; sec: Sec }
   | {
       kind: "marker";
       file: FileRef;
@@ -178,9 +181,10 @@ export function render(input: RenderInput): Frame {
     owner: OwnerFn,
     inSeen: boolean,
   ) => {
+    const sec: Sec = inSeen ? "seen" : "unseen";
     emit(
       `--- ${hunk.header}`,
-      { kind: "hunk-header", file: ref, hunk: hi },
+      { kind: "hunk-header", file: ref, hunk: hi, sec },
       "GleanHunkHeader",
     );
     let runs: MarkerRun[] = [];
@@ -236,7 +240,7 @@ export function render(input: RenderInput): Frame {
       if (!dl) break;
       const row = emit(
         dl.text,
-        { kind: "line", file: ref, hunk: hi, li },
+        { kind: "line", file: ref, hunk: hi, li, sec },
         lineHl(dl),
         sign(dl),
       );
