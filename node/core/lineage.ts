@@ -13,7 +13,7 @@ import type { Layer, PostLnum, PreLnum, RepoPath } from "./types.ts";
 
 export type Origin =
   | { kind: "base"; base: number }
-  | { kind: "commit"; sha: Layer; lnum: number };
+  | { kind: "commit"; sha: Layer; lnum: PostLnum };
 /** `"open"` means "and the rest of the file". */
 export type SegLen = number | "open";
 export type Segment = Origin & { n: SegLen };
@@ -30,7 +30,7 @@ export type Patch = { sha: Layer; files: readonly FileEntry[] };
 function originAt(s: Origin, off: number): Origin {
   return s.kind === "base"
     ? { kind: "base", base: s.base + off }
-    : { kind: "commit", sha: s.sha, lnum: s.lnum + off };
+    : { kind: "commit", sha: s.sha, lnum: (s.lnum + off) as PostLnum };
 }
 
 function slice(s: Origin, off: number, n: SegLen): Segment {
@@ -149,7 +149,7 @@ export function apply(
     for (const b of blocksOf(hunk)) {
       const seg: Segment | undefined =
         b.adds > 0
-          ? { kind: "commit", sha, lnum: b.lnum, n: b.adds }
+          ? { kind: "commit", sha, lnum: b.lnum as PostLnum, n: b.adds }
           : undefined;
       const { segs, displaced } = splice(
         state.segs,

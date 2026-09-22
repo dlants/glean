@@ -150,3 +150,16 @@ describe("align (Myers)", () => {
     }
   });
 });
+
+describe("linediff cap", () => {
+  it("falls back to del-then-add for wholesale rewrites quickly", async () => {
+    const { alignLines } = await import("./linediff.ts");
+    const a = Array.from({ length: 20000 }, (_, i) => `a${i}`);
+    const b = Array.from({ length: 20000 }, (_, i) => `b${i}`);
+    const t = Date.now();
+    const ops = alignLines(a, b);
+    expect(Date.now() - t).toBeLessThan(1000);
+    expect(ops.filter((o) => o.kind === "del").length).toBe(20000);
+    expect(ops[20000]?.kind).toBe("add");
+  });
+});

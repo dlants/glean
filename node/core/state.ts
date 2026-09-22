@@ -15,10 +15,12 @@ import * as ranges from "./ranges.ts";
 import type {
   ContentHash,
   HeadLnum,
+  Layer,
   LineId,
   PostLnum,
   PreLnum,
   RepoPath,
+  Sha,
 } from "./types.ts";
 
 export const COMMENTS_ID = "WORKTREE";
@@ -72,7 +74,7 @@ export type CommentEntry =
   | { kind: "context" | "add"; text: string }
   | { kind: "del"; text: string; oldLnum: number };
 
-export type CommentOrigin = { sha: string; dirty: boolean };
+export type CommentOrigin = { sha: Sha; dirty: boolean };
 
 export type CommentRecord = {
   id: number;
@@ -159,7 +161,7 @@ function parseComment(
     reply: typeof v.reply === "string" ? v.reply : undefined,
     origin:
       isObj(o) && typeof o.sha === "string"
-        ? { sha: o.sha, dirty: o.dirty === true }
+        ? { sha: o.sha as Sha, dirty: o.dirty === true }
         : undefined,
   };
 }
@@ -380,7 +382,7 @@ export class Store {
 
   // ── committed seen ranges
 
-  private file(sha: string, path: RepoPath): CommitFile {
+  private file(sha: Layer, path: RepoPath): CommitFile {
     let c = this.commits.get(sha);
     if (!c) {
       c = { files: new Map() };
@@ -395,38 +397,38 @@ export class Store {
   }
 
   /** Drop an emptied file record so mark+unmark restores identical JSON. */
-  private prune(sha: string, path: RepoPath): void {
+  private prune(sha: Layer, path: RepoPath): void {
     const c = this.commits.get(sha);
     const f = c?.files.get(path);
     if (c && f && f.seen.length === 0 && f.seenDel.length === 0)
       c.files.delete(path);
   }
 
-  seenRanges(sha: string, path: RepoPath): RangeSet<PostLnum> {
+  seenRanges(sha: Layer, path: RepoPath): RangeSet<PostLnum> {
     return this.commits.get(sha)?.files.get(path)?.seen ?? [];
   }
 
-  seenDelRanges(sha: string, path: RepoPath): RangeSet<PreLnum> {
+  seenDelRanges(sha: Layer, path: RepoPath): RangeSet<PreLnum> {
     return this.commits.get(sha)?.files.get(path)?.seenDel ?? [];
   }
 
-  markSeen(sha: string, path: RepoPath, r: ranges.Range<PostLnum>): void {
+  markSeen(sha: Layer, path: RepoPath, r: ranges.Range<PostLnum>): void {
     const f = this.file(sha, path);
     f.seen = ranges.add(f.seen, r);
   }
 
-  unmarkSeen(sha: string, path: RepoPath, r: ranges.Range<PostLnum>): void {
+  unmarkSeen(sha: Layer, path: RepoPath, r: ranges.Range<PostLnum>): void {
     const f = this.file(sha, path);
     f.seen = ranges.remove(f.seen, r);
     this.prune(sha, path);
   }
 
-  markSeenDel(sha: string, path: RepoPath, r: ranges.Range<PreLnum>): void {
+  markSeenDel(sha: Layer, path: RepoPath, r: ranges.Range<PreLnum>): void {
     const f = this.file(sha, path);
     f.seenDel = ranges.add(f.seenDel, r);
   }
 
-  unmarkSeenDel(sha: string, path: RepoPath, r: ranges.Range<PreLnum>): void {
+  unmarkSeenDel(sha: Layer, path: RepoPath, r: ranges.Range<PreLnum>): void {
     const f = this.file(sha, path);
     f.seenDel = ranges.remove(f.seenDel, r);
     this.prune(sha, path);

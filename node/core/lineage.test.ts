@@ -13,7 +13,13 @@ import {
   type Segment,
   splice,
 } from "./lineage.ts";
-import { type Layer, type RepoPath, type Sha, WORKTREE } from "./types.ts";
+import {
+  type Layer,
+  type PostLnum,
+  type RepoPath,
+  type Sha,
+  WORKTREE,
+} from "./types.ts";
 
 const show = (os: readonly Origin[]) =>
   os
@@ -22,7 +28,7 @@ const show = (os: readonly Origin[]) =>
 const seg = (sha: string, lnum: number, n: number): Segment => ({
   kind: "commit",
   sha: sha as Sha,
-  lnum,
+  lnum: lnum as PostLnum,
   n,
 });
 const base5 = (): Segment[] => [

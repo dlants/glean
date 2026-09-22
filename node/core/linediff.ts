@@ -51,6 +51,14 @@ export function alignLines(
   return ops;
 }
 
+/**
+ * Edit distance above which the middle is reported as one del block followed
+ * by one add block. Bounds time to O((N+M)·MAX_EDIT_DISTANCE) and trace memory
+ * to O(MAX_EDIT_DISTANCE²), so wholesale-rewritten files can't stall the loop.
+ */
+export const MAX_EDIT_DISTANCE = 2000;
+const MAX_EDIT_CELLS = 20_000_000;
+
 /** Matched index pairs of a shortest edit script between `a` and `b`. */
 function middleMatches(
   a: readonly string[],
@@ -62,10 +70,16 @@ function middleMatches(
   const max = n + m;
   const offset = max;
   const v = new Int32Array(2 * max + 2);
+  const limit = Math.min(
+    max,
+    MAX_EDIT_DISTANCE,
+    Math.floor(MAX_EDIT_CELLS / max),
+  );
+  // trace[d] holds V[-d..d] before round d (index k + d).
   const trace: Int32Array[] = [];
   let found = false;
-  for (let d = 0; d <= max && !found; d++) {
-    trace.push(v.slice());
+  for (let d = 0; d <= limit && !found; d++) {
+    trace.push(v.slice(offset - d, offset + d + 1));
     for (let k = -d; k <= d; k += 2) {
       let x =
         k === -d || (k !== d && v[offset + k - 1]! < v[offset + k + 1]!)
@@ -83,19 +97,17 @@ function middleMatches(
       }
     }
   }
-  trace.push(v.slice());
-  // Backtrack: trace[d] holds V before round d; the final V is last.
+  if (!found) return [];
+  // Backtrack.
   const out: [number, number][] = [];
   let x = n;
   let y = m;
-  for (let d = trace.length - 2; d >= 0; d--) {
+  for (let d = trace.length - 1; d >= 0; d--) {
     const vd = trace[d]!;
     const k = x - y;
     const prevK =
-      k === -d || (k !== d && vd[offset + k - 1]! < vd[offset + k + 1]!)
-        ? k + 1
-        : k - 1;
-    const prevX = d === 0 ? 0 : vd[offset + prevK]!;
+      k === -d || (k !== d && vd[d + k - 1]! < vd[d + k + 1]!) ? k + 1 : k - 1;
+    const prevX = d === 0 ? 0 : vd[d + prevK]!;
     const prevY = prevX - prevK;
     const startX = d === 0 ? 0 : prevK === k + 1 ? prevX : prevX + 1;
     const startY = startX - k;

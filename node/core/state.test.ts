@@ -78,22 +78,22 @@ describe("Store", () => {
   it("seen and seen_del ranges round-trip", async () => {
     const dir = await tmp();
     const s = new Store(dir);
-    await s.load(["shaA", "shaB"]);
-    s.markSeen("shaA", P("f.txt"), [2, 4] as [PostLnum, PostLnum]);
-    s.markSeen("shaA", P("f.txt"), [10, 10] as [PostLnum, PostLnum]);
-    s.markSeenDel("shaA", P("f.txt"), [7, 9] as [PreLnum, PreLnum]);
-    await s.save("shaA");
+    await s.load(["shaA" as Sha, "shaB" as Sha]);
+    s.markSeen("shaA" as Sha, P("f.txt"), [2, 4] as [PostLnum, PostLnum]);
+    s.markSeen("shaA" as Sha, P("f.txt"), [10, 10] as [PostLnum, PostLnum]);
+    s.markSeenDel("shaA" as Sha, P("f.txt"), [7, 9] as [PreLnum, PreLnum]);
+    await s.save("shaA" as Sha);
     const s2 = new Store(dir);
-    await s2.load(["shaA", "shaB"]);
-    expect(str(s2.seenRanges("shaA", P("f.txt")))).toBe("2-4,10-10");
-    expect(str(s2.seenDelRanges("shaA", P("f.txt")))).toBe("7-9");
-    expect(str(s2.seenRanges("shaB", P("f.txt")))).toBe("");
+    await s2.load(["shaA" as Sha, "shaB" as Sha]);
+    expect(str(s2.seenRanges("shaA" as Sha, P("f.txt")))).toBe("2-4,10-10");
+    expect(str(s2.seenDelRanges("shaA" as Sha, P("f.txt")))).toBe("7-9");
+    expect(str(s2.seenRanges("shaB" as Sha, P("f.txt")))).toBe("");
   });
 
   it("mark then unmark restores identical JSON", async () => {
     const s = new Store(await tmp());
-    const empty = JSON.stringify(s.serialize("shaA"));
-    const sha = "shaA" as Sha;
+    const empty = JSON.stringify(s.serialize("shaA" as Sha));
+    const sha = "shaA" as Sha as Sha;
     const ids: LineId[] = [
       { kind: "committed-add", sha, path: P("f.txt"), lnum: 2 as PostLnum },
       { kind: "committed-add", sha, path: P("f.txt"), lnum: 3 as PostLnum },
@@ -108,13 +108,13 @@ describe("Store", () => {
     expect(s.allSeen(ids)).toBe(true);
     s.unmark(ids);
     expect(s.isSeen(ids[0]!)).toBe(false);
-    expect(JSON.stringify(s.serialize("shaA"))).toBe(empty);
+    expect(JSON.stringify(s.serialize("shaA" as Sha))).toBe(empty);
   });
 
   it("content-addressed comments round-trip and load outside the review's shas", async () => {
     const dir = await tmp();
     const s = new Store(dir);
-    await s.load(["shaA"]);
+    await s.load(["shaA" as Sha]);
     const single: CommentEntry[] = [{ kind: "add", text: "two" }];
     s.addCommentRecord(P("f.txt"), {
       lnum: 3,
@@ -135,7 +135,7 @@ describe("Store", () => {
     });
     await s.save(COMMENTS_ID);
     const s2 = new Store(dir);
-    await s2.load(["shaA", "shaB"]);
+    await s2.load(["shaA" as Sha, "shaB" as Sha]);
     const list = s2.commentsFor(P("f.txt"));
     expect(list.map((c) => c.text)).toEqual(["single", "multi"]);
     expect(list[1]!.content[1]!.text).toBe("b");
@@ -156,7 +156,7 @@ describe("Store", () => {
       ],
       text: "mixed",
       reply: undefined,
-      origin: { sha: "abc123", dirty: true },
+      origin: { sha: "abc123" as Sha, dirty: true },
     });
     await s2.save(COMMENTS_ID);
     const s3 = new Store(dir);
@@ -350,8 +350,8 @@ describe("Store", () => {
     const dir = await tmp();
     await writeFile(join(dir, "shaA.json"), "{not json");
     const s = new Store(dir);
-    await s.load(["shaA"]);
-    expect(s.seenRanges("shaA", P("f.txt"))).toEqual([]);
+    await s.load(["shaA" as Sha]);
+    expect(s.seenRanges("shaA" as Sha, P("f.txt"))).toEqual([]);
   });
 });
 
@@ -371,10 +371,10 @@ describe("shards written by the Lua implementation", () => {
     const dir = await tmp();
     await cp(fixtures, dir, { recursive: true });
     const s = new Store(dir, "WORKTREE/feature/x");
-    await s.load(["aaaa"]);
-    expect(str(s.seenRanges("aaaa", P("f.txt")))).toBe("2-4,10-10");
-    expect(str(s.seenDelRanges("aaaa", P("f.txt")))).toBe("7-9");
-    expect(str(s.seenRanges("aaaa", P("g.txt")))).toBe("1-1");
+    await s.load(["aaaa" as Sha]);
+    expect(str(s.seenRanges("aaaa" as Sha, P("f.txt")))).toBe("2-4,10-10");
+    expect(str(s.seenDelRanges("aaaa" as Sha, P("f.txt")))).toBe("7-9");
+    expect(str(s.seenRanges("aaaa" as Sha, P("g.txt")))).toBe("1-1");
     const hb = contentHash(["a", "b", "c"]);
     expect(s.baseline(P("w.txt"), hb)).toEqual({
       head: hb,
@@ -408,7 +408,7 @@ describe("shards written by the Lua implementation", () => {
     const dir = await tmp();
     await cp(fixtures, dir, { recursive: true });
     const s = new Store(dir, "WORKTREE/feature/x");
-    await s.load(["aaaa"]);
+    await s.load(["aaaa" as Sha]);
     const before = JSON.parse(await readFile(s.shardPath(s.wtShard), "utf8"));
     await s.save(s.wtShard);
     expect(JSON.parse(await readFile(s.shardPath(s.wtShard), "utf8"))).toEqual({
