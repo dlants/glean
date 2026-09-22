@@ -182,6 +182,7 @@ Lua ↔ node:
   - `dirtyCombined.test.ts` ports `dirty_combined_test` at the model level: it drives `Session.applySeen` over file identities instead of row toggles. The header-row toggle case waits for 4c.
   - Commit patch cache: `buildModel` resolves H first, then reuses a `CommitPatchCache` (per whitespace mode, keyed by H, owned by `Session`) so a content-only reload skips the log walk. `reload.test.ts` checks: no `log` on a work-tree edit, exactly one after a commit. Deviation: the composed lineage is still rebuilt per refresh (cheap relative to git), and the poll's `diff HEAD` is not reused by the rebuild.
   - Remaining for 4a: porting the model-level cases of `init_test` and the rest of `reload_test` (the idle/untracked cases need the view; the ignore-whitespace cases need render/jump).
+- 4b progress (partial): `node/render/markers.ts` + `markers.test.ts` port `hunk_marker_runs` (`hunkMarkerRuns`, 0-based indices), `display_seen_map` (`displaySeenSet`) and `marker_key`/`cmarker_key` (one `markerKey(scope, …)` returning a branded `MarkerKey`); all `marker_test` cases pass. Deviation: only add lines contribute marker lnum bounds, because node dels carry a `newLnum` slot that Lua's test fixtures lacked.
 
 ## Gutter and file-buffer marking
 
