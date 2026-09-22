@@ -6,6 +6,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as baseline from "../core/baseline.ts";
+import type { FileEntry } from "../core/diff.ts";
 import { load as loadIgnore } from "../core/ignore.ts";
 import * as ranges from "../core/ranges.ts";
 import { contentHash, Store } from "../core/state.ts";
@@ -18,7 +19,8 @@ import type {
 import { type Git, type Outcome, Poller } from "../git/git.ts";
 import { GenerationGuard } from "../git/scheduler.ts";
 import type { SeenPlan, Sticky } from "../render/actions.ts";
-import type { CollapseKey, CollapseState } from "../render/render.ts";
+import { type PlacedComment, resolveComments } from "../render/comments.ts";
+import type { CollapseKey, CollapseState, FileRef } from "../render/render.ts";
 import {
   type BuildOpts,
   buildModel,
@@ -77,6 +79,26 @@ export class Session {
     });
   }
 
+  /**
+   * The `RenderInput.comments` hook: comments are content-addressed per path,
+   * so every display file resolves against the canonical file of that path.
+   */
+  commentsHook(): (
+    ref: FileRef,
+    file: FileEntry,
+  ) => ReadonlyMap<number, readonly PlacedComment[]> {
+    const snap = this.current;
+    const empty = new Map<number, PlacedComment[]>();
+    if (!snap) return () => empty;
+    return (_ref, file) => {
+      const records = snap.store.commentsFor(file.path);
+      if (records.length === 0) return empty;
+      const canonical = snap.model.canonicalFiles.find(
+        (f) => f.path === file.path,
+      );
+      return resolveComments(file, canonical, records);
+    };
+  }
   get worktree(): boolean {
     return this.opts.target.kind === "worktree";
   }
