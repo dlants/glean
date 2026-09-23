@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { GenerationGuard, runRefine, yieldToLoop } from "./scheduler.ts";
+import {
+  GenerationGuard,
+  RefineCache,
+  runRefine,
+  yieldToLoop,
+} from "./scheduler.ts";
 
 const words = (i: number, salt: string) =>
   Array.from({ length: 40 }, (_, k) => `w${(i * 7 + k) % 97}${salt}`).join(" ");
@@ -74,5 +79,18 @@ describe("GenerationGuard.settle", () => {
     ).toBe("applied");
     await yieldToLoop();
     expect(seen).toEqual(["new"]);
+  });
+});
+
+describe("RefineCache", () => {
+  it("reuses a refinement for identical block text and evicts past its bound", () => {
+    const cache = new RefineCache(2);
+    const a = { dels: ["let x = 1"], adds: ["let x = 2"] };
+    const first = cache.refine(a);
+    expect(cache.refine({ dels: [...a.dels], adds: [...a.adds] })).toBe(first);
+    cache.refine({ dels: ["b"], adds: ["c"] });
+    cache.refine({ dels: ["d"], adds: ["e"] });
+    expect(cache.size).toBe(2);
+    expect(cache.refine(a)).not.toBe(first);
   });
 });

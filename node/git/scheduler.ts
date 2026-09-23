@@ -43,6 +43,38 @@ export class GenerationGuard {
 export type RefineBlock = { dels: readonly string[]; adds: readonly string[] };
 
 /**
+ * Content-addressed refinement cache: a block's del/add texts fully determine
+ * its refinement, so an unchanged hunk is refined once across re-renders and
+ * reloads. Bounded (oldest-first eviction) so a long session can't grow it
+ * without limit.
+ */
+export class RefineCache {
+  private entries = new Map<string, Refinement[]>();
+  constructor(private readonly maxEntries = 5000) {}
+
+  static key(block: RefineBlock): string {
+    return `${block.dels.join("\n")}\0\0${block.adds.join("\n")}`;
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  refine(block: RefineBlock): Refinement[] {
+    const key = RefineCache.key(block);
+    const hit = this.entries.get(key);
+    if (hit) return hit;
+    const refined = refine(block.dels, block.adds);
+    this.entries.set(key, refined);
+    if (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (!oldest.done) this.entries.delete(oldest.value);
+    }
+    return refined;
+  }
+}
+
+/**
  * Refine `blocks` one per macrotask under `gen`. Stops as soon as the
  * generation moves on; each block's result is applied immediately so the view
  * upgrades progressively.
@@ -52,6 +84,7 @@ export async function runRefine<B extends RefineBlock>(
   gen: Generation,
   blocks: readonly B[],
   apply: (block: B, refined: Refinement[]) => void,
+  cache?: RefineCache,
 ): Promise<"done" | "stale"> {
   for (const block of blocks) {
     await yieldToLoop();
@@ -59,7 +92,7 @@ export async function runRefine<B extends RefineBlock>(
     // `refine` bounds its own work per block (MAX_PAIR_CELLS banding,
     // MAX_BLOCK_ALIGN_CELLS budget, MAX_TOKEN_PRODUCT per pair), so one
     // macrotask is bounded regardless of block size.
-    apply(block, refine(block.dels, block.adds));
+    apply(block, cache ? cache.refine(block) : refine(block.dels, block.adds));
   }
   return "done";
 }
