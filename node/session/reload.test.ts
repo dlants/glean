@@ -124,4 +124,32 @@ describe("reload", () => {
       newLnum: 4,
     });
   });
+  it("W switches projection with a per-mode history cache and clears undo", async () => {
+    const repo = makeRepo([
+      { files: { "w.txt": "a\nb\n" } },
+      { files: { "w.txt": "a\n  b\n" } },
+      { files: { "w.txt": "a\n  b\nc\n" } },
+    ]);
+    const { s, calls } = traced(repo);
+    await s.refresh();
+    const ignored = (a: string[]) => a.includes("--ignore-all-space");
+    const logs = () => calls.filter((a) => a[0] === "log");
+    const plan = { op: "mark" as const, ids: [], sticky: [], clear: [] };
+    await s.perform({ kind: "seen", plan });
+    calls.length = 0;
+    expect((await s.setIgnoreWhitespace(true)).kind).toBe("applied");
+    expect(s.undoDepth).toEqual({ undo: 0, redo: 0 });
+    expect(logs().filter((a) => !ignored(a))).toHaveLength(0);
+    expect(logs().filter(ignored)).toHaveLength(1);
+    // The whitespace-only commit has no display files; exact lineage keeps it.
+    expect(s.current?.model.commits[0]?.files).toHaveLength(0);
+    expect(s.current?.model.commits.at(-1)?.sha).toBe("WORKTREE");
+    calls.length = 0;
+    await s.setIgnoreWhitespace(false);
+    await s.setIgnoreWhitespace(true);
+    expect(logs()).toHaveLength(0);
+    expect(
+      s.current?.model.commits.filter((c) => c.sha === "WORKTREE"),
+    ).toHaveLength(1);
+  });
 });

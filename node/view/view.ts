@@ -6,12 +6,19 @@
 
 import { join } from "node:path";
 import type { Layer, LineId, PostLnum, RepoPath } from "../core/types.ts";
-import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
+import {
+  type Generation,
+  GenerationGuard,
+  RefineCache,
+  runRefine,
+} from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
   collapseTarget,
   nextUnseenHunk,
   planToggleSeen,
+  planUnmarkAll,
+  planUnmarkHunk,
   planVisualMark,
   resolveFile,
   rowOfHunk,
@@ -35,6 +42,7 @@ import {
   keys,
   render,
 } from "../render/render.ts";
+import { computeAncestry, computePinned } from "../render/sticky.ts";
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
 import { openDiffsplit, openJump } from "./jump.ts";
@@ -80,9 +88,16 @@ export type Action =
   | { kind: "delete-comments"; srow: number; erow: number }
   | { kind: "undo" }
   | { kind: "redo" }
+  | { kind: "unmark-hunk"; row: number }
+  | { kind: "unmark-all" }
+  | { kind: "toggle-whitespace"; row: number }
+  /** Cursor moved / scrolled / window layout changed: repaint the cursor decor. */
+  | { kind: "cursor" }
+  | { kind: "sticky-close" }
   | { kind: "visibility"; visible: boolean }
-  /** The review buffer was wiped; handled by the registry, not the view. */
-  | { kind: "gone" };
+  /** Registry-level (not the view): the buffer was wiped, or `:e` hard reset. */
+  | { kind: "gone" }
+  | { kind: "reset"; row: number | undefined };
 
 export function parseAction(v: unknown): Action | undefined {
   if (typeof v !== "object" || v === null) return undefined;
@@ -92,6 +107,8 @@ export function parseAction(v: unknown): Action | undefined {
     case "toggle-seen":
     case "toggle-scope":
     case "toggle-fold":
+    case "unmark-hunk":
+    case "toggle-whitespace":
     case "diffsplit": {
       const row = num("row");
       return row === undefined ? undefined : { kind: o.kind, row };
@@ -111,12 +128,17 @@ export function parseAction(v: unknown): Action | undefined {
         ? undefined
         : { kind: "jump", row, col };
     }
+    case "reset":
+      return { kind: "reset", row: num("row") };
     case "visibility":
       return typeof o.visible === "boolean"
         ? { kind: "visibility", visible: o.visible }
         : undefined;
     case "undo":
     case "redo":
+    case "unmark-all":
+    case "cursor":
+    case "sticky-close":
     case "gone":
       return { kind: o.kind };
     default:
@@ -169,7 +191,38 @@ export function frameRowKeys(frame: Frame): string[] {
   return frame.lines.map((l, i) => `${l}\u0000${hl[i]}`);
 }
 
-export type ViewOpts = { minSeenRun?: number; ignoreWhitespace?: boolean };
+export type ViewOpts = {
+  minSeenRun?: number;
+  hunkIndent?: number;
+  hunkIndentDelayMs?: number;
+};
+/** Where the review is displayed, as read by `glean.node.cursor_info`. */
+type CursorInfo = {
+  win: number;
+  row: number;
+  top: number;
+  width: number;
+  textoff: number;
+};
+function parseCursorInfo(v: unknown): CursorInfo | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  const n = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
+  const win = n("win");
+  const row = n("row");
+  const top = n("top");
+  const width = n("width");
+  const textoff = n("textoff");
+  if (
+    win === undefined ||
+    row === undefined ||
+    top === undefined ||
+    width === undefined ||
+    textoff === undefined
+  )
+    return undefined;
+  return { win, row, top, width, textoff };
+}
 export class ReviewView {
   private shown: string[] = [];
   frame: Frame | undefined;
@@ -219,6 +272,11 @@ export class ReviewView {
     this.nsIntra = await this.nvim.call("nvim_create_namespace", [
       "glean-review-intra",
     ]);
+    const ns = (name: string) =>
+      this.nvim.call("nvim_create_namespace", [name]) as Promise<number>;
+    this.nsCursor = await ns("glean-review-cursor");
+    this.nsIndent = await ns("glean-review-cursor-indent");
+    this.nsSticky = await ns("glean-review-sticky");
   }
 
   private build(summary: readonly SummaryGroup[]): Frame | undefined {
@@ -230,7 +288,7 @@ export class ReviewView {
       collapse: this.session.collapse,
       isSticky: (p, t) => snap.store.isSticky(p, t),
       minSeenRun: this.opts.minSeenRun ?? 5,
-      ignoreWhitespace: this.opts.ignoreWhitespace ?? false,
+      ignoreWhitespace: this.session.ignoreWhitespace,
       comments: this.session.commentsHook(),
       summary,
     });
@@ -313,6 +371,7 @@ export class ReviewView {
       await this.nvim.call("nvim_call_atomic", [
         calls.slice(i, i + MAX_BATCH_CALLS),
       ]);
+    void this.decorate().catch(() => undefined);
     if (!this.intraGuard.isCurrent(gen)) return;
     await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsIntra, 0, -1]);
     this.intraDone = runRefine(
@@ -535,10 +594,266 @@ export class ReviewView {
     const dest = next === undefined ? undefined : rowOfHunk(frame, next);
     await this.setCursor(dest ?? Math.min(row, frame.rows.length - 1));
   }
+  private nsCursor = 0;
+  private nsIndent = 0;
+  private nsSticky = 0;
+  private stickyWin: number | undefined;
+  private stickyBuf: number | undefined;
+  /** Last painted float state; an unchanged topline/width/frame skips the work. */
+  private stickyKey: { top: number; width: number; frame: Frame } | undefined;
+  private hunkKey: { lo: number; hi: number; frame: Frame } | undefined;
+  private readonly indentGuard = new GenerationGuard();
+  private decorChain: Promise<unknown> = Promise.resolve();
+  /** Serialized so a burst of CursorMoved never interleaves float/sign writes. */
+  private decorate(): Promise<void> {
+    const next = this.decorChain.then(() => this.paintDecor());
+    this.decorChain = next.catch(() => undefined);
+    return next;
+  }
+  private async paintDecor() {
+    if (this.suspended) return;
+    const info = parseCursorInfo(
+      await this.nvim.call("nvim_exec_lua", [
+        `return require("glean.node").cursor_info(...)`,
+        [this.bufnr],
+      ]),
+    );
+    const frame = this.frame;
+    if (!info || !frame) {
+      await this.closeSticky();
+      return;
+    }
+    await this.paintHunk(frame, info.row);
+    await this.paintSticky(frame, info);
+  }
+  /**
+   * The active hunk: a gutter bar (or the row's +/- in its diff colour) on
+   * every row, and after `hunkIndentDelayMs` its body shifted right by
+   * `hunkIndent` columns of inline virtual text (display-only).
+   */
+  private async paintHunk(frame: Frame, row: number) {
+    const r = hunkRange(frame, row);
+    const k = this.hunkKey;
+    if (r && k && k.lo === r.lo && k.hi === r.hi && k.frame === frame) return;
+    if (!r && !k) return;
+    this.hunkKey = r && { lo: r.lo, hi: r.hi, frame };
+    const gen = this.indentGuard.bump();
+    const b = this.bufnr;
+    await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsCursor, 0, -1]);
+    await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsIndent, 0, -1]);
+    if (!r) return;
+    const signs = new Map<number, "+" | "-">();
+    for (const h of frame.highlights)
+      if (
+        h.kind === "line" &&
+        (h.sign === "+" || h.sign === "-") &&
+        h.row >= r.lo &&
+        h.row <= r.hi
+      )
+        signs.set(h.row, h.sign);
+    const calls: unknown[] = [];
+    for (let row = r.lo; row <= r.hi; row++) {
+      const s = signs.get(row);
+      calls.push([
+        "nvim_buf_set_extmark",
+        [
+          b,
+          this.nsCursor,
+          row,
+          0,
+          {
+            sign_text: s ?? "▌",
+            sign_hl_group:
+              s === "+"
+                ? "GleanAddText"
+                : s === "-"
+                  ? "GleanDelText"
+                  : "GleanCurrentHunk",
+            priority: 100,
+          },
+        ],
+      ]);
+    }
+    await this.nvim.call("nvim_call_atomic", [calls]);
+    const indent = Math.max(0, this.opts.hunkIndent ?? 2);
+    if (indent === 0) return;
+    const delay = Math.max(0, this.opts.hunkIndentDelayMs ?? 50);
+    const apply = () => {
+      this.indentDone = this.decorChain.then(() =>
+        this.paintIndent(frame, r, indent, gen),
+      );
+    };
+    if (delay === 0) apply();
+    else setTimeout(apply, delay);
+  }
+  /** Resolves once the latest scheduled hunk indent landed (or was dropped). */
+  indentDone: Promise<unknown> = Promise.resolve();
+  private async paintIndent(
+    frame: Frame,
+    r: { lo: number; hi: number },
+    indent: number,
+    gen: Generation,
+  ) {
+    if (!this.indentGuard.isCurrent(gen) || this.frame !== frame) return;
+    const b = this.bufnr;
+    const body: unknown[] = [];
+    for (let row = r.lo; row <= r.hi; row++) {
+      if (frame.rows[row]?.kind === "hunk-header") continue;
+      body.push([
+        "nvim_buf_set_extmark",
+        [
+          b,
+          this.nsIndent,
+          row,
+          0,
+          {
+            virt_text: [[" ".repeat(indent), "Normal"]],
+            virt_text_pos: "inline",
+            priority: 4200,
+          },
+        ],
+      ]);
+    }
+    await this.nvim.call("nvim_call_atomic", [body]);
+  }
+  /**
+   * Pin the enclosing headers of the topline in a non-focusable float over the
+   * review window, as treesitter-context does. One float and one buffer are
+   * reused; later updates only reposition.
+   */
+  private async paintSticky(frame: Frame, info: CursorInfo) {
+    const k = this.stickyKey;
+    if (
+      k &&
+      k.top === info.top &&
+      k.width === info.width &&
+      k.frame === frame &&
+      this.stickyWin !== undefined
+    )
+      return;
+    this.stickyKey = { top: info.top, width: info.width, frame };
+    const pinned = computePinned(computeAncestry(frame.rows), info.top);
+    if (pinned.length === 0) {
+      await this.closeSticky();
+      return;
+    }
+    if (this.stickyBuf === undefined || !(await this.bufValid(this.stickyBuf)))
+      this.stickyBuf = (await this.nvim.call("nvim_create_buf", [
+        false,
+        true,
+      ])) as number;
+    const sbuf = this.stickyBuf;
+    const lineHl = new Map<number, string>();
+    for (const h of frame.highlights)
+      if (h.kind === "line" && !lineHl.has(h.row)) lineHl.set(h.row, h.hl);
+    const calls: unknown[] = [
+      [
+        "nvim_buf_set_lines",
+        [sbuf, 0, -1, false, pinned.map((r) => frame.lines[r] ?? "")],
+      ],
+      ["nvim_buf_clear_namespace", [sbuf, this.nsSticky, 0, -1]],
+    ];
+    pinned.forEach((row, i) => {
+      const hl = lineHl.get(row);
+      if (hl)
+        calls.push([
+          "nvim_buf_set_extmark",
+          [
+            sbuf,
+            this.nsSticky,
+            i,
+            0,
+            { end_row: i + 1, end_col: 0, hl_group: hl, hl_eol: true },
+          ],
+        ]);
+    });
+    await this.nvim.call("nvim_call_atomic", [calls]);
+    const cfg = {
+      relative: "win",
+      win: info.win,
+      anchor: "NW",
+      row: 0,
+      col: info.textoff,
+      width: Math.max(1, info.width - info.textoff),
+      height: pinned.length,
+      focusable: false,
+      style: "minimal",
+      zindex: 50,
+    };
+    const cur = this.stickyWin;
+    const valid =
+      cur !== undefined &&
+      ((await this.nvim.call("nvim_win_is_valid", [cur])) as boolean);
+    if (valid) await this.nvim.call("nvim_win_set_config", [cur, cfg]);
+    else {
+      this.stickyWin = (await this.nvim.call("nvim_open_win", [
+        sbuf,
+        false,
+        { ...cfg, noautocmd: true },
+      ])) as number;
+      await this.nvim.call("nvim_set_option_value", [
+        "wrap",
+        false,
+        { win: this.stickyWin },
+      ]);
+    }
+  }
+  private async bufValid(b: number): Promise<boolean> {
+    return (await this.nvim.call("nvim_buf_is_valid", [b])) as boolean;
+  }
+  /** The sticky float's window, if open (for tests and teardown). */
+  get stickyWindow(): number | undefined {
+    return this.stickyWin;
+  }
+  async closeSticky() {
+    this.stickyKey = undefined;
+    const w = this.stickyWin;
+    this.stickyWin = undefined;
+    if (w !== undefined)
+      await this.nvim.call("nvim_exec_lua", [
+        `pcall(vim.api.nvim_win_close, ..., true)`,
+        [w],
+      ]);
+  }
+  /** Tear down every window-scoped artifact (reset, close). */
+  async detach() {
+    this.suspend();
+    this.indentGuard.bump();
+    await this.closeSticky();
+  }
+  /**
+   * `W`: flip the whitespace projection and put the cursor back on the same
+   * semantic line (rows are not comparable across projections).
+   */
+  private async toggleWhitespace(row: number) {
+    const snap = this.session.current;
+    const anchor = snap && cursorAnchor(snap.cls, this.frame?.rows[row]);
+    const r = await this.session.setIgnoreWhitespace(
+      !this.session.ignoreWhitespace,
+    );
+    if (r.kind !== "applied") return;
+    await this.redraw();
+    const next = this.frame;
+    const cls = this.session.current?.cls;
+    const dest = anchor && next && cls && restoreAnchor(cls, next, anchor);
+    if (dest !== undefined) await this.setCursor(dest);
+  }
   async dispatch(a: Action) {
     if (a.kind === "visibility") {
       if (a.visible) await this.resume();
-      else this.suspend();
+      else {
+        this.suspend();
+        await this.closeSticky();
+      }
+      return;
+    }
+    if (a.kind === "sticky-close") {
+      await this.decorChain;
+      await this.closeSticky();
+      return;
+    }
+    if (a.kind === "cursor") {
+      await this.decorate();
       return;
     }
     const snap = this.session.current;
@@ -551,6 +866,24 @@ export class ReviewView {
         if (plan) await this.markAndAdvance(plan, a.row);
         return;
       }
+      case "unmark-hunk": {
+        const t = frame.rows[a.row];
+        const plan = t && planUnmarkHunk(snap.cls, this.scope, t);
+        if (!plan) return;
+        await this.session.perform({ kind: "seen", plan, cursor: a.row });
+        await this.redraw();
+        return;
+      }
+      case "unmark-all": {
+        const plan = planUnmarkAll(snap.cls, this.scope);
+        if (!plan) return;
+        await this.session.perform({ kind: "seen", plan });
+        await this.redraw();
+        return;
+      }
+      case "toggle-whitespace":
+        await this.toggleWhitespace(a.row);
+        return;
       case "visual-mark": {
         const plan = planVisualMark(
           snap.cls,
@@ -610,7 +943,7 @@ export class ReviewView {
           this.session.git,
           await this.win(),
           ctx,
-          this.opts.ignoreWhitespace ?? false,
+          this.session.ignoreWhitespace,
           isStale,
         );
         return;

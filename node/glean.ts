@@ -7,7 +7,7 @@ import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
-import { Session } from "./session/session.ts";
+import { Session, type SessionOpts } from "./session/session.ts";
 import {
   clampPage,
   isPrArg,
@@ -30,7 +30,12 @@ import {
   spawnGhRunner,
   TargetError,
 } from "./targets.ts";
-import { parseAction, parseQuery, ReviewView } from "./view/view.ts";
+import {
+  parseAction,
+  parseQuery,
+  ReviewView,
+  type ViewOpts,
+} from "./view/view.ts";
 
 export const GLEAN_COMMAND = "gleanCommand";
 export const GLEAN_ACTION = "gleanAction";
@@ -46,6 +51,8 @@ type Current = {
   bufnr: number;
   view: ReviewView;
   review: LiveReview;
+  sessionOpts: SessionOpts;
+  viewOpts: ViewOpts;
 };
 let current: Current | undefined;
 const reviews: LiveReview[] = [];
@@ -265,17 +272,26 @@ async function repoContext(nvim: Nvim, path: string | undefined) {
 
 const OPEN_CONFIG_LUA = `return { vim.fn.getcwd(), vim.fn.stdpath("data"), vim.g.glean_state_dir or vim.NIL, vim.g.glean_min_seen_run or vim.NIL, vim.g.glean_ignore_whitespace == true }`;
 
-type OpenContext = OpenConfig & { git: Git; defaultBase: string };
+type OpenContext = OpenConfig & {
+  git: Git;
+  defaultBase: string;
+  hunkIndent: number;
+  hunkIndentDelayMs: number;
+};
 /** Like the Lua `resolve_repo_root`: the repo of cwd when the current buffer
  * lives under it (or is not a file), else the repo of the buffer's dir. */
 async function openContext(nvim: Nvim): Promise<OpenContext> {
   const cfg = parseOpenConfig(
     await nvim.call("nvim_exec_lua", [OPEN_CONFIG_LUA, []]),
   );
-  const [bufName, defaultBase] = (await nvim.call("nvim_exec_lua", [
-    `return { vim.api.nvim_buf_get_name(0), require("glean").config.default_base }`,
-    [],
-  ])) as [string, unknown];
+  const [bufName, defaultBase, hunkIndent, hunkIndentDelay] = (await nvim.call(
+    "nvim_exec_lua",
+    [
+      `local c = require("glean").config
+return { vim.api.nvim_buf_get_name(0), c.default_base, c.hunk_indent, c.hunk_indent_delay_ms }`,
+      [],
+    ],
+  )) as [string, unknown, unknown, unknown];
   const cwd = cfg.root;
   const bufDir =
     bufName === "" || /^\w+:\/\//.test(bufName) ? cwd : dirname(bufName);
@@ -296,6 +312,9 @@ async function openContext(nvim: Nvim): Promise<OpenContext> {
     root,
     git: new Git({ repoRoot: root, runner: spawnRunner() }),
     defaultBase: typeof defaultBase === "string" ? defaultBase : "main",
+    hunkIndent: typeof hunkIndent === "number" ? hunkIndent : 2,
+    hunkIndentDelayMs:
+      typeof hunkIndentDelay === "number" ? hunkIndentDelay : 50,
   };
 }
 
@@ -312,10 +331,10 @@ async function closeCurrent(nvim: Nvim, opts: { keepBuf: boolean }) {
   if (!slot) return;
   current = undefined;
   reviews.length = 0;
-  slot.review.session.stop();
-  slot.view.suspend();
+  slot.view.session.stop();
+  await slot.view.detach();
   views.delete(slot.bufnr);
-  if (liveSession === slot.review.session) liveSession = undefined;
+  if (liveSession === slot.view.session) liveSession = undefined;
   await gutter?.refreshAll();
   if (!opts.keepBuf)
     await nvim.call("nvim_exec_lua", [
@@ -368,7 +387,7 @@ require("glean.node").show_buffer(buf)`,
       );
     base = empty.value;
   }
-  const session = new Session({
+  const sessionOpts: SessionOpts = {
     git,
     base,
     target: spec.target,
@@ -378,36 +397,91 @@ require("glean.node").show_buffer(buf)`,
       ignoreWhitespace: ctx.ignoreWs,
       fromRoot: spec.base.kind === "root",
     },
-  });
+  };
   const id = `g${nextReviewId++}`;
   const title = reviewTitle(root, id, spec, base);
   const bufnr = (await nvim.call("nvim_exec_lua", [
     `return require("glean.node").open_review_buffer(...)`,
     [title],
   ])) as number;
-  const view = new ReviewView(nvim, bufnr, session, {
+  const viewOpts: ViewOpts = {
     minSeenRun: ctx.minSeenRun ?? 5,
-    ignoreWhitespace: ctx.ignoreWs,
-  });
-  await view.init();
-  views.set(bufnr, view);
+    hunkIndent: ctx.hunkIndent,
+    hunkIndentDelayMs: ctx.hunkIndentDelayMs,
+  };
+  const session = new Session(sessionOpts);
+  const view = new ReviewView(nvim, bufnr, session, viewOpts);
   const review: LiveReview = {
     id,
     session,
     base,
     target: spec.target.kind === "worktree" ? "worktree" : spec.target.ref,
     title,
-    scope: () => view.scope,
-    frame: () => view.frame,
+    scope: () => current?.view.scope ?? "combined",
+    frame: () => current?.view.frame,
   };
   reviews.push(review);
-  current = { key, bufnr, view, review };
+  current = { key, bufnr, view, review, sessionOpts, viewOpts };
+  await startView(current);
+}
+
+/** Wire a slot's session and view up and paint the first model. */
+async function startView(slot: Current) {
+  const { view, review } = slot;
+  const session = view.session;
+  await view.init();
+  views.set(slot.bufnr, view);
+  review.session = session;
   liveSession = session;
   session.subscribe(() => {
     if (liveSession === session) void gutter?.refreshAll();
   });
   await session.refresh();
   session.startLive(1000);
+}
+
+/**
+ * `:e` in the review: a hard reset. Tear the session down and rebuild it from
+ * the options it was opened with in the same (blanked) buffer, keeping its id
+ * and cursor row, so a wedged render or stale extmarks recover in place.
+ */
+async function resetCurrent(
+  nvim: Nvim,
+  bufnr: number,
+  row: number | undefined,
+) {
+  const slot = current;
+  if (!slot || slot.bufnr !== bufnr) return;
+  slot.view.session.stop();
+  await slot.view.detach();
+  await nvim.call("nvim_exec_lua", [
+    `local buf = ...
+for _, ns in pairs(vim.api.nvim_get_namespaces()) do
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+end
+vim.bo[buf].modifiable = true
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
+vim.bo[buf].modifiable = false`,
+    [bufnr],
+  ]);
+  const view = new ReviewView(
+    nvim,
+    bufnr,
+    new Session(slot.sessionOpts),
+    slot.viewOpts,
+  );
+  slot.view = view;
+  await startView(slot);
+  await view.redraw();
+  if (row !== undefined)
+    await nvim.call("nvim_exec_lua", [
+      `local buf, row = ...
+local win = vim.fn.bufwinid(buf)
+if win ~= -1 then
+  pcall(vim.api.nvim_win_set_cursor, win, { math.min(row + 1, vim.api.nvim_buf_line_count(buf)), 0 })
+end`,
+      [bufnr, row],
+    ]);
 }
 
 /**
@@ -713,6 +787,10 @@ export async function startGlean(nvim: Nvim): Promise<void> {
       const bufnr = args[0];
       const action = parseAction(args[1]);
       if (typeof bufnr !== "number" || !action) return;
+      if (action.kind === "reset") {
+        await resetCurrent(nvim, bufnr, action.row);
+        return;
+      }
       if (action.kind === "gone") {
         if (current?.bufnr === bufnr)
           await closeCurrent(nvim, { keepBuf: true });

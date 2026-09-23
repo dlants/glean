@@ -7,6 +7,9 @@ M.config = {
   -- Seen runs shorter than this inside a partially-seen hunk render unseen.
   min_seen_run = 5,
   gutter = { enabled = true, suppress = "auto" },
+  -- Columns the active hunk's body shifts right, after a short delay.
+  hunk_indent = 2,
+  hunk_indent_delay_ms = 50,
 }
 local function fg_only(src)
   local hl = vim.api.nvim_get_hl(0, { name = src, link = false })

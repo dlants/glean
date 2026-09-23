@@ -474,3 +474,138 @@ describe("navigation and jump (driver)", () => {
     });
   });
 });
+
+describe("seen extras and whitespace (driver)", () => {
+  const setup = async (nvim: Nvim, root: string) => {
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-ws-"));
+    await luaEval(
+      nvim,
+      `(function() vim.cmd.cd(${JSON.stringify(root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+    );
+    await startBackend(nvim);
+  };
+  const lines = (nvim: Nvim) =>
+    luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+  const floats = (nvim: Nvim) =>
+    luaEval<string[][]>(
+      nvim,
+      `vim.tbl_map(function(w) return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false) end, vim.tbl_filter(function(w) return vim.api.nvim_win_get_config(w).relative ~= "" end, vim.api.nvim_list_wins()))`,
+    );
+  it("the sticky float follows the topline and closes when the review is hidden", async () => {
+    const base = Array.from({ length: 80 }, (_, i) => `line${i + 1}`);
+    const edited = base.map((l, i) => (i >= 9 && i < 70 ? `${l}_Z` : l));
+    const repo = makeRepo([
+      { files: { "s.txt": `${base.join("\n")}\n` } },
+      { msg: "tall", files: { "s.txt": `${edited.join("\n")}\n` } },
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      await nvim.call("nvim_command", [`Glean ${repo.shas[0]} HEAD`]);
+      const body = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.includes("line40_Z") ? l : undefined;
+      });
+      const hunk = body.findIndex((l) => l.includes("@@"));
+      const fileRow = body.findIndex((l) => l.includes("s.txt"));
+      await luaEval(nvim, `(function() vim.wo.scrolloff = 0 end)()`);
+      await nvim.call("nvim_win_set_height", [0, 10]);
+      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_input", ["j"]);
+      await pollUntil(async () =>
+        (await floats(nvim)).length === 0 ? true : undefined,
+      );
+      // Scroll the hunk's headers out of view: summary, file and hunk pin.
+      const scrollTo = async (top: number) =>
+        luaEval(
+          nvim,
+          `(function() vim.fn.winrestview({ topline = ${top}, lnum = ${top} }) end)()`,
+        );
+      await scrollTo(hunk + 31);
+      const f1 = await pollUntil(async () => {
+        const f = await floats(nvim);
+        return f.length === 1 ? f[0] : undefined;
+      });
+      expect(f1).toEqual([body[0], body[fileRow], body[hunk]]);
+      // The active hunk carries the gutter bar and, after the delay, the indent.
+      const marks = await pollUntil(async () => {
+        const m = await luaEval<number>(
+          nvim,
+          `#vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace("glean-review-cursor-indent"), 0, -1, {})`,
+        );
+        return m > 0 ? m : undefined;
+      });
+      expect(marks).toBeGreaterThan(60);
+      // Back at the top the float closes.
+      await scrollTo(1);
+      await pollUntil(async () =>
+        (await floats(nvim)).length === 0 ? true : undefined,
+      );
+      await scrollTo(hunk + 31);
+      await pollUntil(async () =>
+        (await floats(nvim)).length === 1 ? true : undefined,
+      );
+      // Hiding the review (another buffer in its window) closes it.
+      await nvim.call("nvim_command", ["enew"]);
+      await pollUntil(async () =>
+        (await floats(nvim)).length === 0 ? true : undefined,
+      );
+    });
+  });
+  it("W round-trips the whitespace projection keeping the cursor; U unmarks all; :e resets in place", async () => {
+    const repo = makeRepo([
+      { files: { "w.txt": "a\nb\n1\n2\n3\n4\n5\n6\n7\n8\nd\n" } },
+      {
+        msg: "ws",
+        files: { "w.txt": "a\n  b\n1\n2\n3\n4\n5\n6\n7\n8\nD\n" },
+      },
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      await nvim.call("nvim_command", [`Glean ${repo.shas[0]} HEAD`]);
+      const body = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.includes("D") ? l : undefined;
+      });
+      expect(body).toContain("  b");
+      const buf = await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()");
+      await nvim.call("nvim_win_set_cursor", [0, [body.indexOf("D") + 1, 0]]);
+      await nvim.call("nvim_input", ["W"]);
+      const ignored = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l[0]?.includes("ignore-whitespace") ? l : undefined;
+      });
+      expect(ignored).not.toContain("  b");
+      const cur = () =>
+        luaEval<string>(nvim, "vim.api.nvim_get_current_line()");
+      await pollUntil(async () => ((await cur()) === "D" ? true : undefined));
+      await nvim.call("nvim_input", ["W"]);
+      await pollUntil(async () => {
+        const l = await lines(nvim);
+        return !l[0]?.includes("ignore-whitespace") && l.includes("  b")
+          ? true
+          : undefined;
+      });
+      await pollUntil(async () => ((await cur()) === "D" ? true : undefined));
+      // m on the file header marks everything; U brings it all back.
+      const header = (await lines(nvim)).findIndex((l) => l.includes("w.txt"));
+      await nvim.call("nvim_win_set_cursor", [0, [header + 1, 0]]);
+      await nvim.call("nvim_input", ["m"]);
+      await pollUntil(async () =>
+        (await lines(nvim)).includes("D") ? undefined : true,
+      );
+      await nvim.call("nvim_input", ["U"]);
+      await pollUntil(async () =>
+        (await lines(nvim)).includes("D") ? true : undefined,
+      );
+      // :e rebuilds in the same buffer (nvim has already blanked it and
+      // parked the cursor on row 1 when BufReadCmd fires, as in Lua).
+      await nvim.call("nvim_command", ["edit"]);
+      await pollUntil(async () =>
+        (await lines(nvim)).includes("D") ? true : undefined,
+      );
+      expect(
+        await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()"),
+      ).toBe(buf);
+    });
+  });
+});

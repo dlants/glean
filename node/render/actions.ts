@@ -133,16 +133,7 @@ export function planToggleSeen(
         ? "unmark"
         : "mark";
   const changed = ids.filter((id) => (op === "mark") !== cls.idSeen(id));
-  const sticky: Sticky[] =
-    scope === "combined"
-      ? parts.flatMap(({ path, hunks }) =>
-          hunks.flatMap((h) =>
-            h.lines
-              .filter((dl) => dl.kind !== "context")
-              .map((dl) => ({ path, text: dl.text })),
-          ),
-        )
-      : [];
+  const sticky = stickyOf(scope, parts);
   if (changed.length === 0 && sticky.length === 0) return undefined;
   const clear: CollapseKey[] = [];
   if (op === "mark") {
@@ -169,6 +160,73 @@ export function planToggleSeen(
   return { op, ids: changed, sticky, clear: [...new Set(clear)] };
 }
 
+/**
+ * One content-addressed sticky record per changed line, combined scope only
+ * (demotion is combined-only, so stickiness is meaningless elsewhere).
+ */
+function stickyOf(
+  scope: Scope,
+  parts: readonly { path: RepoPath; hunks: readonly Hunk[] }[],
+): Sticky[] {
+  if (scope !== "combined") return [];
+  return parts.flatMap(({ path, hunks }) =>
+    hunks.flatMap((h) =>
+      h.lines
+        .filter((dl) => dl.kind !== "context")
+        .map((dl) => ({ path, text: dl.text })),
+    ),
+  );
+}
+
+function unmarkPlan(
+  cls: Classifier,
+  scope: Scope,
+  targets: readonly RowTarget[],
+): SeenPlan | undefined {
+  const ids = targets
+    .flatMap((t) => targetIds(cls, t))
+    .filter((id) => cls.idSeen(id));
+  const sticky = targets.flatMap((t) => stickyOf(scope, targetHunks(cls, t)));
+  if (ids.length === 0 && sticky.length === 0) return undefined;
+  return { op: "unmark", ids, sticky, clear: [] };
+}
+
+/** `M`: unmark every seen line of the hunk under any of its rows. */
+export function planUnmarkHunk(
+  cls: Classifier,
+  scope: Scope,
+  t: RowTarget,
+): SeenPlan | undefined {
+  if (
+    t.kind !== "hunk-header" &&
+    t.kind !== "line" &&
+    t.kind !== "marker" &&
+    t.kind !== "marker-line" &&
+    t.kind !== "comment"
+  )
+    return undefined;
+  return unmarkPlan(cls, scope, [
+    { kind: "hunk-header", file: t.file, hunk: t.hunk, sec: "seen" },
+  ]);
+}
+
+/** `U`: unmark every seen line of the whole review. */
+export function planUnmarkAll(
+  cls: Classifier,
+  scope: Scope,
+): SeenPlan | undefined {
+  const targets: RowTarget[] =
+    scope === "commits"
+      ? cls.model.commits.map((_, commit) => ({
+          kind: "commit-header",
+          commit,
+        }))
+      : cls.model.files.map((_, file) => ({
+          kind: "file-header",
+          file: { scope: "combined", file },
+        }));
+  return unmarkPlan(cls, scope, targets);
+}
 /**
  * Visual `m`: mark every selected changed line not already seen. Stickiness is
  * recorded for all selected changed lines (combined scope), even already-seen

@@ -9,6 +9,8 @@ import { makeRepo } from "../test/repo.ts";
 import {
   nextUnseenHunk,
   planToggleSeen,
+  planUnmarkAll,
+  planUnmarkHunk,
   planVisualMark,
   reviveDest,
   rowOfHunk,
@@ -39,6 +41,59 @@ async function setup() {
 const base = { isSticky: () => false, minSeenRun: 5, ignoreWhitespace: false };
 
 describe("actions", () => {
+  it("M unmarks the whole hunk from any of its rows; U unmarks everything", async () => {
+    const { store, cls } = await setup();
+    const f = render({
+      ...base,
+      scope: "commits",
+      cls: cls(),
+      collapse: new Map(),
+    });
+    const lines = f.rows.flatMap((t, i) => (t.kind === "line" ? [i] : []));
+    const [first, second] = lines.filter((i) => f.lines[i] !== undefined);
+    if (first === undefined || second === undefined) throw new Error("rows");
+    // Partially mark the first hunk (its del), then M from its add row.
+    const part = planVisualMark(cls(), "commits", f.rows, first, first);
+    store.mark(part?.ids ?? []);
+    const g = render({
+      ...base,
+      scope: "commits",
+      cls: cls(),
+      collapse: new Map(),
+    });
+    const addRow = g.rows.findIndex(
+      (t) => t.kind === "line" && g.lines[g.rows.indexOf(t)]?.includes("X"),
+    );
+    const m = planUnmarkHunk(
+      cls(),
+      "commits",
+      g.rows[addRow] ?? { kind: "blank" },
+    );
+    expect(m?.op).toBe("unmark");
+    expect(m?.ids).toEqual(part?.ids);
+    expect(m?.sticky).toEqual([]);
+    expect(
+      planUnmarkHunk(cls(), "commits", { kind: "mode-header" }),
+    ).toBeUndefined();
+    store.unmark(m?.ids ?? []);
+    expect(planUnmarkAll(cls(), "commits")).toBeUndefined();
+    // Mark both hunks; U in the combined scope unmarks all four ids and drops stickies.
+    const all = planToggleSeen(
+      cls(),
+      "combined",
+      render({
+        ...base,
+        scope: "combined",
+        cls: cls(),
+        collapse: new Map(),
+      }).rows.find((t) => t.kind === "file-header") ?? { kind: "blank" },
+    );
+    store.mark(all?.ids ?? []);
+    const u = planUnmarkAll(cls(), "combined");
+    expect(u?.op).toBe("unmark");
+    expect(u?.ids).toHaveLength(4);
+    expect(u?.sticky).toHaveLength(4);
+  });
   it("m on an unseen hunk marks it and lands on the next unseen hunk", async () => {
     const { store, cls } = await setup();
     const c = cls();

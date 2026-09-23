@@ -281,6 +281,23 @@ local function move_to_hunk_row(row, last)
     vim.fn.winrestview(view)
   end
 end
+-- The window displaying `buf` (the current one when it does) and its view
+-- geometry, or nil when the review is on no window.
+M.cursor_info = function(buf)
+  local win = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(win) ~= buf then
+    win = vim.fn.bufwinid(buf)
+    if win == -1 then return nil end
+  end
+  local info = vim.fn.getwininfo(win)[1] or {}
+  return {
+    win = win,
+    row = vim.api.nvim_win_get_cursor(win)[1] - 1,
+    top = vim.fn.line("w0", win) - 1,
+    width = vim.api.nvim_win_get_width(win),
+    textoff = info.textoff or 0,
+  }
+end
 local function query(buf, q)
   local ok, res = pcall(vim.rpcrequest, M.channel_id, "gleanQuery", buf, q)
   if ok and res ~= vim.NIL then return res end
@@ -378,6 +395,9 @@ M.open_review_buffer = function(title)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
     action(buf, { kind = "delete-comments", srow = s, erow = e })
   end)
+  map("n", "M", function() action(buf, { kind = "unmark-hunk", row = row0() }) end)
+  map("n", "U", function() action(buf, { kind = "unmark-all" }) end)
+  map("n", "W", function() action(buf, { kind = "toggle-whitespace", row = row0() }) end)
   map("n", "u", function() action(buf, { kind = "undo" }) end)
   map("n", "<C-r>", function() action(buf, { kind = "redo" }) end)
   map("x", "m", function()
@@ -389,7 +409,40 @@ M.open_review_buffer = function(title)
   local group = vim.api.nvim_create_augroup("GleanReview" .. buf, { clear = true })
   vim.api.nvim_create_autocmd("BufWinEnter", {
     group = group, buffer = buf,
-    callback = function() action(buf, { kind = "visibility", visible = true }) end,
+    callback = function()
+      -- Keep the cursor clear of the sticky float (at most 4 pinned rows); the
+      -- sign column carries the active hunk's bar.
+      local win = vim.api.nvim_get_current_win()
+      vim.wo[win].scrolloff = 4
+      vim.wo[win].signcolumn = "yes:1"
+      action(buf, { kind = "visibility", visible = true })
+    end,
+  })
+  -- The float pins to the topline, so scrolling drives it as well as the
+  -- cursor; node re-reads the window state (`cursor_info`) on each event.
+  local function decor() action(buf, { kind = "cursor" }) end
+  vim.api.nvim_create_autocmd({ "CursorMoved", "WinScrolled" }, {
+    group = group, buffer = buf, callback = decor,
+  })
+  vim.api.nvim_create_autocmd({ "WinLeave", "BufLeave" }, {
+    group = group, buffer = buf,
+    callback = function() action(buf, { kind = "sticky-close" }) end,
+  })
+  -- A buffer swapped into the review window (or the review shown again, or a
+  -- resize) fires none of this buffer's events: re-evaluate on every switch;
+  -- node closes the float when no window shows the review.
+  vim.api.nvim_create_autocmd({ "BufWinEnter", "BufEnter", "WinEnter", "WinResized", "VimResized" }, {
+    group = group, callback = decor,
+  })
+  -- `:e` is a hard reset: node rebuilds the session in this buffer.
+  vim.api.nvim_create_autocmd("BufReadCmd", {
+    group = group, buffer = buf,
+    -- The row is read here: `:e` moves the cursor once the autocmd returns.
+    callback = function()
+      local win = vim.fn.bufwinid(buf)
+      local row = win ~= -1 and vim.api.nvim_win_get_cursor(win)[1] - 1 or nil
+      action(buf, { kind = "reset", row = row })
+    end,
   })
   vim.api.nvim_create_autocmd("BufWinLeave", {
     group = group, buffer = buf,
@@ -397,7 +450,10 @@ M.open_review_buffer = function(title)
   })
   vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
     group = group, buffer = buf,
-    callback = function() action(buf, { kind = "gone" }) end,
+    callback = function()
+      action(buf, { kind = "gone" })
+      vim.schedule(function() pcall(vim.api.nvim_del_augroup_by_id, group) end)
+    end,
   })
   M.show_buffer(buf)
   return buf

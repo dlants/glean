@@ -99,7 +99,7 @@ export class Session {
     for (const fn of this.listeners) fn(s);
   }
 
-  constructor(private readonly opts: SessionOpts) {
+  constructor(private opts: SessionOpts) {
     this.poller = new Poller(async () => {
       await this.poll({ untracked: true });
     });
@@ -161,8 +161,28 @@ export class Session {
       commented.flatMap((p) => pairs.get(p) ?? []),
       (p) => store.commentsFor(p),
       (p) => wt.get(p),
-      this.opts.build?.ignoreWhitespace ?? false,
+      this.ignoreWhitespace,
     );
+  }
+  get ignoreWhitespace(): boolean {
+    return this.opts.build?.ignoreWhitespace ?? false;
+  }
+  /**
+   * `W`: switch the display projection. Undo entries name rows of the old
+   * projection, so both stacks are dropped. Commit patches stay cached per
+   * mode, so switching back does not re-walk history.
+   */
+  async setIgnoreWhitespace(enabled: boolean): Promise<RefreshResult> {
+    this.opts = {
+      ...this.opts,
+      build: { ...this.opts.build, ignoreWhitespace: enabled },
+    };
+    this.undoStack = [];
+    this.redoStack = [];
+    return this.refresh();
+  }
+  get undoDepth(): { undo: number; redo: number } {
+    return { undo: this.undoStack.length, redo: this.redoStack.length };
   }
   get git(): Git {
     return this.opts.git;
