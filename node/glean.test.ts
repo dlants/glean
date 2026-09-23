@@ -293,3 +293,105 @@ describe("review targets (driver)", () => {
     });
   });
 });
+describe("navigation and jump (driver)", () => {
+  const setup = async (nvim: Nvim, root: string) => {
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-jump-"));
+    await luaEval(
+      nvim,
+      `(function() vim.cmd.cd(${JSON.stringify(root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+    );
+    await startBackend(nvim);
+  };
+  const lines = (nvim: Nvim) =>
+    luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+  const cursor = (nvim: Nvim) =>
+    luaEval<number>(nvim, "vim.api.nvim_win_get_cursor(0)[1]");
+  it("<CR> jumps into the file, :Glean jump comes back, ]c/D work", async () => {
+    const repo = makeRepo([
+      { files: { "j.txt": "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n" } },
+      { msg: "c1", files: { "j.txt": "a\nB\nc\nd\ne\nf\ng\nh\ni\nJ\nk\n" } },
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      await nvim.call("nvim_command", [`Glean ${repo.shas[0]} HEAD`]);
+      const body = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.includes("J") ? l : undefined;
+      });
+      const reviewBuf = await luaEval<number>(
+        nvim,
+        "vim.api.nvim_get_current_buf()",
+      );
+      // ]c from the top lands on the first hunk header, again on the second.
+      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_input", ["]c"]);
+      const h1 = await pollUntil(async () => {
+        const r = await cursor(nvim);
+        return r > 1 ? r : undefined;
+      });
+      expect(body[h1 - 1]).toMatch(/@@/);
+      await nvim.call("nvim_input", ["]c"]);
+      const h2 = await pollUntil(async () => {
+        const r = await cursor(nvim);
+        return r > h1 ? r : undefined;
+      });
+      expect(body[h2 - 1]).toMatch(/@@/);
+      await nvim.call("nvim_input", ["[c"]);
+      await pollUntil(async () =>
+        (await cursor(nvim)) === h1 ? true : undefined,
+      );
+      // `vac` selects the whole hunk linewise.
+      await nvim.call("nvim_input", ["vac"]);
+      const sel = await pollUntil(async () => {
+        const s = await luaEval<[string, number, number]>(
+          nvim,
+          `{ vim.api.nvim_get_mode().mode, vim.fn.line("v"), vim.fn.line(".") }`,
+        );
+        return s[0] === "V" ? s : undefined;
+      });
+      expect(sel[1]).toBe(h1);
+      expect(sel[2]).toBeGreaterThan(h1);
+      await nvim.call("nvim_input", ["<Esc>"]);
+      // <CR> on the +J row opens the live file at line 10.
+      const jRow = body.indexOf("J") + 1;
+      await nvim.call("nvim_win_set_cursor", [0, [jRow, 0]]);
+      await nvim.call("nvim_input", ["<CR>"]);
+      const name = await pollUntil(async () => {
+        const n = await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)");
+        return n.endsWith("/j.txt") ? n : undefined;
+      });
+      expect(name.startsWith("glean://")).toBe(false);
+      expect(await cursor(nvim)).toBe(10);
+      // Back from the file: the review cursor lands on the same line.
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_command", ["Glean jump"]);
+      await pollUntil(async () =>
+        (await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()")) ===
+        reviewBuf
+          ? true
+          : undefined,
+      );
+      const row = await pollUntil(async () => {
+        const r = await cursor(nvim);
+        return body[r - 1] === "b" ? r : undefined;
+      });
+      // The deleted `b` sits at post-image slot 2 and precedes `B`: as in Lua,
+      // the earlier of the tied rows wins.
+      expect(body[row]).toBe("B");
+      // D opens base on the left, the live file on the right, both in diff mode.
+      await nvim.call("nvim_input", ["D"]);
+      const wins = await pollUntil(async () => {
+        const w = await luaEval<{ name: string; diff: boolean; col: number }[]>(
+          nvim,
+          `vim.tbl_map(function(w) return { name = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)), diff = vim.wo[w].diff, col = vim.api.nvim_win_get_position(w)[2] } end, vim.api.nvim_tabpage_list_wins(0))`,
+        );
+        return w.filter((x) => x.diff).length === 2 ? w : undefined;
+      });
+      const diffs = wins.filter((w) => w.diff).sort((a, b) => a.col - b.col);
+      expect(diffs[0]?.name).toContain(
+        `glean://${repo.shas[0]?.slice(0, 8)}:j.txt`,
+      );
+      expect(diffs[1]?.name.endsWith("/j.txt")).toBe(true);
+    });
+  });
+});

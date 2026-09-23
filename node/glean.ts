@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { Api, ApiError, type LiveReview } from "./api/api.ts";
 import { COMMENTS_ID, Store } from "./core/state.ts";
+import type { RepoPath } from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
@@ -28,13 +30,14 @@ import {
   spawnGhRunner,
   TargetError,
 } from "./targets.ts";
-import { parseAction, ReviewView } from "./view/view.ts";
+import { parseAction, parseQuery, ReviewView } from "./view/view.ts";
 
 export const GLEAN_COMMAND = "gleanCommand";
 export const GLEAN_ACTION = "gleanAction";
 export const GLEAN_GUTTER = "gleanGutter";
 export const GLEAN_API = "gleanApi";
 export const GLEAN_LIST = "gleanList";
+export const GLEAN_QUERY = "gleanQuery";
 const views = new Map<number, ReviewView>();
 /** There is one review at a time (as in the Lua version): opening another
  * range discards it; reopening the same `reviewKey` reuses buffer and id. */
@@ -60,6 +63,7 @@ type Command =
   | { kind: "log" }
   | { kind: "prs" }
   | { kind: "toggle-gutter" }
+  | { kind: "jump" }
   | { kind: "unknown"; args: readonly string[] };
 
 /** The `:Glean` forms of the Lua `M.setup` dispatch. `open [base]` is kept as
@@ -79,6 +83,7 @@ export function parseCommand(args: unknown): Command {
     case "log":
     case "prs":
     case "toggle-gutter":
+    case "jump":
       return { kind: a0 };
     case "open":
       return { kind: "dirty", base: a1 };
@@ -88,7 +93,6 @@ export function parseCommand(args: unknown): Command {
       return { kind: "branch", branch: a1 };
     case "comment":
     case "comments":
-    case "jump":
       return { kind: "unknown", args };
   }
   if (args.length === 1)
@@ -148,6 +152,9 @@ vim.notify("glean: pong")`,
       return;
     case "prs":
       await openPrs(nvim, (await openContext(nvim)).root);
+      return;
+    case "jump":
+      await jumpToReview(nvim);
       return;
     case "toggle-gutter": {
       if (!gutter) return;
@@ -401,6 +408,61 @@ require("glean.node").show_buffer(buf)`,
   });
   await session.refresh();
   session.startLive(1000);
+}
+
+/**
+ * `:Glean jump`: show the review at the current file buffer's line, opening
+ * the default (dirty) review when there is none.
+ */
+async function jumpToReview(nvim: Nvim) {
+  const [name, lnum] = (await nvim.call("nvim_exec_lua", [
+    `return { vim.api.nvim_buf_get_name(0), vim.api.nvim_win_get_cursor(0)[1] }`,
+    [],
+  ])) as [string, number];
+  let root: string;
+  if (current) root = current.review.session.repoRoot;
+  else {
+    const ctx = await openContext(nvim);
+    root = ctx.root;
+  }
+  const path = await repoRelative(root, name);
+  if (path === undefined)
+    throw new TargetError("glean: not a file in the repo");
+  if (current) {
+    await nvim.call("nvim_exec_lua", [
+      `require("glean.node").show_buffer(...)`,
+      [current.bufnr],
+    ]);
+  } else {
+    const ctx = await openContext(nvim);
+    await openReview(
+      nvim,
+      ctx,
+      await openDirtySpec(ctx.git, ctx.defaultBase, undefined),
+    );
+  }
+  const row = await current?.view.gotoSource(path as RepoPath, lnum);
+  if (row === undefined)
+    await nvim.call("nvim_notify", [
+      `glean: ${path} is not part of the review`,
+      3,
+      {},
+    ]);
+}
+/** `name` relative to `root` (symlinks resolved), undefined outside it. */
+async function repoRelative(root: string, name: string) {
+  if (name === "" || /^\w+:\/\//.test(name)) return undefined;
+  const real = async (p: string) => {
+    try {
+      return await realpath(p);
+    } catch {
+      return p;
+    }
+  };
+  const rel = relative(await real(root), await real(name));
+  return rel === "" || rel.startsWith("..") || isAbsolute(rel)
+    ? undefined
+    : rel;
 }
 
 // ---- log and PR list buffers ----
@@ -659,6 +721,11 @@ export async function startGlean(nvim: Nvim): Promise<void> {
     } catch (err) {
       nvim.logger.error(err instanceof Error ? err : String(err));
     }
+  });
+  nvim.onRequest(GLEAN_QUERY, async (args: unknown[]) => {
+    const q = parseQuery(args[1]);
+    const view = typeof args[0] === "number" ? views.get(args[0]) : undefined;
+    return (q && view?.query(q)) ?? null;
   });
   const api = new Api({
     reviews: () => reviews,

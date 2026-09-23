@@ -4,6 +4,7 @@
  * batches so nvim never handles one huge request; Lua only dispatches Actions.
  */
 
+import { join } from "node:path";
 import type { Layer, LineId, RepoPath } from "../core/types.ts";
 import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
@@ -18,6 +19,15 @@ import {
 } from "../render/actions.ts";
 import { cursorAnchor, restoreAnchor } from "../render/anchor.ts";
 import type { SummaryGroup } from "../render/comments.ts";
+import {
+  diffContext,
+  fileHeaderRow,
+  hunkRange,
+  jumpTarget,
+  type NavUnit,
+  navRow,
+  sourceLineRow,
+} from "../render/nav.ts";
 import type { IntraBlock } from "../render/render.ts";
 import {
   type CollapseKey,
@@ -27,6 +37,7 @@ import {
 } from "../render/render.ts";
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
+import { openDiffsplit, openJump } from "./jump.ts";
 
 /** Collapse keys hiding `path`'s lines in `scope`, so navigation can reach them. */
 function revealKeys(
@@ -64,7 +75,8 @@ export type Action =
   | { kind: "visual-mark"; srow: number; erow: number }
   | { kind: "toggle-fold"; row: number }
   | { kind: "toggle-scope"; row: number }
-  | { kind: "reveal-comment"; row: number }
+  | { kind: "jump"; row: number; col: number }
+  | { kind: "diffsplit"; row: number }
   | { kind: "delete-comments"; srow: number; erow: number }
   | { kind: "undo" }
   | { kind: "redo" }
@@ -80,7 +92,7 @@ export function parseAction(v: unknown): Action | undefined {
     case "toggle-seen":
     case "toggle-scope":
     case "toggle-fold":
-    case "reveal-comment": {
+    case "diffsplit": {
       const row = num("row");
       return row === undefined ? undefined : { kind: o.kind, row };
     }
@@ -91,6 +103,13 @@ export function parseAction(v: unknown): Action | undefined {
       return srow === undefined || erow === undefined
         ? undefined
         : { kind: o.kind, srow, erow };
+    }
+    case "jump": {
+      const row = num("row");
+      const col = num("col");
+      return row === undefined || col === undefined
+        ? undefined
+        : { kind: "jump", row, col };
     }
     case "visibility":
       return typeof o.visible === "boolean"
@@ -103,6 +122,23 @@ export function parseAction(v: unknown): Action | undefined {
     default:
       return undefined;
   }
+}
+
+export type Query =
+  | { kind: "hunk-range"; row: number }
+  | { kind: "nav"; row: number; unit: NavUnit; forward: boolean };
+export function parseQuery(v: unknown): Query | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  if (typeof o.row !== "number") return undefined;
+  if (o.kind === "hunk-range") return { kind: "hunk-range", row: o.row };
+  if (
+    o.kind === "nav" &&
+    (o.unit === "hunk" || o.unit === "file") &&
+    typeof o.forward === "boolean"
+  )
+    return { kind: "nav", row: o.row, unit: o.unit, forward: o.forward };
+  return undefined;
 }
 
 /** Minimal replacement turning `prev` into `next`. */
@@ -203,7 +239,9 @@ export class ReviewView {
     return next;
   }
   private async draw() {
-    const frame = this.build(await this.session.commentSummary());
+    const summary = await this.session.commentSummary();
+    this.summary = summary;
+    const frame = this.build(summary);
     if (!frame) return;
     const gen = this.intraGuard.bump();
     this.frame = frame;
@@ -334,6 +372,126 @@ export class ReviewView {
     }
   }
 
+  private summary: readonly SummaryGroup[] = [];
+  /** The window showing the review (-1 when hidden). */
+  private async win(): Promise<number> {
+    const w = await this.nvim.call("nvim_call_function", [
+      "bufwinid",
+      [this.bufnr],
+    ]);
+    return typeof w === "number" ? w : -1;
+  }
+  /** Synchronous lookups the keymaps need before returning (`gleanQuery`). */
+  query(q: Query): [number, number] | undefined {
+    const frame = this.frame;
+    if (!frame) return undefined;
+    if (q.kind === "hunk-range") {
+      const r = hunkRange(frame, q.row);
+      return r && [r.lo, r.hi];
+    }
+    const row = navRow(frame, q.row, q.unit, q.forward);
+    if (row === undefined) return undefined;
+    return [row, q.unit === "hunk" ? (hunkRange(frame, row)?.hi ?? row) : row];
+  }
+  /** Expand every collapse hiding `path`'s lines (file, seen section, dirs, markers). */
+  private async revealPath(path: RepoPath) {
+    const snap = this.session.current;
+    if (!snap) return;
+    const shas =
+      this.scope === "combined"
+        ? [undefined]
+        : snap.model.commits
+            .filter((c) => c.files.some((f) => f.path === path))
+            .map((c) => c.sha);
+    this.session.expand(shas.flatMap((s) => revealKeys(this.scope, path, s)));
+    await this.redraw();
+    const markers = (this.frame?.rows ?? []).flatMap((t) =>
+      t.kind === "marker" &&
+      resolveFile(snap.cls, t.file)?.file.path === path &&
+      this.session.collapse.get(keys.marker(t.key)) !== false
+        ? [keys.marker(t.key)]
+        : [],
+    );
+    if (markers.length === 0) return;
+    this.session.expand(markers);
+    await this.redraw();
+  }
+  /**
+   * `:Glean jump`: park on the row showing `path`:`lnum`, expanding whatever
+   * hides it. Undefined when the file is not part of the review.
+   */
+  async gotoSource(path: RepoPath, lnum: number): Promise<number | undefined> {
+    const snap = this.session.current;
+    if (!snap) return undefined;
+    const inReview =
+      snap.model.files.some((f) => f.path === path) ||
+      snap.model.commits.some((c) => c.files.some((f) => f.path === path));
+    if (!inReview) return undefined;
+    await this.revealPath(path);
+    const cls = this.session.current?.cls ?? snap.cls;
+    const row = this.frame && sourceLineRow(cls, this.frame, path, lnum);
+    if (row !== undefined) await this.setCursor(row);
+    return row;
+  }
+  /** `<CR>`: summary rows navigate within the review, diff rows open the source. */
+  private async jump(row: number, col: number) {
+    const snap = this.session.current;
+    const frame = this.frame;
+    if (!snap || !frame) return;
+    const t = frame.rows[row];
+    if (t?.kind === "summary-file") {
+      const r = fileHeaderRow(snap.cls, frame, t.path);
+      if (r !== undefined) await this.setCursor(r);
+      return;
+    }
+    if (t?.kind === "summary-comment") {
+      const entry = this.summary
+        .find((g) => g.path === t.path)
+        ?.entries.find((e) => e.record.id === t.commentId);
+      // An off-diff comment has no review row: open the file at its line.
+      if (entry?.state === "file" && entry.fileLnum !== undefined) {
+        await this.nvim.call("nvim_exec_lua", [
+          `return require("glean.node").open_file_at(...)`,
+          [
+            await this.win(),
+            join(this.session.repoRoot, t.path),
+            entry.fileLnum,
+            0,
+          ],
+        ]);
+        return;
+      }
+      await this.revealComment(t.path, t.commentId);
+      return;
+    }
+    const jt = jumpTarget(snap.cls, t, this.session.range);
+    if (jt)
+      await openJump(this.nvim, this.session.git, await this.win(), jt, col);
+  }
+  private async revealComment(path: RepoPath, commentId: number) {
+    const find = () => {
+      const cls = this.session.current?.cls;
+      const rows = this.frame?.rows ?? [];
+      return rows.findIndex(
+        (r) =>
+          r.kind === "comment" &&
+          r.commentId === commentId &&
+          cls !== undefined &&
+          resolveFile(cls, r.file)?.file.path === path,
+      );
+    };
+    let row = find();
+    if (row < 0) {
+      await this.revealPath(path);
+      row = find();
+    }
+    if (row < 0) {
+      const cls = this.session.current?.cls;
+      const header = cls && this.frame && fileHeaderRow(cls, this.frame, path);
+      if (header !== undefined) row = header;
+    }
+    if (row >= 0) await this.setCursor(row);
+  }
   private async setCursor(row: number) {
     const win = await this.nvim.call("nvim_call_function", [
       "bufwinid",
@@ -413,31 +571,23 @@ export class ReviewView {
         if (row !== undefined) await this.setCursor(row);
         return;
       }
-      case "reveal-comment": {
-        const t = frame.rows[a.row];
-        if (t?.kind !== "summary-comment") return;
-        const find = (f: Frame | undefined) =>
-          f?.rows.findIndex(
-            (r) =>
-              r.kind === "comment" &&
-              r.commentId === t.commentId &&
-              resolveFile(snap.cls, r.file)?.file.path === t.path,
-          ) ?? -1;
-        let row = find(frame);
-        if (row < 0) {
-          const shas =
-            this.scope === "combined"
-              ? [undefined]
-              : snap.model.commits
-                  .filter((c) => c.files.some((f) => f.path === t.path))
-                  .map((c) => c.sha);
-          this.session.expand(
-            shas.flatMap((s) => revealKeys(this.scope, t.path, s)),
-          );
-          await this.redraw();
-          row = find(this.frame);
-        }
-        if (row >= 0) await this.setCursor(row);
+      case "jump":
+        await this.jump(a.row, a.col);
+        return;
+      case "diffsplit": {
+        const ctx = diffContext(
+          snap.cls,
+          frame.rows[a.row],
+          this.session.range,
+        );
+        if (!ctx) return;
+        await openDiffsplit(
+          this.nvim,
+          this.session.git,
+          await this.win(),
+          ctx,
+          this.opts.ignoreWhitespace ?? false,
+        );
         return;
       }
       case "delete-comments": {

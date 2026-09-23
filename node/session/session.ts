@@ -164,6 +164,12 @@ export class Session {
       this.opts.build?.ignoreWhitespace ?? false,
     );
   }
+  get git(): Git {
+    return this.opts.git;
+  }
+  get range(): { base: string; target: Target } {
+    return { base: this.opts.base, target: this.opts.target };
+  }
   get repoRoot(): string {
     return this.opts.git.repoRoot;
   }

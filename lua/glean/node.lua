@@ -167,6 +167,128 @@ M.show_buffer = function(buf)
   return win
 end
 
+local function set_cursor_clamped(win, lnum, col)
+  local buf = vim.api.nvim_win_get_buf(win)
+  local n = vim.api.nvim_buf_line_count(buf)
+  lnum = math.max(1, math.min(lnum, n))
+  local text = vim.api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1]
+  if text then col = math.max(0, math.min(col, #text - 1)) end
+  pcall(vim.api.nvim_win_set_cursor, win, { lnum, col })
+end
+local function focus(win)
+  if win and win > 0 and vim.api.nvim_win_is_valid(win) then
+    vim.api.nvim_set_current_win(win)
+  end
+end
+-- Jump helpers, driven by node (`node/view/jump.ts`).
+M.open_file_at = function(win, abs, lnum, col)
+  if vim.fn.filereadable(abs) ~= 1 then return false end
+  focus(win)
+  vim.cmd("edit " .. vim.fn.fnameescape(abs))
+  set_cursor_clamped(0, lnum, col)
+  return true
+end
+-- `spec.lines` nil reuses the existing buffer called `spec.name`.
+local function scratch(spec)
+  if spec.lines == nil or spec.lines == vim.NIL then
+    local b = vim.fn.bufnr(spec.name)
+    if b ~= -1 then return b end
+    spec.lines = {}
+  end
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, spec.lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = spec.bufhidden
+  local ft = vim.filetype.match({ filename = spec.path, contents = spec.lines })
+  if ft then vim.bo[buf].filetype = ft end
+  pcall(vim.api.nvim_buf_set_name, buf, spec.name)
+  return buf
+end
+M.open_scratch_at = function(win, spec, lnum, col)
+  local buf = scratch(spec)
+  focus(win)
+  vim.api.nvim_win_set_buf(0, buf)
+  set_cursor_clamped(0, lnum, col)
+  return buf
+end
+-- `iwhiteall` is added to 'diffopt' while any ignore-whitespace split is open,
+-- and removed again only if glean added it.
+local diff_ws = { count = 0, inserted = false }
+local function acquire_diff_whitespace()
+  if diff_ws.count == 0 then
+    diff_ws.inserted = not vim.tbl_contains(vim.split(vim.o.diffopt, ","), "iwhiteall")
+    if diff_ws.inserted then vim.o.diffopt = vim.o.diffopt .. ",iwhiteall" end
+  end
+  diff_ws.count = diff_ws.count + 1
+  local released = false
+  return function()
+    if released then return end
+    released = true
+    diff_ws.count = math.max(0, diff_ws.count - 1)
+    if diff_ws.count == 0 and diff_ws.inserted then
+      local kept = vim.tbl_filter(function(p) return p ~= "iwhiteall" end,
+        vim.split(vim.o.diffopt, ","))
+      vim.o.diffopt = table.concat(kept, ",")
+      diff_ws.inserted = false
+    end
+  end
+end
+-- Split diff right of the review window: `left` (pre-image) | `right`
+-- (post-image). `right.abs` opens the live file, else `right.fallback`/`right`
+-- is a scratch spec.
+M.diffsplit = function(win, right, post_lnum, left, pre_lnum, iwhite)
+  focus(win)
+  vim.cmd("rightbelow vsplit")
+  local right_win = vim.api.nvim_get_current_win()
+  if right.abs and vim.fn.filereadable(right.abs) == 1 then
+    vim.cmd("edit " .. vim.fn.fnameescape(right.abs))
+  else
+    vim.api.nvim_win_set_buf(right_win, scratch(right.fallback or right))
+  end
+  if post_lnum ~= vim.NIL then pcall(vim.api.nvim_win_set_cursor, right_win, { post_lnum, 0 }) end
+  vim.cmd("diffthis")
+  vim.cmd("leftabove vsplit")
+  local left_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(left_win, scratch(left))
+  if pre_lnum ~= vim.NIL then pcall(vim.api.nvim_win_set_cursor, left_win, { pre_lnum, 0 }) end
+  vim.cmd("diffthis")
+  vim.api.nvim_set_current_win(right_win)
+  if iwhite then
+    local release = acquire_diff_whitespace()
+    vim.cmd("diffupdate")
+    local group = vim.api.nvim_create_augroup("glean_diff_whitespace_" .. left_win .. "_" .. right_win,
+      { clear = true })
+    vim.api.nvim_create_autocmd("WinClosed", {
+      group = group,
+      callback = function(ev)
+        local closed = tonumber(ev.match)
+        if closed ~= left_win and closed ~= right_win then return end
+        release()
+        pcall(vim.api.nvim_del_augroup_by_id, group)
+      end,
+    })
+  end
+  return { right_win, left_win }
+end
+-- Park on a hunk header and scroll down (never up, never past the header) so
+-- as much of the hunk as fits is visible: the old `move_to_hunk_row`.
+local function move_to_hunk_row(row, last)
+  local win = vim.api.nvim_get_current_win()
+  pcall(vim.api.nvim_win_set_cursor, win, { row + 1, 0 })
+  local view = vim.fn.winsaveview()
+  local height = vim.api.nvim_win_get_height(win)
+  local top = view.topline - 1
+  if last > top + height - 1 then
+    view.topline = math.max(top, math.min(last - height + 1, row)) + 1
+    vim.fn.winrestview(view)
+  end
+end
+local function query(buf, q)
+  local ok, res = pcall(vim.rpcrequest, M.channel_id, "gleanQuery", buf, q)
+  if ok and res ~= vim.NIL then return res end
+  return nil
+end
 local function new_listed_buffer(name)
   local buf = vim.api.nvim_create_buf(true, false)
   vim.bo[buf].buftype = "nofile"
@@ -228,7 +350,32 @@ M.open_review_buffer = function(title)
   map("n", "m", function() action(buf, { kind = "toggle-seen", row = row0() }) end)
   map("n", "=", function() action(buf, { kind = "toggle-fold", row = row0() }) end)
   map("n", "S", function() action(buf, { kind = "toggle-scope", row = row0() }) end)
-  map("n", "<CR>", function() action(buf, { kind = "reveal-comment", row = row0() }) end)
+  map("n", "<CR>", function()
+    action(buf, { kind = "jump", row = row0(), col = vim.api.nvim_win_get_cursor(0)[2] })
+  end)
+  map("n", "D", function() action(buf, { kind = "diffsplit", row = row0() }) end)
+  map("n", "q", function() close_if_current(buf) end)
+  for lhs, nav in pairs({
+    ["]c"] = { unit = "hunk", forward = true }, ["[c"] = { unit = "hunk", forward = false },
+    ["]f"] = { unit = "file", forward = true }, ["[f"] = { unit = "file", forward = false },
+  }) do
+    map({ "n", "x" }, lhs, function()
+      local r = query(buf, { kind = "nav", row = row0(), unit = nav.unit, forward = nav.forward })
+      if r then move_to_hunk_row(r[1], r[2]) end
+    end)
+  end
+  -- Linewise-select the hunk: composes in visual (`vac`) and operator-pending
+  -- (`dac`) mode, so the range is fetched synchronously.
+  map({ "x", "o" }, "ac", function()
+    local r = query(buf, { kind = "hunk-range", row = row0() })
+    if not r then return end
+    if vim.api.nvim_get_mode().mode:match("[vV\22]") then
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    end
+    vim.api.nvim_win_set_cursor(0, { r[1] + 1, 0 })
+    vim.cmd("normal! V")
+    vim.api.nvim_win_set_cursor(0, { r[2] + 1, 0 })
+  end)
   map("x", "d", function()
     local s, e = vim.fn.line("v") - 1, vim.fn.line(".") - 1
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
