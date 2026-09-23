@@ -579,6 +579,13 @@ export class ReviewView {
         ]);
         return;
       }
+      // A comment hidden by ignore-whitespace has no row in this mode: go back
+      // to exact mode first, as the Lua `reveal_summary_comment` did.
+      if (entry?.hidden && this.session.ignoreWhitespace) {
+        const r = await this.session.setIgnoreWhitespace(false);
+        if (r.kind !== "applied" || isStale()) return;
+        await this.redraw();
+      }
       await this.revealComment(t.path, t.commentId, isStale);
       return;
     }

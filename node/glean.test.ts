@@ -659,6 +659,54 @@ describe("seen extras and whitespace (driver)", () => {
   });
 });
 
+describe("whitespace-hidden comments (driver)", () => {
+  it("<CR> on a (hidden) summary comment restores exact mode and lands on it", async () => {
+    const repo = makeRepo([
+      { files: { "w.txt": "a\nb\nc\nd\n" } },
+      { msg: "ws", files: { "w.txt": "a\n  b\nc\nD\n" } },
+    ]);
+    await withNvim(async (nvim) => {
+      const stateDir = mkdtempSync(join(tmpdir(), "glean-wsc-"));
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await luaEval(
+        nvim,
+        `require("glean.api").add_comment({ repo = ${JSON.stringify(repo.root)}, path = "w.txt", lnum = 2, text = "space note" })`,
+      );
+      const lines = () =>
+        luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+      await nvim.call("nvim_command", [`Glean ${repo.shas[0]} HEAD`]);
+      await pollUntil(async () =>
+        (await lines()).includes("  b") ? true : undefined,
+      );
+      await nvim.call("nvim_input", ["W"]);
+      const ignored = await pollUntil(async () => {
+        const l = await lines();
+        return l[0]?.includes("ignore-whitespace") &&
+          l.some((s) => s.includes("(hidden)"))
+          ? l
+          : undefined;
+      });
+      const row = ignored.findIndex((l) => l.includes("space note"));
+      await nvim.call("nvim_win_set_cursor", [0, [row + 1, 0]]);
+      await nvim.call("nvim_input", ["<CR>"]);
+      await pollUntil(async () => {
+        const l = await lines();
+        const r = (await nvim.call("nvim_win_get_cursor", [0]))[0];
+        return !l[0]?.includes("ignore-whitespace") &&
+          l[r - 1]?.includes("space note") &&
+          !l[r - 1]?.includes("(hidden)") &&
+          l[r - 2] === "  b"
+          ? true
+          : undefined;
+      });
+    });
+  });
+});
+
 describe("comment editor (driver)", () => {
   it("c / visual c / i / dd / dc / visual d author and delete comments, undoably", async () => {
     const repo = makeRepo([
