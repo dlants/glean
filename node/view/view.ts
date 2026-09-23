@@ -65,6 +65,7 @@ import {
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
 import { openDiffsplit, openJump } from "./jump.ts";
+import { Prompts } from "./prompts.ts";
 
 /** Collapse keys hiding `path`'s lines in `scope`, so navigation can reach them. */
 function revealKeys(
@@ -620,20 +621,13 @@ export class ReviewView {
     }
     if (row >= 0 && !isStale()) await this.setCursor(row);
   }
-  private nextToken = 1;
-  /** Editor / picker callbacks awaiting their Lua result, by token. */
-  private readonly prompts = new Map<
-    number,
-    | { kind: "editor"; fn: (text: string) => Promise<void> }
-    | { kind: "pick"; fn: (index: number) => Promise<void> }
-  >();
+  private readonly prompts = new Prompts();
   /** The ephemeral split editor lives in Lua (`comment_editor`); its text comes back as `editor-submit`. */
   private async openEditor(
     initial: string[],
     fn: (text: string) => Promise<void>,
   ) {
-    const token = this.nextToken++;
-    this.prompts.set(token, { kind: "editor", fn });
+    const token = this.prompts.editor(fn);
     await this.nvim.call("nvim_exec_lua", [
       `return require("glean.node").comment_editor(...)`,
       [this.bufnr, await this.win(), initial, token],
@@ -1138,17 +1132,14 @@ export class ReviewView {
           ]);
           return;
         }
-        if (at.records.length === 1) {
-          await this.dropComment(at.path, at.records[0]!, a.row);
+        const [only, ...rest] = at.records;
+        if (only && rest.length === 0) {
+          await this.dropComment(at.path, only, a.row);
           return;
         }
-        const token = this.nextToken++;
-        this.prompts.set(token, {
-          kind: "pick",
-          fn: async (i) => {
-            const r = at.records[i];
-            if (r) await this.dropComment(at.path, r, a.row);
-          },
+        const token = this.prompts.pick(async (i) => {
+          const r = at.records[i];
+          if (r) await this.dropComment(at.path, r, a.row);
         });
         await this.nvim.call("nvim_exec_lua", [
           `return require("glean.node").pick_comment(...)`,
@@ -1158,13 +1149,7 @@ export class ReviewView {
       }
       case "editor-submit":
       case "pick": {
-        const p = this.prompts.get(a.token);
-        this.prompts.delete(a.token);
-        if (!p) return;
-        if (p.kind === "editor" && a.kind === "editor-submit")
-          await p.fn(a.text);
-        else if (p.kind === "pick" && a.kind === "pick") await p.fn(a.index);
-        else return;
+        if (!(await this.prompts.submit(a))) return;
         await this.redraw();
         return;
       }

@@ -22,6 +22,7 @@ import type {
   RepoPath,
   Sha,
 } from "./types.ts";
+import { WORKTREE } from "./types.ts";
 
 export const COMMENTS_ID = "WORKTREE";
 
@@ -74,7 +75,8 @@ export type CommentEntry =
   | { kind: "context" | "add"; text: string }
   | { kind: "del"; text: string; oldLnum: number };
 
-export type CommentOrigin = { sha: Sha; dirty: boolean };
+/** `sha` is the WORKTREE layer when the text was read from uncommitted changes (persisted as "WORKTREE", as in Lua). */
+export type CommentOrigin = { sha: Layer; dirty: boolean };
 
 export type CommentRecord = {
   id: number;
@@ -161,7 +163,10 @@ function parseComment(
     reply: typeof v.reply === "string" ? v.reply : undefined,
     origin:
       isObj(o) && typeof o.sha === "string"
-        ? { sha: o.sha as Sha, dirty: o.dirty === true }
+        ? {
+            sha: o.sha === WORKTREE ? WORKTREE : (o.sha as Sha),
+            dirty: o.dirty === true,
+          }
         : undefined,
   };
 }

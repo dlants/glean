@@ -10,7 +10,12 @@ import type {
   CommentRecord,
   Store,
 } from "../core/state.ts";
-import { type RepoPath, type Sha, WORKTREE } from "../core/types.ts";
+import {
+  type PostLnum,
+  type RepoPath,
+  type Sha,
+  WORKTREE,
+} from "../core/types.ts";
 import type { Classifier, Scope } from "../session/model.ts";
 import { resolveFile } from "./actions.ts";
 import type { PlacedComment } from "./comments.ts";
@@ -18,7 +23,7 @@ import type { FileRef, RowTarget } from "./render.ts";
 
 export type CommentTarget = {
   path: RepoPath;
-  lnum: number;
+  lnum: PostLnum;
   content: CommentEntry[];
   origin: CommentOrigin;
 };
@@ -33,17 +38,9 @@ function entryOf(dl: DiffLine): CommentEntry {
     : { kind: dl.kind, text: dl.text };
 }
 /** First non-del post-image line, else the slot the deleted text sat before. */
-function lnumOf(dls: readonly DiffLine[]): number {
-  return (dls.find((d) => d.kind !== "del") ?? dls[0])?.newLnum ?? 1;
-}
-function sameLine(a: DiffLine, b: DiffLine): boolean {
-  return (
-    a.kind === b.kind &&
-    a.text === b.text &&
-    a.newLnum === b.newLnum &&
-    ("oldLnum" in a ? a.oldLnum : undefined) ===
-      ("oldLnum" in b ? b.oldLnum : undefined)
-  );
+function lnumOf(dls: readonly DiffLine[]): PostLnum {
+  return ((dls.find((d) => d.kind !== "del") ?? dls[0])?.newLnum ??
+    1) as PostLnum;
 }
 /**
  * The exact-whitespace file a display file resolves in. Combined scope uses the
@@ -59,18 +56,20 @@ function canonicalOf(
     ? cls.model.canonicalFiles.find((f) => f.path === file.path)
     : file;
 }
-function ordinal(
-  file: FileEntry | undefined,
-  dl: DiffLine,
-): number | undefined {
-  if (!file) return undefined;
+function lineKey(l: DiffLine): string {
+  return `${l.kind}\0${l.newLnum}\0${"oldLnum" in l ? l.oldLnum : ""}\0${l.text}`;
+}
+/** Canonical ordinal of each line of `file`, built once per selection (first occurrence wins, like a scan). */
+function ordinals(file: FileEntry): Map<string, number> {
+  const m = new Map<string, number>();
   let i = 0;
   for (const h of file.hunks)
     for (const l of h.lines) {
-      if (sameLine(l, dl)) return i;
+      const k = lineKey(l);
+      if (!m.has(k)) m.set(k, i);
       i++;
     }
-  return undefined;
+  return m;
 }
 function lineAt(cls: Classifier, t: LineRow) {
   const r = resolveFile(cls, t.file);
@@ -86,7 +85,7 @@ export function commentOrigin(
   path: RepoPath,
   worktree: boolean,
 ): CommentOrigin {
-  const wt: CommentOrigin = { sha: WORKTREE as string as Sha, dirty: true };
+  const wt: CommentOrigin = { sha: WORKTREE, dirty: true };
   if (scope === "commits") {
     const commit =
       ref.scope === "commits" ? cls.model.commits[ref.commit] : undefined;
@@ -118,6 +117,13 @@ export function commentTarget(
   let first: { ref: FileRef; path: RepoPath } | undefined;
   let prev = -1;
   const dls: DiffLine[] = [];
+  const ordCache = new Map<FileEntry, Map<string, number>>();
+  const ordinal = (file: FileEntry | undefined, dl: DiffLine) => {
+    if (!file) return undefined;
+    let m = ordCache.get(file);
+    if (!m) ordCache.set(file, (m = ordinals(file)));
+    return m.get(lineKey(dl));
+  };
   for (let row = srow; row <= erow; row++) {
     const t = lineRow(rows[row]);
     if (!t) continue;
