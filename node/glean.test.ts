@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCommand } from "./glean.ts";
+import { parseCommand, storePaths } from "./glean.ts";
 import { luaEval, pollUntil, startBackend, withNvim } from "./test/driver.ts";
 
 describe("parseCommand", () => {
@@ -55,5 +55,35 @@ describe("node bridge", () => {
         ),
       ).toBe(false);
     });
+  });
+});
+describe("storePaths", () => {
+  const ok = <T>(value: T) => ({ kind: "ok" as const, value });
+  const err = { kind: "error" as const, message: "x" };
+  it("hashes the git common dir like the Lua store", () => {
+    // sha256("/repo/.git")[:16], as vim.fn.sha256 computed it.
+    expect(
+      storePaths("/data", undefined, ok("/repo/.git"), ok("main")),
+    ).toEqual({
+      stateDir: "/data/glean/6b4ca2db35cfaf43",
+      wtShard: "WORKTREE/main",
+    });
+  });
+  it("falls back to <data>/glean and WORKTREE/HEAD", () => {
+    expect(storePaths("/data", undefined, err, err)).toEqual({
+      stateDir: "/data/glean",
+      wtShard: "WORKTREE/HEAD",
+    });
+    expect(storePaths("/data", undefined, err, ok(undefined)).wtShard).toBe(
+      "WORKTREE/HEAD",
+    );
+    expect(storePaths("/data", undefined, err, ok("HEAD")).wtShard).toBe(
+      "WORKTREE/HEAD",
+    );
+  });
+  it("honours the override dir", () => {
+    expect(storePaths("/data", "/s", ok("/repo/.git"), ok("b")).stateDir).toBe(
+      "/s",
+    );
   });
 });

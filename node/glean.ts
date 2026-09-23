@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Api, ApiError, type LiveReview } from "./api/api.ts";
 import { COMMENTS_ID, Store } from "./core/state.ts";
-import { Git, spawnRunner } from "./git/git.ts";
+import { Git, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
 import { Session } from "./session/session.ts";
@@ -103,6 +103,17 @@ async function storeLocation(
     git.commonDir(),
     git.currentBranch(),
   ]);
+  return storePaths(dataDir, override, common, branch);
+}
+/** Pure half of `storeLocation`. A failed common-dir lookup falls back to
+ * `<data>/glean`; a failed or empty branch lookup to shard `WORKTREE/HEAD`
+ * (a detached HEAD already reports the literal "HEAD"). */
+export function storePaths(
+  dataDir: string,
+  override: string | undefined,
+  common: Outcome<string>,
+  branch: Outcome<string | undefined>,
+): StoreLocation {
   const base = join(dataDir, "glean");
   const stateDir =
     override ??
@@ -115,7 +126,6 @@ async function storeLocation(
   const name = branch.kind === "ok" && branch.value ? branch.value : "HEAD";
   return { stateDir, wtShard: `${COMMENTS_ID}/${name}` };
 }
-
 /** Resolved `rev-parse --show-toplevel` per probe path, so repeat repo-mode calls skip git. */
 const repoRoots = new Map<string, string>();
 /** Repo mode: the store of the repo containing `path` (default: nvim's cwd).

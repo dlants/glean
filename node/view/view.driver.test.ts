@@ -234,6 +234,37 @@ describe("review view (driver)", () => {
       );
     });
   });
+  it("bare :Glean opens the default base and shows an api comment from the same shard", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "1\n2\n3\n" } },
+      { msg: "one", files: { "a.txt": "1\nX\n3\n" } },
+    ]);
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      // repoContext writes the comment; openReview must read the same shard.
+      await luaEval(
+        nvim,
+        `require("glean.api").add_comment({ repo = ${JSON.stringify(repo.root)}, path = "a.txt", lnum = 2, text = "api note" })`,
+      );
+      await luaEval(
+        nvim,
+        `(function() require("glean").config.default_base = ${JSON.stringify(repo.shas[0])} end)()`,
+      );
+      await nvim.call("nvim_command", ["Glean"]);
+      await pollUntil(async () => {
+        const l = await luaEval<string[]>(
+          nvim,
+          "vim.api.nvim_buf_get_lines(0, 0, -1, false)",
+        );
+        return l.some((s) => s.includes("api note")) ? true : undefined;
+      });
+    });
+  });
   it("nvim stays responsive (<50 ms) while a huge hunk renders", async () => {
     const n = 3000;
     const mk = (tag: string) =>
