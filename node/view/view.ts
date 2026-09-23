@@ -74,6 +74,7 @@ export function lineEdit(
   };
 }
 
+export type ViewOpts = { minSeenRun?: number; ignoreWhitespace?: boolean };
 export class ReviewView {
   private shown: string[] = [];
   frame: Frame | undefined;
@@ -89,6 +90,7 @@ export class ReviewView {
     private readonly nvim: Nvim,
     readonly bufnr: number,
     readonly session: Session,
+    private readonly opts: ViewOpts = {},
   ) {
     session.onChange = () => {
       void this.redraw().catch((e: unknown) =>
@@ -112,8 +114,8 @@ export class ReviewView {
       cls: snap.cls,
       collapse: this.session.collapse,
       isSticky: (p, t) => snap.store.isSticky(p, t),
-      minSeenRun: 5,
-      ignoreWhitespace: false,
+      minSeenRun: this.opts.minSeenRun ?? 5,
+      ignoreWhitespace: this.opts.ignoreWhitespace ?? false,
       comments: this.session.commentsHook(),
     });
   }
@@ -299,7 +301,11 @@ export class ReviewView {
         const r = await (a.kind === "undo"
           ? this.session.undo()
           : this.session.redo());
-        if (r?.kind === "collapse") await this.redraw();
+        if (!r) return;
+        await this.redraw();
+        const n = this.frame?.rows.length ?? 0;
+        if (r.cursor !== undefined && n > 0)
+          await this.setCursor(Math.min(r.cursor, n - 1));
         return;
       }
     }

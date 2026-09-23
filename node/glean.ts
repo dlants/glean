@@ -49,10 +49,13 @@ vim.notify("glean: pong")`,
 }
 
 async function openReview(nvim: Nvim, base: string): Promise<void> {
-  const [root, dataDir, stateOverride] = (await nvim.call("nvim_exec_lua", [
-    `return { vim.fn.getcwd(), vim.fn.stdpath("data"), vim.g.glean_state_dir }`,
-    [],
-  ])) as [string, string, string | null];
+  const [root, dataDir, stateOverride, minSeenRun, ignoreWs] = (await nvim.call(
+    "nvim_exec_lua",
+    [
+      `return { vim.fn.getcwd(), vim.fn.stdpath("data"), vim.g.glean_state_dir or vim.NIL, vim.g.glean_min_seen_run or vim.NIL, vim.g.glean_ignore_whitespace == true }`,
+      [],
+    ],
+  )) as [string, string, string | null, number | null, boolean];
   const git = new Git({ repoRoot: root, runner: spawnRunner() });
   const stateDir =
     stateOverride ??
@@ -66,12 +69,16 @@ async function openReview(nvim: Nvim, base: string): Promise<void> {
     base,
     target: { kind: "worktree" },
     stateDir,
+    build: { ignoreWhitespace: ignoreWs },
   });
   const bufnr = (await nvim.call("nvim_exec_lua", [
     `return require("glean.node").open_review_buffer()`,
     [],
   ])) as number;
-  const view = new ReviewView(nvim, bufnr, session);
+  const view = new ReviewView(nvim, bufnr, session, {
+    minSeenRun: typeof minSeenRun === "number" ? minSeenRun : 5,
+    ignoreWhitespace: ignoreWs,
+  });
   await view.init();
   views.set(bufnr, view);
   await session.refresh();

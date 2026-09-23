@@ -106,4 +106,37 @@ describe("review view (driver)", () => {
       });
     });
   });
+  it("nvim stays responsive (<50 ms) while a huge hunk renders", async () => {
+    const n = 3000;
+    const mk = (tag: string) =>
+      Array.from(
+        { length: n },
+        (_, i) => `${tag} line ${i} ${"word ".repeat(30)}${i * 7}`,
+      ).join("\n");
+    const repo = makeRepo([
+      { files: { "big.txt": `${mk("old")}\n` } },
+      { msg: "rewrite", files: { "big.txt": `${mk("new")}\n` } },
+    ]);
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      let worst = 0;
+      await pollUntil(async () => {
+        const t = performance.now();
+        await nvim.call("nvim_eval", ["1"]);
+        worst = Math.max(worst, performance.now() - t);
+        const c = await luaEval<number>(
+          nvim,
+          `#vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace("glean-review-intra"), 0, -1, {})`,
+        );
+        return c > 0 ? true : undefined;
+      }, 30_000);
+      expect(worst).toBeLessThan(50);
+    });
+  }, 60000);
 });

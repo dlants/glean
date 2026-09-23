@@ -189,15 +189,14 @@ Lua ↔ node:
 
 - 4d progress (partial): `node/view/view.ts` `ReviewView` renders a Session into a scratch buffer. `lineEdit` finds the shared prefix and suffix, writes the replacement in batches of at most 500 lines, then clears the namespace and re-applies the highlights in `nvim_call_atomic` batches of at most 1000. `Action` (`toggle-seen | visual-mark | toggle-fold | toggle-scope | undo | redo`, 0-based rows) is parsed at the boundary by `parseAction`. `:GleanNode open [base]` (in `glean.ts`) builds a worktree Session: repo root = nvim cwd, state dir = `vim.g.glean_state_dir` or `stdpath("data")/glean-node/<sha256(root)[:16]>`. This is a deviation, since it does not use Lua's `repo_state_dir`; reconcile at cutover. It then starts live polling. Lua `glean.node.open_review_buffer` creates the buffer, and its keymaps (`m`, visual `m`, `=`, `S`, `u`, `<C-r>`) are each one `gleanAction` rpcnotify. Driver tests are in `view.driver.test.ts` (the `m` round trip and the `S` scope toggle).
   - Intraline done: each redraw bumps a view `GenerationGuard`, clears the `glean-review-intra` namespace and runs `runRefine` with a per-view `RefineCache`; each refined pair gets a priority-4100 `line_hl_group` (`Glean{Add,Del}Text`, replacing Lua's in-place downgrade) plus emph spans, sent in bounded `nvim_call_atomic` batches serialized behind a promise chain. Scope toggle now carries the cursor row (`toggle-scope {row}`) and restores it via `cursorAnchor`/`restoreAnchor`. Driver test covers both.
+  - Config done: `ViewOpts {minSeenRun, ignoreWhitespace}` read from `vim.g.glean_min_seen_run` / `vim.g.glean_ignore_whitespace` in `openReview` (whitespace also goes into `Session` build opts). 50 ms responsiveness driver test done (3000×3000 rewritten long-line hunk; worst `nvim_eval` latency measured until intra marks land).
   - Still to do for 4d:
     - Section-level highlight diffing.
-    - Cursor placement after mark/undo.
+    - Cursor placement after mark/visual mark (undo/redo done: redraw then restore `Undoable.cursor`, clamped).
     - Scope-toggle: expand a collapsed destination before restoring the anchor.
     - Summary-row actions.
     - Suspend/resume and `suspend_test`.
-    - The 50 ms responsiveness driver test.
     - Remaining `init_test`/`reload_test` cases.
-    - `minSeenRun`/`ignoreWhitespace` config.
 
 ## Gutter and file-buffer marking
 
