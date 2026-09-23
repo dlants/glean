@@ -394,4 +394,83 @@ describe("navigation and jump (driver)", () => {
       expect(diffs[1]?.name.endsWith("/j.txt")).toBe(true);
     });
   });
+  it("<CR> on a summary comment and :Glean jump reveal a seen file; files outside warn", async () => {
+    const repo = makeRepo([
+      {
+        files: { "j.txt": "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n", "o.txt": "o\n" },
+      },
+      { msg: "c1", files: { "j.txt": "a\nB\nc\nd\ne\nf\ng\nh\ni\nJ\nk\n" } },
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      await luaEval(
+        nvim,
+        `(function()
+          require("glean").config.default_base = ${JSON.stringify(repo.shas[0])}
+          _G.notes = {}
+          vim.notify = function(m) table.insert(_G.notes, m) end
+        end)()`,
+      );
+      await luaEval(
+        nvim,
+        `require("glean.api").add_comment({ repo = ${JSON.stringify(repo.root)}, path = "j.txt", lnum = 10, text = "note J" })`,
+      );
+      // No review yet: :Glean jump opens the default one, then warns about o.txt.
+      await nvim.call("nvim_command", ["edit o.txt"]);
+      await nvim.call("nvim_command", ["Glean jump"]);
+      const note = await pollUntil(async () => {
+        const n = await luaEval<string[]>(nvim, "_G.notes");
+        return n.find((m) => m.includes("not part of the review"));
+      });
+      expect(note).toContain("o.txt");
+      const body = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.includes("J") ? l : undefined;
+      });
+      // Mark the whole file seen: its lines and inline comment collapse away.
+      const header = body.findIndex(
+        (l) => l.includes("j.txt") && !l.includes("note"),
+      );
+      await nvim.call("nvim_win_set_cursor", [0, [header + 1, 0]]);
+      await nvim.call("nvim_input", ["m"]);
+      const seen = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.includes("J") ? undefined : l;
+      });
+      const summary = seen.findIndex((l) => l.includes("note J"));
+      expect(summary).toBeGreaterThanOrEqual(0);
+      await nvim.call("nvim_win_set_cursor", [0, [summary + 1, 0]]);
+      await nvim.call("nvim_input", ["<CR>"]);
+      await pollUntil(async () => {
+        const l = await lines(nvim);
+        const r = await cursor(nvim);
+        return r !== summary + 1 &&
+          l[r - 1]?.includes("note J") &&
+          l.includes("J")
+          ? true
+          : undefined;
+      });
+      // Collapse the file again, then :Glean jump from j.txt:10 reveals `J`.
+      const again = await lines(nvim);
+      await nvim.call("nvim_win_set_cursor", [
+        0,
+        [
+          again.findIndex((l) => l.includes("j.txt") && !l.includes("note")) +
+            1,
+          0,
+        ],
+      ]);
+      await nvim.call("nvim_input", ["="]);
+      await pollUntil(async () =>
+        (await lines(nvim)).includes("J") ? undefined : true,
+      );
+      await nvim.call("nvim_command", ["edit j.txt"]);
+      await nvim.call("nvim_win_set_cursor", [0, [10, 0]]);
+      await nvim.call("nvim_command", ["Glean jump"]);
+      await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l[(await cursor(nvim)) - 1] === "J" ? true : undefined;
+      });
+    });
+  });
 });

@@ -26,3 +26,10 @@ export type LineId =
   | { kind: "committed-del"; removerSha: Sha; path: RepoPath; lnum: PreLnum }
   | { kind: "worktree-add"; path: RepoPath; lnum: WorktreeLnum }
   | { kind: "worktree-del"; path: RepoPath; lnum: HeadLnum };
+
+/** Validates a repo-relative path: non-empty, not absolute, no `..` segment. */
+export function toRepoPath(p: string): RepoPath | undefined {
+  return p === "" || p.startsWith("/") || p.split("/").includes("..")
+    ? undefined
+    : (p as RepoPath);
+}

@@ -4,7 +4,12 @@
  * selection of `goto_source_line`). The view applies them to nvim.
  */
 import type { DiffLine } from "../core/diff.ts";
-import { type RepoPath, WORKTREE } from "../core/types.ts";
+import {
+  type PostLnum,
+  type PreLnum,
+  type RepoPath,
+  WORKTREE,
+} from "../core/types.ts";
 import type { Classifier, Target } from "../session/model.ts";
 import { resolveFile } from "./actions.ts";
 import type { FileRef, Frame, RowTarget } from "./render.ts";
@@ -62,16 +67,21 @@ export function hunkRange(
 export type SourceRef = { kind: "worktree" } | { kind: "rev"; rev: string };
 export type ReviewRange = { base: string; target: Target };
 
-type LineRow = Extract<RowTarget, { li: number; file: FileRef }>;
+type LineRow = Extract<RowTarget, { kind: "line" | "marker-line" }>;
+function lineRowOf(t: RowTarget | undefined): LineRow | undefined {
+  return t && (t.kind === "line" || t.kind === "marker-line") ? t : undefined;
+}
+const postOf = (dl: DiffLine) => dl.newLnum as PostLnum;
 function diffLineOf(
   cls: Classifier,
-  t: RowTarget | undefined,
+  row: RowTarget | undefined,
   range: ReviewRange,
 ):
   | { dl: DiffLine; path: RepoPath; post: SourceRef; pre: SourceRef }
   | undefined {
-  if (!t || (t.kind !== "line" && t.kind !== "marker-line")) return undefined;
-  const r = resolveFile(cls, (t as LineRow).file);
+  const t = lineRowOf(row);
+  if (!t) return undefined;
+  const r = resolveFile(cls, t.file);
   const dl = r?.file.hunks[t.hunk]?.lines[t.li];
   if (!r || !dl) return undefined;
   let post: SourceRef;
@@ -93,8 +103,14 @@ function diffLineOf(
 }
 
 export type JumpTarget =
-  | { kind: "post"; ref: SourceRef; path: RepoPath; lnum: number; text: string }
-  | { kind: "del"; ref: SourceRef; path: RepoPath; lnum: number };
+  | {
+      kind: "post";
+      ref: SourceRef;
+      path: RepoPath;
+      lnum: PostLnum;
+      text: string;
+    }
+  | { kind: "del"; ref: SourceRef; path: RepoPath; lnum: PreLnum };
 /** The source line a diff row points at: a deletion reads its pre-image. */
 export function jumpTarget(
   cls: Classifier,
@@ -104,22 +120,31 @@ export function jumpTarget(
   const d = diffLineOf(cls, t, range);
   if (!d) return undefined;
   if (d.dl.kind === "del")
-    return { kind: "del", ref: d.pre, path: d.path, lnum: d.dl.oldLnum };
+    return {
+      kind: "del",
+      ref: d.pre,
+      path: d.path,
+      lnum: d.dl.oldLnum as PreLnum,
+    };
   return {
     kind: "post",
     ref: d.post,
     path: d.path,
-    lnum: d.dl.newLnum,
+    lnum: postOf(d.dl),
     text: d.dl.text,
   };
 }
 
+/** Which side(s) of the split the row's line exists on, by diff line kind. */
+export type DiffLnums =
+  | { kind: "add"; postLnum: PostLnum }
+  | { kind: "del"; preLnum: PreLnum }
+  | { kind: "context"; postLnum: PostLnum; preLnum: PreLnum };
 export type DiffContext = {
   path: RepoPath;
   post: SourceRef;
   pre: SourceRef;
-  postLnum: number | undefined;
-  preLnum: number | undefined;
+  lnums: DiffLnums;
 };
 /** The two versions bounding the hunk under a row, for the split diff. */
 export function diffContext(
@@ -129,13 +154,18 @@ export function diffContext(
 ): DiffContext | undefined {
   const d = diffLineOf(cls, t, range);
   if (!d) return undefined;
-  return {
-    path: d.path,
-    post: d.post,
-    pre: d.pre,
-    postLnum: d.dl.kind === "del" ? undefined : d.dl.newLnum,
-    preLnum: d.dl.kind === "add" ? undefined : d.dl.oldLnum,
-  };
+  const dl = d.dl;
+  const lnums: DiffLnums =
+    dl.kind === "add"
+      ? { kind: "add", postLnum: postOf(dl) }
+      : dl.kind === "del"
+        ? { kind: "del", preLnum: dl.oldLnum as PreLnum }
+        : {
+            kind: "context",
+            postLnum: postOf(dl),
+            preLnum: dl.oldLnum as PreLnum,
+          };
+  return { path: d.path, post: d.post, pre: d.pre, lnums };
 }
 
 /**
@@ -146,11 +176,12 @@ export function diffContext(
 export function rowPostLnum(
   cls: Classifier,
   t: RowTarget | undefined,
-): { path: RepoPath; lnum: number } | undefined {
-  if (!t || (t.kind !== "line" && t.kind !== "marker-line")) return undefined;
-  const r = resolveFile(cls, t.file);
-  const dl = r?.file.hunks[t.hunk]?.lines[t.li];
-  return r && dl ? { path: r.file.path, lnum: dl.newLnum } : undefined;
+): { path: RepoPath; lnum: PostLnum } | undefined {
+  const l = lineRowOf(t);
+  if (!l) return undefined;
+  const r = resolveFile(cls, l.file);
+  const dl = r?.file.hunks[l.hunk]?.lines[l.li];
+  return r && dl ? { path: r.file.path, lnum: postOf(dl) } : undefined;
 }
 
 export function fileHeaderRow(
@@ -170,7 +201,7 @@ export function sourceLineRow(
   cls: Classifier,
   frame: Frame,
   path: RepoPath,
-  lnum: number,
+  lnum: PostLnum,
 ): number | undefined {
   let best: number | undefined;
   let bestScore = Number.POSITIVE_INFINITY;

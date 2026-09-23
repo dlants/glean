@@ -5,7 +5,7 @@
  */
 
 import { join } from "node:path";
-import type { Layer, LineId, RepoPath } from "../core/types.ts";
+import type { Layer, LineId, PostLnum, RepoPath } from "../core/types.ts";
 import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
@@ -177,6 +177,12 @@ export class ReviewView {
   private ns = 0;
   private nsIntra = 0;
   private readonly intraGuard = new GenerationGuard();
+  /** Latest `<CR>`/`D`/`:Glean jump`; an older one never moves windows or the cursor. */
+  private readonly jumpGuard = new GenerationGuard();
+  private staleCheck() {
+    const gen = this.jumpGuard.bump();
+    return () => !this.jumpGuard.isCurrent(gen);
+  }
   private readonly refineCache = new RefineCache();
   /** Resolves when the latest frame's intra-line refinement finishes or goes stale. */
   intraDone: Promise<unknown> = Promise.resolve();
@@ -381,7 +387,10 @@ export class ReviewView {
     ]);
     return typeof w === "number" ? w : -1;
   }
-  /** Synchronous lookups the keymaps need before returning (`gleanQuery`). */
+  /**
+   * Synchronous lookups the keymaps need before returning (`gleanQuery`).
+   * Must stay free of awaits (git, redraw): nvim is blocked until it replies.
+   */
   query(q: Query): [number, number] | undefined {
     const frame = this.frame;
     if (!frame) return undefined;
@@ -420,14 +429,19 @@ export class ReviewView {
    * `:Glean jump`: park on the row showing `path`:`lnum`, expanding whatever
    * hides it. Undefined when the file is not part of the review.
    */
-  async gotoSource(path: RepoPath, lnum: number): Promise<number | undefined> {
+  async gotoSource(
+    path: RepoPath,
+    lnum: PostLnum,
+  ): Promise<number | undefined> {
     const snap = this.session.current;
     if (!snap) return undefined;
     const inReview =
       snap.model.files.some((f) => f.path === path) ||
       snap.model.commits.some((c) => c.files.some((f) => f.path === path));
     if (!inReview) return undefined;
+    const isStale = this.staleCheck();
     await this.revealPath(path);
+    if (isStale()) return undefined;
     const cls = this.session.current?.cls ?? snap.cls;
     const row = this.frame && sourceLineRow(cls, this.frame, path, lnum);
     if (row !== undefined) await this.setCursor(row);
@@ -435,6 +449,7 @@ export class ReviewView {
   }
   /** `<CR>`: summary rows navigate within the review, diff rows open the source. */
   private async jump(row: number, col: number) {
+    const isStale = this.staleCheck();
     const snap = this.session.current;
     const frame = this.frame;
     if (!snap || !frame) return;
@@ -450,25 +465,33 @@ export class ReviewView {
         ?.entries.find((e) => e.record.id === t.commentId);
       // An off-diff comment has no review row: open the file at its line.
       if (entry?.state === "file" && entry.fileLnum !== undefined) {
+        const win = await this.win();
+        if (isStale()) return;
         await this.nvim.call("nvim_exec_lua", [
           `return require("glean.node").open_file_at(...)`,
-          [
-            await this.win(),
-            join(this.session.repoRoot, t.path),
-            entry.fileLnum,
-            0,
-          ],
+          [win, join(this.session.repoRoot, t.path), entry.fileLnum, 0],
         ]);
         return;
       }
-      await this.revealComment(t.path, t.commentId);
+      await this.revealComment(t.path, t.commentId, isStale);
       return;
     }
     const jt = jumpTarget(snap.cls, t, this.session.range);
     if (jt)
-      await openJump(this.nvim, this.session.git, await this.win(), jt, col);
+      await openJump(
+        this.nvim,
+        this.session.git,
+        await this.win(),
+        jt,
+        col,
+        isStale,
+      );
   }
-  private async revealComment(path: RepoPath, commentId: number) {
+  private async revealComment(
+    path: RepoPath,
+    commentId: number,
+    isStale: () => boolean,
+  ) {
     const find = () => {
       const cls = this.session.current?.cls;
       const rows = this.frame?.rows ?? [];
@@ -490,7 +513,7 @@ export class ReviewView {
       const header = cls && this.frame && fileHeaderRow(cls, this.frame, path);
       if (header !== undefined) row = header;
     }
-    if (row >= 0) await this.setCursor(row);
+    if (row >= 0 && !isStale()) await this.setCursor(row);
   }
   private async setCursor(row: number) {
     const win = await this.nvim.call("nvim_call_function", [
@@ -575,6 +598,7 @@ export class ReviewView {
         await this.jump(a.row, a.col);
         return;
       case "diffsplit": {
+        const isStale = this.staleCheck();
         const ctx = diffContext(
           snap.cls,
           frame.rows[a.row],
@@ -587,6 +611,7 @@ export class ReviewView {
           await this.win(),
           ctx,
           this.opts.ignoreWhitespace ?? false,
+          isStale,
         );
         return;
       }

@@ -188,25 +188,23 @@ M.open_file_at = function(win, abs, lnum, col)
   set_cursor_clamped(0, lnum, col)
   return true
 end
--- `spec.lines` nil reuses the existing buffer called `spec.name`.
-local function scratch(spec)
-  if spec.lines == nil or spec.lines == vim.NIL then
+-- An empty read-only scratch named `spec.name`; node streams its lines in.
+-- With `spec.reuse`, an existing buffer of that name is returned as is.
+M.scratch_buf = function(spec)
+  if spec.reuse then
     local b = vim.fn.bufnr(spec.name)
-    if b ~= -1 then return b end
-    spec.lines = {}
+    if b ~= -1 then return { buf = b, created = false } end
   end
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, spec.lines)
   vim.bo[buf].modifiable = false
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = spec.bufhidden
-  local ft = vim.filetype.match({ filename = spec.path, contents = spec.lines })
+  local ft = vim.filetype.match({ filename = spec.path, buf = buf })
   if ft then vim.bo[buf].filetype = ft end
   pcall(vim.api.nvim_buf_set_name, buf, spec.name)
-  return buf
+  return { buf = buf, created = true }
 end
-M.open_scratch_at = function(win, spec, lnum, col)
-  local buf = scratch(spec)
+M.open_scratch_at = function(win, buf, lnum, col)
   focus(win)
   vim.api.nvim_win_set_buf(0, buf)
   set_cursor_clamped(0, lnum, col)
@@ -235,22 +233,21 @@ local function acquire_diff_whitespace()
   end
 end
 -- Split diff right of the review window: `left` (pre-image) | `right`
--- (post-image). `right.abs` opens the live file, else `right.fallback`/`right`
--- is a scratch spec.
+-- (post-image). `right.abs` opens the live file, else `right.buf` is a scratch.
 M.diffsplit = function(win, right, post_lnum, left, pre_lnum, iwhite)
   focus(win)
   vim.cmd("rightbelow vsplit")
   local right_win = vim.api.nvim_get_current_win()
-  if right.abs and vim.fn.filereadable(right.abs) == 1 then
+  if right.abs then
     vim.cmd("edit " .. vim.fn.fnameescape(right.abs))
   else
-    vim.api.nvim_win_set_buf(right_win, scratch(right.fallback or right))
+    vim.api.nvim_win_set_buf(right_win, right.buf)
   end
   if post_lnum ~= vim.NIL then pcall(vim.api.nvim_win_set_cursor, right_win, { post_lnum, 0 }) end
   vim.cmd("diffthis")
   vim.cmd("leftabove vsplit")
   local left_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(left_win, scratch(left))
+  vim.api.nvim_win_set_buf(left_win, left)
   if pre_lnum ~= vim.NIL then pcall(vim.api.nvim_win_set_cursor, left_win, { pre_lnum, 0 }) end
   vim.cmd("diffthis")
   vim.api.nvim_set_current_win(right_win)

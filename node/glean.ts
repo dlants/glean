@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { Api, ApiError, type LiveReview } from "./api/api.ts";
 import { COMMENTS_ID, Store } from "./core/state.ts";
-import type { RepoPath } from "./core/types.ts";
+import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
@@ -441,7 +441,7 @@ async function jumpToReview(nvim: Nvim) {
       await openDirtySpec(ctx.git, ctx.defaultBase, undefined),
     );
   }
-  const row = await current?.view.gotoSource(path as RepoPath, lnum);
+  const row = await current?.view.gotoSource(path, lnum as PostLnum);
   if (row === undefined)
     await nvim.call("nvim_notify", [
       `glean: ${path} is not part of the review`,
@@ -450,7 +450,10 @@ async function jumpToReview(nvim: Nvim) {
     ]);
 }
 /** `name` relative to `root` (symlinks resolved), undefined outside it. */
-async function repoRelative(root: string, name: string) {
+export async function repoRelative(
+  root: string,
+  name: string,
+): Promise<RepoPath | undefined> {
   if (name === "" || /^\w+:\/\//.test(name)) return undefined;
   const real = async (p: string) => {
     try {
@@ -460,9 +463,7 @@ async function repoRelative(root: string, name: string) {
     }
   };
   const rel = relative(await real(root), await real(name));
-  return rel === "" || rel.startsWith("..") || isAbsolute(rel)
-    ? undefined
-    : rel;
+  return isAbsolute(rel) ? undefined : toRepoPath(rel);
 }
 
 // ---- log and PR list buffers ----

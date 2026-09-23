@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
-import type { RepoPath } from "../core/types.ts";
+import type { PostLnum, RepoPath } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import {
   buildModel,
@@ -129,7 +129,7 @@ describe("diff context", () => {
       path: "f.txt",
       pre: { kind: "rev", rev: range.base },
       post: { kind: "rev", rev: "HEAD" },
-      postLnum: undefined,
+      lnums: { kind: "del" },
     });
   });
   it("commit scope bounds sha^ and sha", async () => {
@@ -139,7 +139,7 @@ describe("diff context", () => {
     expect(ctx).toMatchObject({
       pre: { kind: "rev", rev: `${repo.shas[1]}^` },
       post: { kind: "rev", rev: repo.shas[1] },
-      postLnum: 2,
+      lnums: { kind: "add", postLnum: 2 },
     });
   });
 });
@@ -187,14 +187,18 @@ describe("source line row (:Glean jump)", () => {
     const p = "f.txt" as RepoPath;
     // Like the Lua version, a deletion ties with the line it sits before and
     // the earlier row wins.
-    expect(rowPostLnum(cls, f.rows[sourceLineRow(cls, f, p, 2) ?? -1])).toEqual(
-      {
-        path: p,
-        lnum: 2,
-      },
+    expect(
+      rowPostLnum(cls, f.rows[sourceLineRow(cls, f, p, 2 as PostLnum) ?? -1]),
+    ).toEqual({
+      path: p,
+      lnum: 2,
+    });
+    expect(f.rows[sourceLineRow(cls, f, p, 500 as PostLnum) ?? -1]?.kind).toBe(
+      "line",
     );
-    expect(f.rows[sourceLineRow(cls, f, p, 500) ?? -1]?.kind).toBe("line");
-    expect(sourceLineRow(cls, f, "nope.txt" as RepoPath, 1)).toBeUndefined();
+    expect(
+      sourceLineRow(cls, f, "nope.txt" as RepoPath, 1 as PostLnum),
+    ).toBeUndefined();
     expect(fileHeaderRow(cls, f, "g.txt" as RepoPath)).toBeDefined();
   });
 });
