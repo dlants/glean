@@ -4,7 +4,7 @@
  * batches so nvim never handles one huge request; Lua only dispatches Actions.
  */
 
-import type { RepoPath } from "../core/types.ts";
+import type { LineId, RepoPath } from "../core/types.ts";
 import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
@@ -46,6 +46,12 @@ function revealKeys(
     keys.seen(sha, path),
     ...prefixes.map((p) => keys.dir(sha, p)),
   ];
+}
+
+function ownerSha(id: LineId | undefined): string | undefined {
+  if (id?.kind === "committed-add") return id.sha;
+  if (id?.kind === "committed-del") return id.removerSha;
+  return undefined;
 }
 
 export const MAX_BATCH_LINES = 500;
@@ -340,7 +346,13 @@ export class ReviewView {
         const anchor = cursorAnchor(snap.cls, frame.rows[a.row]);
         this.scope = this.scope === "combined" ? "commits" : "combined";
         if (anchor?.kind === "line")
-          this.session.expand(revealKeys(this.scope, anchor.path, anchor.sha));
+          this.session.expand(
+            revealKeys(
+              this.scope,
+              anchor.path,
+              anchor.sha ?? ownerSha(anchor.id),
+            ),
+          );
         await this.redraw();
         const next = this.frame;
         const cls = this.session.current?.cls ?? snap.cls;

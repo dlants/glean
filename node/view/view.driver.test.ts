@@ -139,6 +139,46 @@ describe("review view (driver)", () => {
       });
     });
   });
+  it("toggle-scope expands a collapsed destination file", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "keep\n" } },
+      { msg: "edit", files: { "a.txt": "keep\nadded line\n" } },
+    ]);
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      const getLines = () =>
+        luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+      await pollUntil(async () =>
+        (await getLines()).includes("added line") ? true : undefined,
+      );
+      const header = (await getLines()).findIndex((l) => l.includes("a.txt"));
+      await nvim.call("nvim_win_set_cursor", [0, [header + 1, 0]]);
+      await nvim.call("nvim_input", ["="]);
+      await pollUntil(async () =>
+        (await getLines()).includes("added line") ? undefined : true,
+      );
+      await nvim.call("nvim_input", ["S"]);
+      await pollUntil(async () =>
+        (await getLines()).includes("added line") ? true : undefined,
+      );
+      const row = (await getLines()).indexOf("added line") + 1;
+      await nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
+      await nvim.call("nvim_input", ["S"]);
+      await pollUntil(async () =>
+        (await luaEval<string>(nvim, "vim.api.nvim_get_current_line()")) ===
+        "added line"
+          ? true
+          : undefined,
+      );
+    });
+  });
+
   it("nvim stays responsive (<50 ms) while a huge hunk renders", async () => {
     const n = 3000;
     const mk = (tag: string) =>
