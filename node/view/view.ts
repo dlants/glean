@@ -123,7 +123,15 @@ export class ReviewView {
     });
   }
 
-  async redraw() {
+  private drawChain: Promise<unknown> = Promise.resolve();
+  /** Serialized: `lineEdit` diffs against `shown`, so overlapping draws (a poll
+   * refresh racing an action) would apply edits computed against a stale frame. */
+  redraw(): Promise<void> {
+    const next = this.drawChain.then(() => this.draw());
+    this.drawChain = next.catch(() => undefined);
+    return next;
+  }
+  private async draw() {
     const frame = this.build();
     if (!frame) return;
     const gen = this.intraGuard.bump();

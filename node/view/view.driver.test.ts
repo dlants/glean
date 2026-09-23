@@ -36,6 +36,39 @@ describe("review view (driver)", () => {
     });
   });
 
+  it("m lands the cursor on the next unseen hunk", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "1\n", "b.txt": "1\n" } },
+      { msg: "one", files: { "a.txt": "A\n", "b.txt": "B\n" } },
+    ]);
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      const lines = () =>
+        luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+      const first = await pollUntil(async () => {
+        const l = await lines();
+        return l.filter((s) => s.includes("@@")).length === 2 ? l : undefined;
+      });
+      const row = first.findIndex((s) => s.includes("@@")) + 1;
+      await nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
+      await nvim.call("nvim_input", ["m"]);
+      await pollUntil(async () => {
+        const l = await lines();
+        const [cur] = await luaEval<[number, number]>(
+          nvim,
+          "vim.api.nvim_win_get_cursor(0)",
+        );
+        const hunks = l.filter((s) => s.includes("@@")).length;
+        return hunks === 1 && l[cur - 1]?.includes("@@") ? true : undefined;
+      });
+    });
+  });
   it("toggle-scope re-renders in the commits scope", async () => {
     const repo = makeRepo([
       { files: { "a.txt": "1\n" } },
