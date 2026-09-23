@@ -544,11 +544,60 @@ describe("seen extras and whitespace (driver)", () => {
       await pollUntil(async () =>
         (await floats(nvim)).length === 1 ? true : undefined,
       );
+      // A float closed from outside is reopened by the next paint.
+      await luaEval(
+        nvim,
+        `(function() for _, w in ipairs(vim.api.nvim_list_wins()) do if vim.api.nvim_win_get_config(w).relative ~= "" then vim.api.nvim_win_close(w, true) end end end)()`,
+      );
+      await scrollTo(hunk + 33);
+      await pollUntil(async () =>
+        (await floats(nvim)).length === 1 ? true : undefined,
+      );
       // Hiding the review (another buffer in its window) closes it.
       await nvim.call("nvim_command", ["enew"]);
       await pollUntil(async () =>
         (await floats(nvim)).length === 0 ? true : undefined,
       );
+    });
+  });
+  it("a superseded hunk indent is dropped; only the latest hunk is indented", async () => {
+    const base = Array.from({ length: 40 }, (_, i) => `l${i + 1}`);
+    const edited = base.map((l, i) => (i === 3 || i === 30 ? `${l}_Z` : l));
+    const repo = makeRepo([
+      { files: { "h.txt": `${base.join("\n")}\n` } },
+      { msg: "two", files: { "h.txt": `${edited.join("\n")}\n` } },
+    ]);
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() require("glean").config.hunk_indent_delay_ms = 400 end)()`,
+      );
+      await setup(nvim, repo.root);
+      await nvim.call("nvim_command", [`Glean ${repo.shas[0]} HEAD`]);
+      const body = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.includes("l31_Z") ? l : undefined;
+      });
+      const a = body.indexOf("l4_Z");
+      const b = body.indexOf("l31_Z");
+      await nvim.call("nvim_win_set_cursor", [0, [a + 1, 0]]);
+      await new Promise((r) => setTimeout(r, 50));
+      await nvim.call("nvim_win_set_cursor", [0, [b + 1, 0]]);
+      const rows = () =>
+        luaEval<number[]>(
+          nvim,
+          `vim.tbl_map(function(m) return m[2] end, vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace("glean-review-cursor-indent"), 0, -1, {}))`,
+        );
+      const marked = await pollUntil(async () => {
+        const r = await rows();
+        return r.length > 0 ? r : undefined;
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      expect(await rows()).toEqual(marked);
+      const hunkB = body.lastIndexOf(
+        body.filter((l) => l.includes("@@")).at(-1) ?? "",
+      );
+      for (const r of marked) expect(r).toBeGreaterThan(hunkB);
     });
   });
   it("W round-trips the whitespace projection keeping the cursor; U unmarks all; :e resets in place", async () => {

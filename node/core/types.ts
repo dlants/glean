@@ -1,6 +1,12 @@
 export type Brand<T, B extends string> = T & { readonly __brand: B };
 
 export type Sha = Brand<string, "Sha">;
+/** 0-based row in a glean-owned buffer. */
+export type BufRow = Brand<number, "BufRow">;
+/** nvim handles; only produced by typed RPC wrappers. */
+export type BufNr = Brand<number, "BufNr">;
+export type WinId = Brand<number, "WinId">;
+export type NsId = Brand<number, "NsId">;
 export type RepoPath = Brand<string, "RepoPath">;
 /** Line in the tip commit H. */
 export type HeadLnum = Brand<number, "HeadLnum">;

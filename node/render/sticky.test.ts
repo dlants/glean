@@ -33,19 +33,18 @@ describe("computeAncestry", () => {
   it("classifies header levels (commits scope)", () => {
     expect(anc[0]).toEqual({});
     expect(anc[1]).toEqual({ commit: 1 });
-    expect(anc[2]).toEqual({ commit: 1, file: 2 });
-    expect(anc[3]).toEqual({ commit: 1, file: 2, hunk: 3 });
-    expect(anc[4]).toEqual({ commit: 1, file: 2, hunk: 3 });
-    expect(anc[5]).toMatchObject({ commit: 1, file: 2, sec: 5 });
-    expect(anc[5]?.hunk).toBeUndefined();
-    expect(anc[6]).toEqual({ commit: 1, file: 2, sec: 5, hunk: 6 });
-    expect(anc[7]).toEqual({ commit: 1, file: 2, sec: 5, hunk: 6 });
-    expect(anc[8]).toEqual({ commit: 1, file: 2, sec: 5, hunk: 6 });
+    expect(anc[2]).toEqual({ commit: 1, file: { row: 2 } });
+    expect(anc[3]).toEqual({ commit: 1, file: { row: 2, hunk: 3 } });
+    expect(anc[4]).toEqual({ commit: 1, file: { row: 2, hunk: 3 } });
+    expect(anc[5]).toEqual({ commit: 1, file: { row: 2, sec: 5 } });
+    expect(anc[6]).toEqual({ commit: 1, file: { row: 2, sec: 5, hunk: 6 } });
+    expect(anc[7]).toEqual({ commit: 1, file: { row: 2, sec: 5, hunk: 6 } });
+    expect(anc[8]).toEqual({ commit: 1, file: { row: 2, sec: 5, hunk: 6 } });
   });
   it("has no commit level in the combined scope", () => {
     const c = computeAncestry(combined);
-    expect(c[1]).toEqual({ file: 1 });
-    expect(c[3]).toEqual({ file: 1, hunk: 2 });
+    expect(c[1]).toEqual({ file: { row: 1 } });
+    expect(c[3]).toEqual({ file: { row: 1, hunk: 2 } });
   });
 });
 

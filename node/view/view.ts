@@ -5,7 +5,15 @@
  */
 
 import { join } from "node:path";
-import type { Layer, LineId, PostLnum, RepoPath } from "../core/types.ts";
+import type {
+  BufNr,
+  Layer,
+  LineId,
+  NsId,
+  PostLnum,
+  RepoPath,
+  WinId,
+} from "../core/types.ts";
 import {
   type Generation,
   GenerationGuard,
@@ -42,7 +50,11 @@ import {
   keys,
   render,
 } from "../render/render.ts";
-import { computeAncestry, computePinned } from "../render/sticky.ts";
+import {
+  type Ancestry,
+  computeAncestry,
+  computePinned,
+} from "../render/sticky.ts";
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
 import { openDiffsplit, openJump } from "./jump.ts";
@@ -272,8 +284,11 @@ export class ReviewView {
     this.nsIntra = await this.nvim.call("nvim_create_namespace", [
       "glean-review-intra",
     ]);
-    const ns = (name: string) =>
-      this.nvim.call("nvim_create_namespace", [name]) as Promise<number>;
+    const ns = async (name: string): Promise<NsId> => {
+      const id = await this.nvim.call("nvim_create_namespace", [name]);
+      if (typeof id !== "number") throw new Error("nvim_create_namespace");
+      return id as NsId;
+    };
     this.nsCursor = await ns("glean-review-cursor");
     this.nsIndent = await ns("glean-review-cursor-indent");
     this.nsSticky = await ns("glean-review-sticky");
@@ -594,11 +609,30 @@ export class ReviewView {
     const dest = next === undefined ? undefined : rowOfHunk(frame, next);
     await this.setCursor(dest ?? Math.min(row, frame.rows.length - 1));
   }
-  private nsCursor = 0;
-  private nsIndent = 0;
-  private nsSticky = 0;
-  private stickyWin: number | undefined;
-  private stickyBuf: number | undefined;
+  private nsCursor = 0 as NsId;
+  private nsIndent = 0 as NsId;
+  private nsSticky = 0 as NsId;
+  private stickyWin: WinId | undefined;
+  private stickyBuf: BufNr | undefined;
+  /** Per-frame lookups so cursor/scroll events never rescan the frame. */
+  private readonly decorCache = new WeakMap<Frame, FrameDecor>();
+  private decorOf(frame: Frame): FrameDecor {
+    let d = this.decorCache.get(frame);
+    if (!d) {
+      d = frameDecor(frame);
+      this.decorCache.set(frame, d);
+    }
+    return d;
+  }
+  /** Sends extmark calls in `MAX_BATCH_CALLS` chunks, stopping once `live()` fails. */
+  private async sendChunked(calls: unknown[], live: () => boolean) {
+    for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS) {
+      if (!live()) return;
+      await this.nvim.call("nvim_call_atomic", [
+        calls.slice(i, i + MAX_BATCH_CALLS),
+      ]);
+    }
+  }
   /** Last painted float state; an unchanged topline/width/frame skips the work. */
   private stickyKey: { top: number; width: number; frame: Frame } | undefined;
   private hunkKey: { lo: number; hi: number; frame: Frame } | undefined;
@@ -642,15 +676,7 @@ export class ReviewView {
     await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsCursor, 0, -1]);
     await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsIndent, 0, -1]);
     if (!r) return;
-    const signs = new Map<number, "+" | "-">();
-    for (const h of frame.highlights)
-      if (
-        h.kind === "line" &&
-        (h.sign === "+" || h.sign === "-") &&
-        h.row >= r.lo &&
-        h.row <= r.hi
-      )
-        signs.set(h.row, h.sign);
+    const { signs } = this.decorOf(frame);
     const calls: unknown[] = [];
     for (let row = r.lo; row <= r.hi; row++) {
       const s = signs.get(row);
@@ -674,7 +700,9 @@ export class ReviewView {
         ],
       ]);
     }
-    await this.nvim.call("nvim_call_atomic", [calls]);
+    const live = () => this.indentGuard.isCurrent(gen) && this.frame === frame;
+    await this.sendChunked(calls, live);
+    if (!live()) return;
     const indent = Math.max(0, this.opts.hunkIndent ?? 2);
     if (indent === 0) return;
     const delay = Math.max(0, this.opts.hunkIndentDelayMs ?? 50);
@@ -694,7 +722,8 @@ export class ReviewView {
     indent: number,
     gen: Generation,
   ) {
-    if (!this.indentGuard.isCurrent(gen) || this.frame !== frame) return;
+    const live = () => this.indentGuard.isCurrent(gen) && this.frame === frame;
+    if (!live()) return;
     const b = this.bufnr;
     const body: unknown[] = [];
     for (let row = r.lo; row <= r.hi; row++) {
@@ -714,7 +743,7 @@ export class ReviewView {
         ],
       ]);
     }
-    await this.nvim.call("nvim_call_atomic", [body]);
+    await this.sendChunked(body, live);
   }
   /**
    * Pin the enclosing headers of the topline in a non-focusable float over the
@@ -732,20 +761,18 @@ export class ReviewView {
     )
       return;
     this.stickyKey = { top: info.top, width: info.width, frame };
-    const pinned = computePinned(computeAncestry(frame.rows), info.top);
+    const pinned = computePinned(this.decorOf(frame).ancestry, info.top);
     if (pinned.length === 0) {
       await this.closeSticky();
       return;
     }
     if (this.stickyBuf === undefined || !(await this.bufValid(this.stickyBuf)))
-      this.stickyBuf = (await this.nvim.call("nvim_create_buf", [
-        false,
-        true,
-      ])) as number;
+      this.stickyBuf = handle<BufNr>(
+        await this.nvim.call("nvim_create_buf", [false, true]),
+        "nvim_create_buf",
+      );
     const sbuf = this.stickyBuf;
-    const lineHl = new Map<number, string>();
-    for (const h of frame.highlights)
-      if (h.kind === "line" && !lineHl.has(h.row)) lineHl.set(h.row, h.hl);
+    const { lineHl } = this.decorOf(frame);
     const calls: unknown[] = [
       [
         "nvim_buf_set_lines",
@@ -786,11 +813,14 @@ export class ReviewView {
       ((await this.nvim.call("nvim_win_is_valid", [cur])) as boolean);
     if (valid) await this.nvim.call("nvim_win_set_config", [cur, cfg]);
     else {
-      this.stickyWin = (await this.nvim.call("nvim_open_win", [
-        sbuf,
-        false,
-        { ...cfg, noautocmd: true },
-      ])) as number;
+      this.stickyWin = handle<WinId>(
+        await this.nvim.call("nvim_open_win", [
+          sbuf,
+          false,
+          { ...cfg, noautocmd: true },
+        ]),
+        "nvim_open_win",
+      );
       await this.nvim.call("nvim_set_option_value", [
         "wrap",
         false,
@@ -798,11 +828,11 @@ export class ReviewView {
       ]);
     }
   }
-  private async bufValid(b: number): Promise<boolean> {
+  private async bufValid(b: BufNr): Promise<boolean> {
     return (await this.nvim.call("nvim_buf_is_valid", [b])) as boolean;
   }
   /** The sticky float's window, if open (for tests and teardown). */
-  get stickyWindow(): number | undefined {
+  get stickyWindow(): WinId | undefined {
     return this.stickyWin;
   }
   async closeSticky() {
@@ -819,6 +849,11 @@ export class ReviewView {
   async detach() {
     this.suspend();
     this.indentGuard.bump();
+    this.hunkKey = undefined;
+    await this.nvim.call("nvim_exec_lua", [
+      `local b, a, c = ...; if vim.api.nvim_buf_is_valid(b) then vim.api.nvim_buf_clear_namespace(b, a, 0, -1); vim.api.nvim_buf_clear_namespace(b, c, 0, -1) end`,
+      [this.bufnr, this.nsCursor, this.nsIndent],
+    ]);
     await this.closeSticky();
   }
   /**
@@ -981,4 +1016,24 @@ export class ReviewView {
       }
     }
   }
+}
+
+type FrameDecor = {
+  signs: Map<number, "+" | "-">;
+  lineHl: Map<number, string>;
+  ancestry: Ancestry[];
+};
+function frameDecor(frame: Frame): FrameDecor {
+  const signs = new Map<number, "+" | "-">();
+  const lineHl = new Map<number, string>();
+  for (const h of frame.highlights) {
+    if (h.kind !== "line") continue;
+    if (h.sign === "+" || h.sign === "-") signs.set(h.row, h.sign);
+    if (!lineHl.has(h.row)) lineHl.set(h.row, h.hl);
+  }
+  return { signs, lineHl, ancestry: computeAncestry(frame.rows) };
+}
+function handle<T extends BufNr | WinId>(v: unknown, what: string): T {
+  if (typeof v !== "number") throw new Error(`${what}: unexpected result`);
+  return v as T;
 }
