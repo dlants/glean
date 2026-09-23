@@ -4,6 +4,7 @@
  * batches so nvim never handles one huge request; Lua only dispatches Actions.
  */
 
+import type { RepoPath } from "../core/types.ts";
 import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
@@ -16,9 +17,36 @@ import {
 } from "../render/actions.ts";
 import { cursorAnchor, restoreAnchor } from "../render/anchor.ts";
 import type { IntraBlock } from "../render/render.ts";
-import { type Frame, render } from "../render/render.ts";
+import {
+  type CollapseKey,
+  type Frame,
+  keys,
+  render,
+} from "../render/render.ts";
+
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
+
+/** Collapse keys hiding `path`'s lines in `scope`, so navigation can reach them. */
+function revealKeys(
+  scope: Scope,
+  path: RepoPath,
+  sha: string | undefined,
+): CollapseKey[] {
+  const parts = path.split("/");
+  const prefixes = parts
+    .slice(1)
+    .map((_, i) => parts.slice(0, i + 1).join("/"));
+  if (scope === "combined")
+    return [keys.cfile(path), keys.cseen(path), ...prefixes.map(keys.cdir)];
+  if (sha === undefined) return [];
+  return [
+    keys.commit(sha),
+    keys.file(sha, path),
+    keys.seen(sha, path),
+    ...prefixes.map((p) => keys.dir(sha, p)),
+  ];
+}
 
 export const MAX_BATCH_LINES = 500;
 export const MAX_BATCH_CALLS = 1000;
@@ -311,9 +339,12 @@ export class ReviewView {
       case "toggle-scope": {
         const anchor = cursorAnchor(snap.cls, frame.rows[a.row]);
         this.scope = this.scope === "combined" ? "commits" : "combined";
+        if (anchor?.kind === "line")
+          this.session.expand(revealKeys(this.scope, anchor.path, anchor.sha));
         await this.redraw();
         const next = this.frame;
-        const row = anchor && next && restoreAnchor(snap.cls, next, anchor);
+        const cls = this.session.current?.cls ?? snap.cls;
+        const row = anchor && next && restoreAnchor(cls, next, anchor);
         if (row !== undefined) await this.setCursor(row);
         return;
       }

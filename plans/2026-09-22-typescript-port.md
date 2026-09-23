@@ -193,7 +193,7 @@ Lua ↔ node:
   - Still to do for 4d:
     - Section-level highlight diffing.
     - Cursor placement after mark/visual mark: done (`ReviewView.markAndAdvance`: a mark lands on `nextUnseenHunk` computed from the pre-mark frame, else stays on the row clamped; unmark stays). Driver test "m lands the cursor on the next unseen hunk". It exposed a race: a poll-triggered redraw overlapping an action redraw corrupted the buffer (both diffed against the same `shown`), so `ReviewView.redraw` is now serialized behind a promise chain.
-    - Scope-toggle: expand a collapsed destination before restoring the anchor.
+    - Scope-toggle collapsed destination: done. `Session.expand(keys)` sets non-undoable expanded overrides; the view expands the anchor path's file/seen/dir keys (plus the commit key in commits scope, using the anchor's sha) before restoring. Limitation: combined→commits anchors carry no sha, so only already-expanded commits are reached exactly. No driver test yet for this case.
     - Summary-row actions.
     - Suspend/resume and `suspend_test`.
     - Remaining `init_test`/`reload_test` cases.

@@ -322,6 +322,13 @@ export class Session {
     await this.reclassify();
   }
 
+  /** Navigation-only expansion: not recorded on the undo stack. */
+  expand(ks: readonly CollapseKey[]) {
+    const next = new Map(this.collapse);
+    for (const k of ks) next.set(k, false);
+    this.collapse = next;
+  }
+
   private setCollapse(key: CollapseKey, v: boolean | undefined) {
     const next = new Map(this.collapse);
     if (v === undefined) next.delete(key);
