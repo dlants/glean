@@ -221,6 +221,13 @@ Lua ↔ node:
 
 - Goal: `api.lua` becomes an rpcrequest shim, `api.ts` serves from memory, and `skills/glean-review/skill.md` is updated.
 - Tests: port `api_test`. Call the api while a refresh is running and assert it returns promptly.
+- Status: done.
+  - `node/api/api.ts` `Api` over an `ApiHost` (`reviews()`, `repoContext(path)`): `sessions`, `comments`, `hunks`, `mark`, `excerpt`, `add_comment`, `reply`, `unreply`, dispatched by `call(name, args)`. Arguments are parsed at the boundary (`Address` union: default / session id / `{repo}`). Session-mode comments come from `Session.commentSummary()`; repo mode loads a fresh `Store` and locates against the work-tree file. `mark` is one `Session.perform` (undoable), reply/unreply are undoable `comment` edits. Repo-mode writes save the WORKTREE shard and refresh any live review of the same repo. Hunk ids keep the Lua format (`b:NNNNNN:NNNNNN`, `c:…`, 1-based) and line `i` stays 1-based.
+  - Pending: a review with no snapshot yet (`NotReady`) or a call running past `API_TIMEOUT_MS` (2 s) answers `{status: "pending"}`; the work keeps running. Results go through a JSON round trip so undefined fields arrive as nil, not vim.NIL. Errors are thrown as `ApiError`, which nvim-node returns as the rpcrequest error.
+  - `glean.ts` registers `onRequest("gleanApi")`, keeps a `reviews` list with ids `g1, g2, …`, and names the buffer `glean://review/Glean:<id> <repo>`. `repoContext` resolves the root with `git rev-parse --show-toplevel` and uses the same state dir as `open`.
+  - Deviation: the shim is `lua/glean/node_api.lua` (one `vim.rpcrequest` per call, nil args sent as vim.NIL), because the Lua `glean.api` still serves the Lua `:Glean` until cutover. At cutover it replaces `api.lua` under the `glean.api` name. The skill doc gained a "Pending answers" section; the entry points are unchanged.
+  - Not ported: `api_test` buffer-title cases for abbreviated oids / symbolic refs and "one review at a time" (node only opens work-tree reviews via `:GleanNode open`; revisit with cutover's `:Glean` argument handling), and the "id rendered in buffer" check.
+  - Tests: `api.test.ts` ports the rest of `api_test` against a fake host (comments, replies/undo, unanswered, repo mode, add_comment, session/repo agreement, session resolution errors, hunks in both modes, globs, paging, partial/batch/unmark marking, uncommitted repeated-line deletions, pending). `api.driver.test.ts` round-trips the Lua shim (including `excerpt` and error raising) and asserts every call answers in under 500 ms while a 3000-line rewrite review loads.
 
 ## Cutover
 

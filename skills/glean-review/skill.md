@@ -165,6 +165,15 @@ undoable with `u`, persist, and re-render live, exactly like the human's.
 Only mark when the human asks you to triage; seen-ness is their reading
 progress, not yours.
 
+## Pending answers
+
+glean's work runs in a separate node process, and each api call is answered from
+what that process already has in memory, so a call never stalls the editor. If a
+review is still loading, or a call (e.g. a large `mark`) takes longer than about
+two seconds, it returns `{ status = "pending" }` instead of a result. Wait a
+moment and repeat the call; a pending `mark` keeps running and will be reflected
+by the next `hunks()`.
+
 ## Errors
 
 Every call errors loudly rather than no-opping:

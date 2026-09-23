@@ -139,11 +139,13 @@ local function row0()
 end
 
 -- Scratch review buffer; each keymap is one rpcnotify with the cursor row.
-M.open_review_buffer = function()
+-- `id` is the api session id; it leads the name so agents can read it off.
+M.open_review_buffer = function(id)
   local buf = vim.api.nvim_create_buf(true, true)
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].modifiable = false
-  vim.api.nvim_buf_set_name(buf, "glean://review/" .. buf)
+  local repo = vim.fn.fnamemodify(vim.fn.getcwd(), ":t")
+  vim.api.nvim_buf_set_name(buf, ("glean://review/Glean:%s %s"):format(id or buf, repo))
   local function map(mode, lhs, fn)
     vim.keymap.set(mode, lhs, fn, { buffer = buf, nowait = true, silent = true })
   end

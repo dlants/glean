@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { Api, ApiError, type LiveReview } from "./api/api.ts";
+import { Store } from "./core/state.ts";
 import { Git, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
@@ -9,7 +11,10 @@ import { parseAction, ReviewView } from "./view/view.ts";
 export const GLEAN_COMMAND = "gleanCommand";
 export const GLEAN_ACTION = "gleanAction";
 export const GLEAN_GUTTER = "gleanGutter";
+export const GLEAN_API = "gleanApi";
 const views = new Map<number, ReviewView>();
+const reviews: LiveReview[] = [];
+let nextReviewId = 1;
 /** The live review the file-buffer gutter follows: the most recently opened. */
 let liveSession: Session | undefined;
 let gutter: FileGutter | undefined;
@@ -86,22 +91,49 @@ export function parseOpenConfig(v: unknown): OpenConfig {
     ignoreWs: ws === true,
   };
 }
-async function openReview(nvim: Nvim, base: string): Promise<void> {
-  const { root, dataDir, stateOverride, minSeenRun, ignoreWs } =
-    parseOpenConfig(
-      await nvim.call("nvim_exec_lua", [
-        `return { vim.fn.getcwd(), vim.fn.stdpath("data"), vim.g.glean_state_dir or vim.NIL, vim.g.glean_min_seen_run or vim.NIL, vim.g.glean_ignore_whitespace == true }`,
-        [],
-      ]),
-    );
-  const git = new Git({ repoRoot: root, runner: spawnRunner() });
-  const stateDir =
-    stateOverride ??
+function stateDirFor(
+  root: string,
+  dataDir: string,
+  override: string | undefined,
+): string {
+  return (
+    override ??
     join(
       dataDir,
       "glean-node",
       createHash("sha256").update(root).digest("hex").slice(0, 16),
-    );
+    )
+  );
+}
+
+/** Repo mode: the store of the repo containing `path` (default: nvim's cwd). */
+async function repoContext(nvim: Nvim, path: string | undefined) {
+  const {
+    root: cwd,
+    dataDir,
+    stateOverride,
+  } = parseOpenConfig(await nvim.call("nvim_exec_lua", [OPEN_CONFIG_LUA, []]));
+  const probe = new Git({ repoRoot: path ?? cwd, runner: spawnRunner() });
+  const top = await probe.run(["rev-parse", "--show-toplevel"]);
+  if (top.kind !== "ok")
+    throw new ApiError(`glean: ${path ?? cwd} is not inside a git repository`);
+  const root = top.value.trim();
+  const store = new Store(stateDirFor(root, dataDir, stateOverride));
+  await store.load([]);
+  return {
+    root,
+    git: new Git({ repoRoot: root, runner: spawnRunner() }),
+    store,
+  };
+}
+
+const OPEN_CONFIG_LUA = `return { vim.fn.getcwd(), vim.fn.stdpath("data"), vim.g.glean_state_dir or vim.NIL, vim.g.glean_min_seen_run or vim.NIL, vim.g.glean_ignore_whitespace == true }`;
+
+async function openReview(nvim: Nvim, base: string): Promise<void> {
+  const { root, dataDir, stateOverride, minSeenRun, ignoreWs } =
+    parseOpenConfig(await nvim.call("nvim_exec_lua", [OPEN_CONFIG_LUA, []]));
+  const git = new Git({ repoRoot: root, runner: spawnRunner() });
+  const stateDir = stateDirFor(root, dataDir, stateOverride);
   const session = new Session({
     git,
     base,
@@ -109,16 +141,27 @@ async function openReview(nvim: Nvim, base: string): Promise<void> {
     stateDir,
     build: { ignoreWhitespace: ignoreWs },
   });
-  const bufnr = (await nvim.call("nvim_exec_lua", [
-    `return require("glean.node").open_review_buffer()`,
-    [],
-  ])) as number;
+  const id = `g${nextReviewId++}`;
+  const [bufnr, title] = (await nvim.call("nvim_exec_lua", [
+    `local buf = require("glean.node").open_review_buffer(...)
+return { buf, vim.api.nvim_buf_get_name(buf) }`,
+    [id],
+  ])) as [number, string];
   const view = new ReviewView(nvim, bufnr, session, {
     minSeenRun: typeof minSeenRun === "number" ? minSeenRun : 5,
     ignoreWhitespace: ignoreWs,
   });
   await view.init();
   views.set(bufnr, view);
+  reviews.push({
+    id,
+    session,
+    base,
+    target: "worktree",
+    title,
+    scope: () => view.scope,
+    frame: () => view.frame,
+  });
   liveSession = session;
   session.subscribe(() => {
     if (liveSession === session) void gutter?.refreshAll();
@@ -152,6 +195,14 @@ export async function startGlean(nvim: Nvim): Promise<void> {
       nvim.logger.error(err instanceof Error ? err : String(err));
     }
   });
+  const api = new Api({
+    reviews: () => reviews,
+    repoContext: (path) => repoContext(nvim, path),
+  });
+  // Errors travel back as the rpcrequest error, so the Lua caller sees them raised.
+  nvim.onRequest(GLEAN_API, async (args: unknown[]) =>
+    api.call(args[0], args[1]),
+  );
   await nvim.call("nvim_exec_lua", [
     `require("glean.node").bridge(...)`,
     [nvim.channelId],
