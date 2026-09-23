@@ -8,7 +8,7 @@
 import { readFile } from "node:fs/promises";
 import { join, matchesGlob } from "node:path";
 import { diffProjection, fileProjection, locate } from "../core/comments.ts";
-import type { Hunk } from "../core/diff.ts";
+import type { FileKind, Hunk } from "../core/diff.ts";
 import type { CommentOrigin, CommentRecord, Store } from "../core/state.ts";
 import type { LineId, RepoPath, Sha } from "../core/types.ts";
 import { WORKTREE } from "../core/types.ts";
@@ -40,6 +40,18 @@ export class ApiError extends Error {}
 const fail = (msg: string): never => {
   throw new ApiError(`glean: ${msg}`);
 };
+const MUTATION_DEDUP_MS = 60_000;
+/** Repo-relative, no absolute paths or `..` escapes. */
+function parseRepoPath(v: unknown): RepoPath {
+  if (
+    typeof v !== "string" ||
+    v === "" ||
+    v.startsWith("/") ||
+    v.split("/").includes("..")
+  )
+    return fail("add_comment requires a repo-relative path");
+  return v as RepoPath;
+}
 export type Pending = { status: "pending" };
 const PENDING: Pending = { status: "pending" };
 class NotReady extends Error {}
@@ -64,7 +76,7 @@ type HunkEntry = {
   mode: HunkMode;
   sha: Sha | undefined;
   path: RepoPath;
-  kind: string;
+  kind: FileKind;
   hunk: Hunk;
   owner: OwnerFn;
 };
@@ -207,8 +219,31 @@ export class Api {
   constructor(private readonly host: ApiHost) {}
 
   /** Dispatch one `gleanApi` request; unknown names are caller bugs. */
+  /** Mutations keyed by name+args. An in-flight call is joined by a retry; one
+   * that answered PENDING stays joinable for a while after it lands, so the
+   * agent's retry reads its result instead of applying it twice. */
+  private readonly mutations = new Map<
+    string,
+    { p: Promise<unknown>; pending: boolean }
+  >();
+  private once(name: string, args: unknown, run: () => Promise<unknown>) {
+    const key = JSON.stringify([name, args]);
+    const hit = this.mutations.get(key);
+    if (hit) return { entry: hit, fresh: false };
+    const entry = { p: run(), pending: false };
+    this.mutations.set(key, entry);
+    const settle = () => {
+      if (!entry.pending) this.mutations.delete(key);
+      else
+        setTimeout(() => this.mutations.delete(key), MUTATION_DEDUP_MS).unref();
+    };
+    entry.p.then(settle, settle);
+    return { entry, fresh: true };
+  }
+  /** Returns undefined for "no value"; the RPC handler maps it to nil. */
   async call(name: unknown, args: unknown): Promise<unknown> {
     const a = Array.isArray(args) ? args : [];
+    const mutating = new Set(["mark", "add_comment", "reply", "unreply"]);
     const run = (): Promise<unknown> => {
       switch (name) {
         case "sessions":
@@ -237,8 +272,13 @@ export class Api {
     });
     try {
       // A JSON round trip drops undefined fields, so Lua sees nil, not vim.NIL.
-      const out = await Promise.race([run(), timeout]);
-      return out === undefined ? null : JSON.parse(JSON.stringify(out));
+      const m =
+        typeof name === "string" && mutating.has(name)
+          ? this.once(name, args, run)
+          : undefined;
+      const out = await Promise.race([m ? m.entry.p : run(), timeout]);
+      if (out === PENDING && m) m.entry.pending = true;
+      return out === undefined ? undefined : JSON.parse(JSON.stringify(out));
     } catch (err) {
       if (err instanceof NotReady) return PENDING;
       throw err;
@@ -272,7 +312,8 @@ export class Api {
         "no review is open; open one with :Glean before using glean.api",
       );
     if (id === undefined) {
-      if (live.length === 1) return live[0]!;
+      const [only] = live;
+      if (only && live.length === 1) return only;
       return fail(
         `${live.length} reviews are open; pass a session id — ${this.describe()}`,
       );
@@ -359,7 +400,7 @@ export class Api {
     const opts = obj(optsArg);
     const mode = opts.mode ?? "combined";
     if (mode !== "combined" && mode !== "commits")
-      fail(
+      return fail(
         `unknown hunk mode "${String(mode)}"; expected "combined" or "commits"`,
       );
     const r = this.reviewArg(sessionArg);
@@ -370,7 +411,7 @@ export class Api {
     const seen = typeof opts.seen === "boolean" ? opts.seen : undefined;
     const out: ReturnType<typeof apiHunk>[] = [];
     let total = 0;
-    for (const e of allHunks(cls, mode as HunkMode)) {
+    for (const e of allHunks(cls, mode)) {
       if (glob && !matchesGlob(e.path, glob)) continue;
       if (cursor && e.id <= cursor) continue;
       const h = apiHunk(cls, e);
@@ -476,9 +517,8 @@ export class Api {
 
   async addComment(optsArg: unknown): Promise<number> {
     const o = obj(optsArg);
-    const path = str(o.path);
+    const path = parseRepoPath(o.path);
     const text = str(o.text);
-    if (!path) return fail("add_comment requires a repo-relative path");
     if (!text || !/\S/.test(text))
       return fail("add_comment requires a non-empty text");
     const ctx = await this.host.repoContext(str(o.repo));
@@ -496,14 +536,15 @@ export class Api {
       ctx.git.revParse("HEAD"),
       ctx.git.run(["status", "--porcelain", "--", path]),
     ]);
-    const origin: CommentOrigin =
+    // No HEAD (unborn branch, git failure): the comment has no origin commit.
+    const origin: CommentOrigin | undefined =
       head.kind === "ok"
         ? {
             sha: head.value,
             dirty: status.kind !== "ok" || /\S/.test(status.value),
           }
-        : { sha: WORKTREE as Sha, dirty: true };
-    const rec = ctx.store.addCommentRecord(path as RepoPath, {
+        : undefined;
+    const rec = ctx.store.addCommentRecord(path, {
       lnum: first,
       content: lines
         .slice(first - 1, last)
@@ -513,18 +554,19 @@ export class Api {
       origin,
     });
     await ctx.store.save(ctx.store.wtShard);
-    await this.afterRepoWrite(ctx.root);
+    this.afterRepoWrite(ctx.root);
     return rec.id;
   }
 
   /** A live review over the same repo re-reads the store it shares with repo mode. */
-  private async afterRepoWrite(root: string) {
-    await Promise.all(
+  // Fire-and-forget: a full rebuild must not hold the rpcrequest (and so nvim).
+  private afterRepoWrite(root: string) {
+    void Promise.all(
       this.host
         .reviews()
         .filter((r) => r.session.repoRoot === root)
         .map((r) => r.session.refresh()),
-    );
+    ).catch(() => undefined);
   }
 
   async setReply(

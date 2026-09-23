@@ -106,18 +106,26 @@ function stateDirFor(
   );
 }
 
-/** Repo mode: the store of the repo containing `path` (default: nvim's cwd). */
+/** Resolved `rev-parse --show-toplevel` per probe path, so repeat repo-mode calls skip git. */
+const repoRoots = new Map<string, string>();
+/** Repo mode: the store of the repo containing `path` (default: nvim's cwd).
+ * The store is re-read each call: live sessions write the same shards. */
 async function repoContext(nvim: Nvim, path: string | undefined) {
   const {
     root: cwd,
     dataDir,
     stateOverride,
   } = parseOpenConfig(await nvim.call("nvim_exec_lua", [OPEN_CONFIG_LUA, []]));
-  const probe = new Git({ repoRoot: path ?? cwd, runner: spawnRunner() });
-  const top = await probe.run(["rev-parse", "--show-toplevel"]);
-  if (top.kind !== "ok")
-    throw new ApiError(`glean: ${path ?? cwd} is not inside a git repository`);
-  const root = top.value.trim();
+  const probePath = path ?? cwd;
+  let root = repoRoots.get(probePath);
+  if (root === undefined) {
+    const probe = new Git({ repoRoot: probePath, runner: spawnRunner() });
+    const top = await probe.run(["rev-parse", "--show-toplevel"]);
+    if (top.kind !== "ok")
+      throw new ApiError(`glean: ${probePath} is not inside a git repository`);
+    root = top.value.trim();
+    repoRoots.set(probePath, root);
+  }
   const store = new Store(stateDirFor(root, dataDir, stateOverride));
   await store.load([]);
   return {
@@ -200,9 +208,10 @@ export async function startGlean(nvim: Nvim): Promise<void> {
     repoContext: (path) => repoContext(nvim, path),
   });
   // Errors travel back as the rpcrequest error, so the Lua caller sees them raised.
-  nvim.onRequest(GLEAN_API, async (args: unknown[]) =>
-    api.call(args[0], args[1]),
-  );
+  nvim.onRequest(GLEAN_API, async (args: unknown[]) => {
+    const out = await api.call(args[0], args[1]);
+    return out === undefined ? null : out;
+  });
   await nvim.call("nvim_exec_lua", [
     `require("glean.node").bridge(...)`,
     [nvim.channelId],

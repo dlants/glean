@@ -36,6 +36,12 @@ describe("agent api (driver)", () => {
           `select(2, pcall(require("glean.node_api").hunks))`,
         ),
       ).toContain("no review is open");
+      expect(
+        await luaEval(
+          nvim,
+          `select(2, pcall(require("glean.node_api").comments, { repo = "/" }))`,
+        ),
+      ).toContain("/ is not inside a git repository");
 
       await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
       const sessions = await pollUntil(async () => {
