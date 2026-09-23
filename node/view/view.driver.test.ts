@@ -213,3 +213,50 @@ describe("review view (driver)", () => {
     });
   }, 60000);
 });
+
+describe("review view visibility (driver)", () => {
+  it("suspends painting while hidden and catches up when re-displayed", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const repo = makeRepo([
+      { files: { "a.txt": "1\n" } },
+      { msg: "one", files: { "a.txt": "ONE\n" } },
+    ]);
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      const buf = await pollUntil(async () => {
+        const b = await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()");
+        const name = await luaEval<string>(
+          nvim,
+          `vim.api.nvim_buf_get_name(${b})`,
+        );
+        return name.startsWith("glean://review/") ? b : undefined;
+      });
+      const body = async () =>
+        (
+          await luaEval<string[]>(
+            nvim,
+            `vim.api.nvim_buf_get_lines(${buf}, 0, -1, false)`,
+          )
+        ).join("\n");
+      await pollUntil(async () =>
+        (await body()).includes("ONE") ? true : undefined,
+      );
+      // Let the first poll tick record its baseline signature.
+      await new Promise((r) => setTimeout(r, 1200));
+      await nvim.call("nvim_command", ["enew"]);
+      writeFileSync(join(repo.root, "a.txt"), "TWO\n");
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(await body()).not.toContain("TWO");
+      await nvim.call("nvim_command", [`buffer ${buf}`]);
+      await pollUntil(async () =>
+        (await body()).includes("TWO") ? true : undefined,
+      );
+    });
+  }, 20000);
+});

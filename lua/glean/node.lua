@@ -144,6 +144,16 @@ M.open_review_buffer = function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
     action(buf, { kind = "visual-mark", srow = s, erow = e })
   end)
+  -- BufWinLeave fires only when the buffer leaves its last window.
+  local group = vim.api.nvim_create_augroup("GleanNodeReview" .. buf, { clear = true })
+  vim.api.nvim_create_autocmd("BufWinEnter", {
+    group = group, buffer = buf,
+    callback = function() action(buf, { kind = "visibility", visible = true }) end,
+  })
+  vim.api.nvim_create_autocmd("BufWinLeave", {
+    group = group, buffer = buf,
+    callback = function() action(buf, { kind = "visibility", visible = false }) end,
+  })
   vim.api.nvim_set_current_buf(buf)
   return buf
 end

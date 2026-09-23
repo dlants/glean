@@ -384,6 +384,10 @@ export class Session {
     this.poller.start(intervalMs);
   }
 
+  /** One immediate poll, e.g. when a hidden view is re-displayed. */
+  async pokePoll() {
+    if (this.worktree) await this.poller.poke();
+  }
   stop() {
     this.poller.stop();
     this.guard.bump();

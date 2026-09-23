@@ -64,7 +64,8 @@ export type Action =
   | { kind: "toggle-fold"; row: number }
   | { kind: "toggle-scope"; row: number }
   | { kind: "undo" }
-  | { kind: "redo" };
+  | { kind: "redo" }
+  | { kind: "visibility"; visible: boolean };
 
 export function parseAction(v: unknown): Action | undefined {
   if (typeof v !== "object" || v === null) return undefined;
@@ -84,6 +85,10 @@ export function parseAction(v: unknown): Action | undefined {
         ? undefined
         : { kind: "visual-mark", srow, erow };
     }
+    case "visibility":
+      return typeof o.visible === "boolean"
+        ? { kind: "visibility", visible: o.visible }
+        : undefined;
     case "undo":
     case "redo":
       return { kind: o.kind };
@@ -130,12 +135,26 @@ export class ReviewView {
     private readonly opts: ViewOpts = {},
   ) {
     session.onChange = () => {
+      // Hidden: the model keeps refreshing (gutter/file-buffer paths read it),
+      // only the buffer paint waits for `resume`.
+      if (this.suspended) return;
       void this.redraw().catch((e: unknown) =>
         nvim.logger.error(e instanceof Error ? e : String(e)),
       );
     };
   }
 
+  suspended = false;
+  suspend() {
+    this.suspended = true;
+    this.intraGuard.bump();
+  }
+  async resume() {
+    if (!this.suspended) return;
+    this.suspended = false;
+    await this.redraw();
+    await this.session.pokePoll();
+  }
   async init() {
     this.ns = await this.nvim.call("nvim_create_namespace", ["glean-review"]);
     this.nsIntra = await this.nvim.call("nvim_create_namespace", [
@@ -307,6 +326,11 @@ export class ReviewView {
     await this.setCursor(dest ?? Math.min(row, frame.rows.length - 1));
   }
   async dispatch(a: Action) {
+    if (a.kind === "visibility") {
+      if (a.visible) await this.resume();
+      else this.suspend();
+      return;
+    }
     const snap = this.session.current;
     const frame = this.frame;
     if (!snap || !frame) return;

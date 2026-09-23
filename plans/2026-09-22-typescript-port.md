@@ -195,7 +195,8 @@ Lua ↔ node:
     - Cursor placement after mark/visual mark: done (`ReviewView.markAndAdvance`: a mark lands on `nextUnseenHunk` computed from the pre-mark frame, else stays on the row clamped; unmark stays). Driver test "m lands the cursor on the next unseen hunk". It exposed a race: a poll-triggered redraw overlapping an action redraw corrupted the buffer (both diffed against the same `shown`), so `ReviewView.redraw` is now serialized behind a promise chain.
     - Scope-toggle collapsed destination: done. `Session.expand(keys)` sets non-undoable expanded overrides; the view expands the anchor path's file/seen/dir keys (plus the commit key in commits scope, using the anchor's sha, or for combined→commits the owner sha from `anchor.id`) before restoring. Driver test "toggle-scope expands a collapsed destination file".
     - Summary-row actions.
-    - Suspend/resume and `suspend_test`.
+    - Suspend/resume: done. Lua `open_review_buffer` adds BufWinEnter/BufWinLeave autocmds (BufWinLeave only fires when the buffer leaves its last window) that send `visibility {visible}`. `ReviewView.suspend` skips `onChange` repaints and bumps the intra generation; the Session keeps polling. `resume` redraws and calls `Session.pokePoll()` for one immediate poll. Driver test "suspends painting while hidden and catches up when re-displayed" covers the `suspend_test` visibility cases. The idempotence cases are trivial flag checks and aren't ported separately. Known gap: the first poll tick only records a baseline, so an edit made between open and the first tick (≤1 s) is missed until the next change. The test waits past that tick.
+    - LogView/PrView/jump/diffsplit/sticky float: deferred to cutover (decision). None of them touch the seen model, and they are UI-only.
     - Remaining `init_test`/`reload_test` cases.
 
 ## Gutter and file-buffer marking
