@@ -658,3 +658,132 @@ describe("seen extras and whitespace (driver)", () => {
     });
   });
 });
+
+describe("comment editor (driver)", () => {
+  it("c / visual c / i / dd / dc / visual d author and delete comments, undoably", async () => {
+    const repo = makeRepo([
+      { files: { "f.txt": "one\ntwo\nthree\n" } },
+      { msg: "c1", files: { "f.txt": "one\nTWO\nthree\n" } },
+      { msg: "c2", files: { "f.txt": "one\nTWO\nTHREE\n" } },
+    ]);
+    await withNvim(async (nvim) => {
+      const stateDir = mkdtempSync(join(tmpdir(), "glean-cm-"));
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await nvim.call("nvim_command", [`Glean ${repo.shas[0]} HEAD`]);
+      const rbuf = await pollUntil(async () => {
+        const b = await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()");
+        return b > 1 ? b : undefined;
+      });
+      const lines = () =>
+        luaEval<string[]>(
+          nvim,
+          `vim.api.nvim_buf_get_lines(${rbuf}, 0, -1, false)`,
+        );
+      const until = (p: (l: string[]) => boolean) =>
+        pollUntil(async () => {
+          const l = await lines();
+          return p(l) ? l : undefined;
+        });
+      const has = (s: string) => (l: string[]) => l.some((x) => x.includes(s));
+      const count = (l: string[], s: string) =>
+        l.filter((x) => x.includes(s)).length;
+      const review = await luaEval<number>(
+        nvim,
+        "vim.api.nvim_get_current_win()",
+      );
+      const at = async (pred: (l: string) => boolean) => {
+        await nvim.call("nvim_set_current_win", [review]);
+        const row = (await lines()).findIndex(pred);
+        expect(row).toBeGreaterThanOrEqual(0);
+        await nvim.call("nvim_win_set_cursor", [review, [row + 1, 0]]);
+      };
+      const inEditor = async (text: string[]) => {
+        await pollUntil(async () =>
+          (
+            await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)")
+          ).includes("glean-comment://")
+            ? true
+            : undefined,
+        );
+        await nvim.call("nvim_input", ["<Esc>"]);
+        await nvim.call("nvim_buf_set_lines", [0, 0, -1, false, text]);
+        await nvim.call("nvim_command", ["write"]);
+      };
+      await until((l) => l.includes("TWO"));
+
+      // c: a multi-line comment renders across rows; u / <C-r> round-trip it.
+      await at((l) => l === "TWO");
+      await nvim.call("nvim_input", ["c"]);
+      await inEditor(["first line", "second line"]);
+      await until(
+        (l) =>
+          l.some((x) => /💬 \[\d+\] first line/.test(x)) &&
+          l.includes("💬 second line"),
+      );
+      await at((l) => l === "TWO");
+      await nvim.call("nvim_input", ["u"]);
+      await until((l) => !has("first line")(l));
+      await nvim.call("nvim_input", ["<C-r>"]);
+      await until(has("first line"));
+
+      // i: edit the comment under the cursor.
+      await at((l) => /💬 \[\d+\] first line/.test(l));
+      await nvim.call("nvim_input", ["i"]);
+      await inEditor(["edited"]);
+      await until((l) => has("edited")(l) && !has("first line")(l));
+
+      // dd: delete it from its inline row; u restores.
+      await at((l) => /💬 \[\d+\] edited/.test(l));
+      await nvim.call("nvim_input", ["dd"]);
+      await until((l) => !has("edited")(l));
+      await nvim.call("nvim_input", ["u"]);
+      await until(has("edited"));
+
+      // visual c from the hunk header: one comment over the diff-line run.
+      await at((l) => l.startsWith("--- @@"));
+      const hdr = await luaEval<number>(nvim, "vim.fn.line('.')");
+      const two = (await lines()).indexOf("TWO") + 1;
+      await nvim.call("nvim_input", [`V${two - hdr}jc`]);
+      await inEditor(["block note"]);
+      const withBlock = await until(has("block note"));
+      // once inline, once in the summary.
+      expect(count(withBlock, "block note")).toBe(2);
+
+      // dc on a line with two comments picks through vim.ui.select.
+      await at((l) => l === "TWO");
+      await nvim.call("nvim_input", ["c"]);
+      await inEditor(["second"]);
+      await until(has("second"));
+      await luaEval(
+        nvim,
+        `(function() vim.ui.select = function(items, _, cb) vim.g.glean_picked = items; cb(items[1], 1) end end)()`,
+      );
+      await at((l) => l === "TWO");
+      await nvim.call("nvim_input", ["dc"]);
+      await until((l) => !has("edited")(l) && has("second")(l));
+      expect(await luaEval<string[]>(nvim, "vim.g.glean_picked")).toEqual([
+        "edited",
+        "second",
+      ]);
+      await nvim.call("nvim_input", ["u"]);
+      await until(has("edited"));
+
+      // visual d over the summary removes both comments as one undo step.
+      const body = await lines();
+      const sum = body.findIndex((l) => l.startsWith("comments ("));
+      await nvim.call("nvim_win_set_cursor", [review, [sum + 1, 0]]);
+      await nvim.call("nvim_input", [`V${body.length - 1 - sum}jd`]);
+      await until(
+        (l) => !has("edited")(l) && !has("block note")(l) && !has("second")(l),
+      );
+      await nvim.call("nvim_input", ["u"]);
+      await until(
+        (l) => has("edited")(l) && has("block note")(l) && has("second")(l),
+      );
+    });
+  });
+});

@@ -91,8 +91,8 @@ describe("render", () => {
       comments: () => new Map([[1, [{ record, outdated: false }]]]),
     });
     const i = f.rows.findIndex((r) => r.kind === "comment");
-    expect(f.lines[i]).toBe("    💬 why X?");
-    expect(f.lines[i + 1]).toBe("      ↳ because");
+    expect(f.lines[i]).toMatch(/^💬 \[\d+\] why X\?$/);
+    expect(f.lines[i + 1]).toBe("   ↳ because");
     expect(f.rows[i - 1]).toMatchObject({ kind: "line", li: 1 });
   });
   it("renders commits with their files", async () => {

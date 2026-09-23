@@ -354,6 +354,55 @@ M.open_list_buffer = function(kind, name)
   return buf
 end
 
+-- Ephemeral multi-line comment editor in a split above `win` (port of the old
+-- `comments.open_editor`). `:w` or normal `<CR>` submits, `q`/`<C-c>` cancel;
+-- the text returns to node as one `editor-submit` action.
+M.comment_editor = function(review_buf, win, initial, token)
+  local api = vim.api
+  local ebuf = api.nvim_create_buf(false, true)
+  vim.bo[ebuf].buftype = "acwrite"
+  vim.bo[ebuf].bufhidden = "wipe"
+  vim.bo[ebuf].filetype = "markdown"
+  pcall(api.nvim_buf_set_name, ebuf, "glean-comment://" .. ebuf)
+  local seed = #initial > 0 and initial or { "" }
+  api.nvim_buf_set_lines(ebuf, 0, -1, false, seed)
+  if win and win > 0 and api.nvim_win_is_valid(win) then api.nvim_set_current_win(win) end
+  vim.cmd("aboveleft split")
+  local ewin = api.nvim_get_current_win()
+  api.nvim_win_set_buf(ewin, ebuf)
+  api.nvim_win_set_height(ewin, math.max(5, math.min(15, #seed + 1)))
+  local done = false
+  local function finish(submit)
+    if done then return end
+    done = true
+    local text = submit and table.concat(api.nvim_buf_get_lines(ebuf, 0, -1, false), "\n") or nil
+    if api.nvim_win_is_valid(ewin) then pcall(api.nvim_win_close, ewin, true) end
+    if text and text:match("%S") then
+      action(review_buf, { kind = "editor-submit", token = token, text = text })
+    end
+  end
+  api.nvim_create_autocmd("BufWriteCmd", { buffer = ebuf, callback = function() finish(true) end })
+  local o = { buffer = ebuf, nowait = true, silent = true }
+  vim.keymap.set("n", "<CR>", function() finish(true) end, o)
+  vim.keymap.set("n", "q", function() finish(false) end, o)
+  vim.keymap.set("n", "<C-c>", function() finish(false) end, { buffer = ebuf, silent = true })
+  -- A new comment drops into insert; an edit starts in normal mode.
+  if #initial > 0 then
+    pcall(api.nvim_win_set_cursor, ewin, { #seed, 0 })
+  else
+    vim.cmd("startinsert")
+  end
+end
+
+-- `dc` with several comments on the line: the user picks which to delete.
+M.pick_comment = function(review_buf, choices, token)
+  vim.schedule(function()
+    vim.ui.select(choices, { prompt = "glean: delete comment" }, function(_, idx)
+      if idx then action(review_buf, { kind = "pick", token = token, index = idx - 1 }) end
+    end)
+  end)
+end
+
 -- Review buffer; each keymap is one rpcnotify with the cursor row.
 -- `title` leads with the api session id so agents can read it off.
 M.open_review_buffer = function(title)
@@ -390,6 +439,16 @@ M.open_review_buffer = function(title)
     vim.cmd("normal! V")
     vim.api.nvim_win_set_cursor(0, { r[2] + 1, 0 })
   end)
+  map("n", "c", function() action(buf, { kind = "add-comment", srow = row0(), erow = row0() }) end)
+  map("x", "c", function()
+    local s, e = vim.fn.line("v") - 1, vim.fn.line(".") - 1
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    action(buf, { kind = "add-comment", srow = s, erow = e })
+  end)
+  map("n", "i", function() action(buf, { kind = "edit-comment", row = row0() }) end)
+  map("n", "e", function() action(buf, { kind = "edit-comment", row = row0() }) end)
+  map("n", "dd", function() action(buf, { kind = "delete-comment", row = row0() }) end)
+  map("n", "dc", function() action(buf, { kind = "delete-comment-at", row = row0() }) end)
   map("x", "d", function()
     local s, e = vim.fn.line("v") - 1, vim.fn.line(".") - 1
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)

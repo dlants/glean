@@ -101,6 +101,13 @@ GitHub access (PRs) goes through an injectable `gh` runner, matching the old `op
 ## Comment editor
 - Goal: `c`/visual `c`/`i`/`e`/`dd`/`dc`/visual `d` in the review buffer, with undo, as in the old code.
 - Tests: port the comment editor cases from `init_test`.
+- Status: **done**.
+  - `node/render/commentActions.ts` (pure): `commentTarget` (port of `comment_target`/`visual_comment_target`: contiguous canonical-ordinal run in one file, `lnum` = first non-del post line, del entries carry `oldLnum`), `commentOrigin`, `commentUnder` (inline and summary comment rows), `commentsAtLine` (`dc`, via the render's comment placement), `summaryCommentsIn` (visual `d`, each record once).
+  - `node/view/view.ts`: actions `add-comment` (n and x `c`; "glean: cannot comment here"), `edit-comment` (`i`/`e`, no-op when the text is unchanged), `delete-comment` (`dd`), `delete-comment-at` (`dc`; "glean: no comment on this line", `vim.ui.select` when several), `delete-comments` (visual `d`, now one undo step via a new `comments` `Undoable`), and `editor-submit`/`pick` results keyed by a token.
+  - `lua/glean/node.lua`: `comment_editor` (port of `comments.open_editor`: `aboveleft split`, `:w`/`<CR>` submit, `q`/`<C-c>` cancel, insert for a new comment) and `pick_comment`; the keymaps.
+  - Render parity fix: inline comments render as in Lua (`💬 [id] text`, one row per text line, `💬 (outdated) ` lead, `   ↳ reply`, `GleanCommentId` span); node previously joined lines into one row without the id.
+  - Deviation: node has no per-commit exact-whitespace files, so commit scope checks a line's ordinal against the displayed commit file (real git coordinates) rather than a lineage copy.
+  - Tests: `node/render/commentActions.test.ts` (single-line target + origin, visual span excluding decoration, del-only target, summary dedupe). Driver test in `node/glean.test.ts` ports the init_test cases for authoring through the editor (single/multi-line rows sharing identity), comment undo/redo, `i` edit, `dd` + undo, visual multi-line comment rendered once inline, `dc` with a picker, visual `d` as one undo step. Store-level cases (stacked comments on reopen, reply/id survival, re-anchoring, summary) were already covered by `session.test.ts`/`render/comments.test.ts`; whitespace-hidden comment cases remain for the audit stage.
 
 ## File-buffer overlay
 - Goal: the `overlay.lua` behaviour in node: comments shown in file buffers, `:Glean comment` with range, and `:Glean comments` in quickfix.

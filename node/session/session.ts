@@ -62,6 +62,12 @@ export type Undoable =
       change: CommentChange;
       cursor?: number;
     }
+  /** Visual `d`: several comments removed as one undo step. */
+  | {
+      kind: "comments";
+      removed: { path: RepoPath; record: CommentRecord }[];
+      cursor?: number;
+    }
   | {
       kind: "collapse";
       key: CollapseKey;
@@ -397,6 +403,15 @@ export class Session {
         reverse ? after : before,
         reverse ? before : after,
       );
+      return;
+    }
+    if (a.kind === "comments") {
+      for (const r of reverse ? [...a.removed].reverse() : a.removed)
+        await this.swapComment(
+          r.path,
+          reverse ? undefined : r.record,
+          reverse ? r.record : undefined,
+        );
       return;
     }
     const { plan } = a;

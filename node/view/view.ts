@@ -5,6 +5,7 @@
  */
 
 import { join } from "node:path";
+import type { CommentRecord } from "../core/state.ts";
 import type {
   BufNr,
   Layer,
@@ -33,6 +34,12 @@ import {
   type SeenPlan,
 } from "../render/actions.ts";
 import { cursorAnchor, restoreAnchor } from "../render/anchor.ts";
+import {
+  commentsAtLine,
+  commentTarget,
+  commentUnder,
+  summaryCommentsIn,
+} from "../render/commentActions.ts";
 import type { SummaryGroup } from "../render/comments.ts";
 import {
   diffContext,
@@ -98,6 +105,13 @@ export type Action =
   | { kind: "jump"; row: number; col: number }
   | { kind: "diffsplit"; row: number }
   | { kind: "delete-comments"; srow: number; erow: number }
+  | { kind: "add-comment"; srow: number; erow: number }
+  | { kind: "edit-comment"; row: number }
+  | { kind: "delete-comment"; row: number }
+  | { kind: "delete-comment-at"; row: number }
+  /** A comment editor / picker opened by node returned its result. */
+  | { kind: "editor-submit"; token: number; text: string }
+  | { kind: "pick"; token: number; index: number }
   | { kind: "undo" }
   | { kind: "redo" }
   | { kind: "unmark-hunk"; row: number }
@@ -121,11 +135,15 @@ export function parseAction(v: unknown): Action | undefined {
     case "toggle-fold":
     case "unmark-hunk":
     case "toggle-whitespace":
+    case "edit-comment":
+    case "delete-comment":
+    case "delete-comment-at":
     case "diffsplit": {
       const row = num("row");
       return row === undefined ? undefined : { kind: o.kind, row };
     }
     case "visual-mark":
+    case "add-comment":
     case "delete-comments": {
       const srow = num("srow");
       const erow = num("erow");
@@ -139,6 +157,19 @@ export function parseAction(v: unknown): Action | undefined {
       return row === undefined || col === undefined
         ? undefined
         : { kind: "jump", row, col };
+    }
+    case "editor-submit": {
+      const token = num("token");
+      return token === undefined || typeof o.text !== "string"
+        ? undefined
+        : { kind: "editor-submit", token, text: o.text };
+    }
+    case "pick": {
+      const token = num("token");
+      const index = num("index");
+      return token === undefined || index === undefined
+        ? undefined
+        : { kind: "pick", token, index };
     }
     case "reset":
       return { kind: "reset", row: num("row") };
@@ -589,6 +620,38 @@ export class ReviewView {
     }
     if (row >= 0 && !isStale()) await this.setCursor(row);
   }
+  private nextToken = 1;
+  /** Editor / picker callbacks awaiting their Lua result, by token. */
+  private readonly prompts = new Map<
+    number,
+    | { kind: "editor"; fn: (text: string) => Promise<void> }
+    | { kind: "pick"; fn: (index: number) => Promise<void> }
+  >();
+  /** The ephemeral split editor lives in Lua (`comment_editor`); its text comes back as `editor-submit`. */
+  private async openEditor(
+    initial: string[],
+    fn: (text: string) => Promise<void>,
+  ) {
+    const token = this.nextToken++;
+    this.prompts.set(token, { kind: "editor", fn });
+    await this.nvim.call("nvim_exec_lua", [
+      `return require("glean.node").comment_editor(...)`,
+      [this.bufnr, await this.win(), initial, token],
+    ]);
+  }
+  private async dropComment(
+    path: RepoPath,
+    before: CommentRecord,
+    row: number,
+  ) {
+    await this.session.perform({
+      kind: "comment",
+      path,
+      change: { op: "delete", before: { ...before } },
+      cursor: row,
+    });
+    await this.redraw();
+  }
   private async setCursor(row: number) {
     const win = await this.nvim.call("nvim_call_function", [
       "bufwinid",
@@ -984,21 +1047,124 @@ export class ReviewView {
         return;
       }
       case "delete-comments": {
+        const removed = summaryCommentsIn(
+          snap.store,
+          frame.rows,
+          a.srow,
+          a.erow,
+        );
+        if (removed.length === 0) return;
+        await this.session.perform({
+          kind: "comments",
+          removed,
+          cursor: Math.min(a.srow, a.erow),
+        });
+        await this.redraw();
+        return;
+      }
+      case "add-comment": {
         const lo = Math.min(a.srow, a.erow);
-        const hi = Math.max(a.srow, a.erow);
-        for (const t of frame.rows.slice(lo, hi + 1)) {
-          if (t.kind !== "summary-comment") continue;
-          const before = snap.store
-            .commentsFor(t.path)
-            .find((r) => r.id === t.commentId);
-          if (before)
-            await this.session.perform({
-              kind: "comment",
-              path: t.path,
-              change: { op: "delete", before },
-              cursor: lo,
-            });
+        const ct = commentTarget(
+          snap.cls,
+          this.scope,
+          frame.rows,
+          lo,
+          Math.max(a.srow, a.erow),
+          this.session.worktree,
+        );
+        if (!ct) {
+          await this.nvim.call("nvim_notify", [
+            "glean: cannot comment here",
+            2,
+            {},
+          ]);
+          return;
         }
+        await this.openEditor([], async (text) => {
+          await this.session.perform({
+            kind: "comment",
+            path: ct.path,
+            change: {
+              op: "add",
+              after: {
+                id: (this.session.current?.store ?? snap.store).nextCommentId(),
+                lnum: ct.lnum,
+                content: ct.content,
+                text,
+                reply: undefined,
+                origin: ct.origin,
+              },
+            },
+            cursor: lo,
+          });
+        });
+        return;
+      }
+      case "edit-comment": {
+        const c = commentUnder(snap.cls, snap.store, frame.rows[a.row]);
+        if (!c) return;
+        await this.openEditor(c.record.text.split("\n"), async (text) => {
+          if (text === c.record.text) return;
+          await this.session.perform({
+            kind: "comment",
+            path: c.path,
+            change: {
+              op: "edit",
+              before: { ...c.record },
+              after: { ...c.record, text },
+            },
+            cursor: a.row,
+          });
+        });
+        return;
+      }
+      case "delete-comment": {
+        const c = commentUnder(snap.cls, snap.store, frame.rows[a.row]);
+        if (c) await this.dropComment(c.path, c.record, a.row);
+        return;
+      }
+      case "delete-comment-at": {
+        const at = commentsAtLine(
+          snap.cls,
+          frame.rows[a.row],
+          this.session.commentsHook(),
+        );
+        if (!at) return;
+        if (at.records.length === 0) {
+          await this.nvim.call("nvim_notify", [
+            "glean: no comment on this line",
+            2,
+            {},
+          ]);
+          return;
+        }
+        if (at.records.length === 1) {
+          await this.dropComment(at.path, at.records[0]!, a.row);
+          return;
+        }
+        const token = this.nextToken++;
+        this.prompts.set(token, {
+          kind: "pick",
+          fn: async (i) => {
+            const r = at.records[i];
+            if (r) await this.dropComment(at.path, r, a.row);
+          },
+        });
+        await this.nvim.call("nvim_exec_lua", [
+          `return require("glean.node").pick_comment(...)`,
+          [this.bufnr, at.records.map((r) => r.text), token],
+        ]);
+        return;
+      }
+      case "editor-submit":
+      case "pick": {
+        const p = this.prompts.get(a.token);
+        this.prompts.delete(a.token);
+        if (!p) return;
+        if (p.kind === "editor" && a.kind === "editor-submit")
+          await p.fn(a.text);
+        else if (p.kind === "pick" && a.kind === "pick") await p.fn(a.index);
+        else return;
         await this.redraw();
         return;
       }

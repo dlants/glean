@@ -228,25 +228,29 @@ export function render(input: RenderInput): Frame {
     let base = 0;
     for (let k = 0; k < hi; k++) base += file.hunks[k]?.lines.length ?? 0;
     const emitComments = (li: number) => {
+      // Port of `emit_comment`: one row per text line, every row carrying the
+      // comment identity; the id is inline so a pasted snippet addresses it.
       for (const pc of placed?.get(base + li) ?? []) {
-        const tag = pc.outdated ? " (outdated)" : "";
-        emit(
-          `    💬${tag} ${pc.record.text}`,
-          { kind: "comment", file: ref, hunk: hi, li, commentId: pc.record.id },
-          "GleanComment",
-        );
+        const target: RowTarget = {
+          kind: "comment",
+          file: ref,
+          hunk: hi,
+          li,
+          commentId: pc.record.id,
+        };
+        const lead = pc.outdated ? "💬 (outdated) " : "💬 ";
+        const hl = pc.outdated ? "GleanSeen" : "GleanComment";
+        const tag = `[${pc.record.id}] `;
+        pc.record.text.split("\n").forEach((part, i) => {
+          const row = emit(lead + (i === 0 ? tag : "") + part, target, hl);
+          if (i === 0) {
+            const at = Buffer.byteLength(lead);
+            span(row, at, at + tag.length, "GleanCommentId");
+          }
+        });
         if (pc.record.reply !== undefined)
-          emit(
-            `      ↳ ${pc.record.reply}`,
-            {
-              kind: "comment",
-              file: ref,
-              hunk: hi,
-              li,
-              commentId: pc.record.id,
-            },
-            "GleanCommentReply",
-          );
+          for (const part of pc.record.reply.split("\n"))
+            emit(`   ↳ ${part}`, target, "GleanCommentReply");
       }
     };
     emit(
