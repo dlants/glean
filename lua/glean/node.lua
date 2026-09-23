@@ -117,4 +117,35 @@ M.bridge = function(channel_id)
   })
 end
 
+local function action(buf, a)
+  M.safe_rpcnotify(M.channel_id, "gleanAction", buf, a)
+end
+
+local function row0()
+  return vim.api.nvim_win_get_cursor(0)[1] - 1
+end
+
+-- Scratch review buffer; each keymap is one rpcnotify with the cursor row.
+M.open_review_buffer = function()
+  local buf = vim.api.nvim_create_buf(true, true)
+  vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].modifiable = false
+  vim.api.nvim_buf_set_name(buf, "glean://review/" .. buf)
+  local function map(mode, lhs, fn)
+    vim.keymap.set(mode, lhs, fn, { buffer = buf, nowait = true, silent = true })
+  end
+  map("n", "m", function() action(buf, { kind = "toggle-seen", row = row0() }) end)
+  map("n", "=", function() action(buf, { kind = "toggle-fold", row = row0() }) end)
+  map("n", "S", function() action(buf, { kind = "toggle-scope" }) end)
+  map("n", "u", function() action(buf, { kind = "undo" }) end)
+  map("n", "<C-r>", function() action(buf, { kind = "redo" }) end)
+  map("x", "m", function()
+    local s, e = vim.fn.line("v") - 1, vim.fn.line(".") - 1
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+    action(buf, { kind = "visual-mark", srow = s, erow = e })
+  end)
+  vim.api.nvim_set_current_buf(buf)
+  return buf
+end
+
 return M
