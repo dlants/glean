@@ -1,18 +1,45 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseCommand, storePaths } from "./glean.ts";
+import type { Nvim } from "./nvim/nvim-node/index.ts";
 import { luaEval, pollUntil, startBackend, withNvim } from "./test/driver.ts";
+import { makeRepo } from "./test/repo.ts";
 
 describe("parseCommand", () => {
   it("recognizes ping and rejects non-string args", () => {
     expect(parseCommand(["ping"])).toEqual({ kind: "ping" });
-    expect(parseCommand(["nope", "x"])).toEqual({
-      kind: "unknown",
-      args: ["nope", "x"],
-    });
-    expect(parseCommand(["open"])).toEqual({ kind: "open", base: "HEAD" });
+    expect(parseCommand([])).toEqual({ kind: "dirty", base: undefined });
+    expect(parseCommand(["main"])).toEqual({ kind: "dirty", base: "main" });
     expect(parseCommand(["open", "main"])).toEqual({
-      kind: "open",
+      kind: "dirty",
       base: "main",
+    });
+    expect(parseCommand(["a", "b"])).toEqual({
+      kind: "range",
+      base: "a",
+      target: "b",
+    });
+    expect(parseCommand(["42"])).toEqual({ kind: "pr", pr: "42" });
+    expect(
+      parseCommand(["https://github.com/acme/widgets/pull/42/files"]),
+    ).toEqual({
+      kind: "pr",
+      pr: "https://github.com/acme/widgets/pull/42/files",
+    });
+    expect(parseCommand(["pr"])).toEqual({ kind: "pr", pr: undefined });
+    expect(parseCommand(["branch", "f/x"])).toEqual({
+      kind: "branch",
+      branch: "f/x",
+    });
+    expect(parseCommand(["log"])).toEqual({ kind: "log" });
+    expect(parseCommand(["prs"])).toEqual({ kind: "prs" });
+    // Like the Lua dispatch, extra args past the target are ignored.
+    expect(parseCommand(["a", "b", "c"])).toEqual({
+      kind: "range",
+      base: "a",
+      target: "b",
     });
     expect(parseCommand([1])).toEqual({ kind: "unknown", args: [] });
   });
@@ -85,5 +112,92 @@ describe("storePaths", () => {
     expect(storePaths("/data", "/s", ok("/repo/.git"), ok("b")).stateDir).toBe(
       "/s",
     );
+  });
+});
+
+describe("review targets (driver)", () => {
+  const setup = async (nvim: Nvim, root: string) => {
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-targets-"));
+    await luaEval(
+      nvim,
+      `(function() vim.cmd.cd(${JSON.stringify(root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+    );
+    await startBackend(nvim);
+  };
+  const bufName = () =>
+    "vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':t')";
+  const lines = (nvim: Nvim) =>
+    luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+
+  it(":Glean <base> <target> reviews the commit range under the old title", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "1\n" } },
+      { msg: "one", files: { "a.txt": "ONE\n" } },
+      { msg: "two", files: { "b.txt": "B\n" } },
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      const [b, t] = [repo.shas[0] ?? "", repo.shas[1] ?? ""];
+      await nvim.call("nvim_command", [`Glean ${b} ${t}`]);
+      const name = await pollUntil(async () => {
+        const n = await luaEval<string>(nvim, bufName());
+        return n.startsWith("Glean:g") ? n : undefined;
+      });
+      expect(name).toBe(
+        `Glean:g1 ${basename(repo.root)} ${b.slice(0, 8)}..${t.slice(0, 8)}`,
+      );
+      const body = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.some((s) => s.includes("ONE")) ? l : undefined;
+      });
+      expect(body.join("\n")).not.toContain("b.txt");
+    });
+  });
+
+  it(":Glean log → <CR> opens the selected commit, one review at a time", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "1\n" } },
+      { msg: "c1: one", files: { "a.txt": "ONE\n" } },
+      { msg: "c2: two", files: { "b.txt": "B\n" } },
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      await nvim.call("nvim_command", ["Glean log"]);
+      const log = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l[0]?.startsWith("Glean log") ? l : undefined;
+      });
+      expect(log[1]).toContain("uncommitted changes");
+      expect(log[2]).toContain("c2: two");
+      expect(await luaEval<string>(nvim, bufName())).toBe(
+        `Glean:${basename(repo.root)} log`,
+      );
+      // Row 4 is c1: its review contains only a.txt.
+      await nvim.call("nvim_win_set_cursor", [0, [4, 0]]);
+      await nvim.call("nvim_input", ["<CR>"]);
+      const body = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.some((s) => s.includes("ONE")) ? l : undefined;
+      });
+      expect(body.join("\n")).not.toContain("b.txt");
+      const short = repo.shas[1]?.slice(0, 8);
+      expect(await luaEval<string>(nvim, bufName())).toContain(`${short} [`);
+      // Back to the log, visual <CR> over both commits replaces the review.
+      await nvim.call("nvim_command", ["b #"]);
+      await nvim.call("nvim_win_set_cursor", [0, [3, 0]]);
+      await nvim.call("nvim_input", ["Vj<CR>"]);
+      await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l.some((s) => s.includes("b.txt")) &&
+          l.some((s) => s.includes("a.txt"))
+          ? l
+          : undefined;
+      });
+      const sessions = await luaEval<unknown[]>(
+        nvim,
+        `require("glean.api").sessions()`,
+      );
+      expect(sessions).toHaveLength(1);
+    });
   });
 });

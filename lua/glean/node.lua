@@ -111,13 +111,20 @@ M.bridge = function(channel_id)
       M.safe_rpcnotify(channel_id, "gleanGutter", ev)
       return
     end
-    local args = opts.fargs
-    -- Bare `:Glean` reviews the configured base plus the dirty work tree.
-    if #args == 0 then
-      args = { "open", require("glean").config.default_base }
-    end
-    M.safe_rpcnotify(channel_id, "gleanCommand", args)
-  end, { nargs = "*", range = true, desc = "glean: open a review or run a subcommand" })
+    M.safe_rpcnotify(channel_id, "gleanCommand", opts.fargs)
+  end, {
+    nargs = "*",
+    range = true,
+    desc = "glean: open a review or run a subcommand",
+    complete = function(lead)
+      local out = {}
+      for _, sub in ipairs({ "comment", "comments", "toggle-mark", "toggle-gutter", "jump", "log",
+        "prs", "pr", "branch" }) do
+        if sub:sub(1, #lead) == lead then out[#out + 1] = sub end
+      end
+      return out
+    end,
+  })
   require("glean.node_gutter").bridge(M.bridge_augroup)
 
   -- Stop node early in shutdown so nvim doesn't wait out SIGTERM->SIGKILL.
@@ -140,14 +147,81 @@ local function row0()
   return vim.api.nvim_win_get_cursor(0)[1] - 1
 end
 
--- Scratch review buffer; each keymap is one rpcnotify with the cursor row.
--- `id` is the api session id; it leads the name so agents can read it off.
-M.open_review_buffer = function(id)
-  local buf = vim.api.nvim_create_buf(true, true)
+-- Focus a window showing `buf`, else put it in the current window (or a
+-- vertical split when the current one is a float or shares its column).
+M.show_buffer = function(buf)
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_get_buf(win) == buf then
+      vim.api.nvim_set_current_win(win)
+      return win
+    end
+  end
+  if vim.api.nvim_win_get_config(0).relative ~= ""
+    or vim.fn.winnr("k") ~= vim.fn.winnr()
+    or vim.fn.winnr("j") ~= vim.fn.winnr()
+  then
+    vim.cmd("botright vsplit")
+  end
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(win, buf)
+  return win
+end
+
+local function new_listed_buffer(name)
+  local buf = vim.api.nvim_create_buf(true, false)
+  vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "glean"
   vim.bo[buf].modifiable = false
-  local repo = vim.fn.fnamemodify(vim.fn.getcwd(), ":t")
-  vim.api.nvim_buf_set_name(buf, ("glean://review/Glean:%s %s"):format(id or buf, repo))
+  pcall(vim.api.nvim_buf_set_name, buf, name)
+  return buf
+end
+
+local function close_if_current(buf)
+  local win = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(win) == buf then vim.api.nvim_win_close(win, true) end
+end
+
+-- Log / PR list buffer: `kind` is "log" or "prs". Selections and paging are
+-- forwarded to node as one notify each.
+M.open_list_buffer = function(kind, name)
+  local buf = new_listed_buffer(name)
+  local function list(ev)
+    ev.buf = buf
+    M.safe_rpcnotify(M.channel_id, "gleanList", ev)
+  end
+  local function map(mode, lhs, fn)
+    vim.keymap.set(mode, lhs, fn, { buffer = buf, nowait = true, silent = true })
+  end
+  map("n", "<CR>", function() list({ kind = "open", srow = row0(), erow = row0() }) end)
+  map("n", "]p", function() list({ kind = "page", delta = 1 }) end)
+  map("n", "q", function() close_if_current(buf) end)
+  if kind == "log" then
+    map("x", "<CR>", function()
+      local s, e = vim.fn.line("v") - 1, vim.fn.line(".") - 1
+      vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+      list({ kind = "open", srow = s, erow = e })
+    end)
+  else
+    map("n", "[p", function() list({ kind = "page", delta = -1 }) end)
+  end
+  vim.api.nvim_create_autocmd("BufReadCmd", {
+    buffer = buf,
+    callback = function() list({ kind = "reload" }) end,
+  })
+  vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
+    buffer = buf,
+    callback = function() list({ kind = "gone" }) end,
+  })
+  M.show_buffer(buf)
+  return buf
+end
+
+-- Review buffer; each keymap is one rpcnotify with the cursor row.
+-- `title` leads with the api session id so agents can read it off.
+M.open_review_buffer = function(title)
+  local buf = new_listed_buffer(title)
   local function map(mode, lhs, fn)
     vim.keymap.set(mode, lhs, fn, { buffer = buf, nowait = true, silent = true })
   end
@@ -177,7 +251,11 @@ M.open_review_buffer = function(id)
     group = group, buffer = buf,
     callback = function() action(buf, { kind = "visibility", visible = false }) end,
   })
-  vim.api.nvim_set_current_buf(buf)
+  vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
+    group = group, buffer = buf,
+    callback = function() action(buf, { kind = "gone" }) end,
+  })
+  M.show_buffer(buf)
   return buf
 end
 

@@ -320,7 +320,7 @@ describe("review view visibility (driver)", () => {
           nvim,
           `vim.api.nvim_buf_get_name(${b})`,
         );
-        return name.startsWith("glean://review/") ? b : undefined;
+        return name.includes("Glean:g") ? b : undefined;
       });
       const body = async () =>
         (

@@ -2,7 +2,7 @@
 -- module only configures highlights and starts it.
 local M = {}
 M.config = {
-  default_base = "HEAD",
+  default_base = "main",
   ignore_whitespace = false,
   -- Seen runs shorter than this inside a partially-seen hunk render unseen.
   min_seen_run = 5,

@@ -50,7 +50,7 @@ Without a built `dist/glean.mjs` (or with `GLEAN_DEV=1`) glean runs the TypeScri
 ## Setup
 ```lua
 require("glean").setup({
-  default_base = "HEAD",     -- base for bare :Glean
+  default_base = "main",     -- base for bare :Glean
   ignore_whitespace = false, -- diff with git --ignore-all-space
   min_seen_run = 5,
   gutter = {

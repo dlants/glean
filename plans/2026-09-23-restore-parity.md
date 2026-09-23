@@ -62,6 +62,14 @@ GitHub access (PRs) goes through an injectable `gh` runner, matching the old `op
 - Goal: every `:Glean` open form works, including LogView and PrView with paging, and the review-buffer title and naming match the old ones.
 - Tests: port the matching `init_test` and `api_test` cases (commit-range reviews, branch, PR arg parsing via `is_pr_arg`/`github_pr_repo`/`github_remote_repo`, a fake `gh` runner, log selection including visual `<CR>`, paging). A driver test runs `:Glean <base> <target>` and `:Glean log` → `<CR>`.
 
+- Status: **done**.
+  - `node/targets.ts`: pure/async ports of `is_pr_arg`, `github_pr_repo`, `github_remote_repo`, `resolve_dirty`/`open_dirty`, `resolve_pr`/`open_pr`, `resolve_branch`/`open_branch`, `range_identifier`/`abbrev_ref`/`review_title`, LogView (`renderLog`, `logSelection`) and PrView (`renderPrs`, paging, `parsePrList`); `spawnGhRunner` is the injectable `gh` runner with a timeout.
+  - `node/glean.ts`: `parseCommand` covers bare, `<base>`, `<base> <target>`, PR number/URL, `pr`, `branch`, `log`, `prs` (`open [base]` kept as an alias of `:Glean [base]`); `openReview` keeps one review at a time (same `(repo, base, target)` reuses buffer and id and retitles; otherwise the old review is stopped and wiped); repo root resolved like `resolve_repo_root`; log/PR list state lives in node, driven by `gleanList` notifies; `TargetError`s become ERROR notifications (the `open_pr_notified` behaviour).
+  - `lua/glean/node.lua`: completion list, `show_buffer` (port of `show_buffer_in_window`), listed `nofile` buffers named exactly like the old ones (review buffer name is now the plain title, no `glean://review/` prefix), log/PR keymaps (`<CR>` n/x, `]p`, `[p`, `q`), `BufReadCmd` reload, wipe → close review.
+  - `default_base` default restored to `"main"`; node reads `require("glean").config.default_base` directly.
+  - Tests: `node/targets.test.ts` ports the init_test cases for is_pr_arg, resolve_pr (+ repo mismatch), title identifiers (branch/PR/single ref/checkout branch), resolve_dirty, resolve_branch (local and remote), buffer titles, log view rows/selections (dirty, dirty range, single, range, from root) and PR view paging/rendering. `node/glean.test.ts` adds parseCommand cases plus driver tests for `:Glean <base> <target>` and `:Glean log` → `<CR>` / visual `<CR>` (one session listed).
+  - Not ported here: `open_pr_notified` is covered by the `reported` wrapper (not separately unit-tested); api_test title/one-at-a-time cases through `glean.api` belong to stage 6 (the api `target` string is still `"worktree"`, old was `"WORKTREE"`).
+
 ## Navigation and jump
 - Goal: `]c`/`[c`/`]f`/`[f`, `ac`, `<CR>` jump, `:Glean jump`, `D` diffsplit, `q`.
 - Tests: port the navigation, jump and diffsplit cases from `init_test` and `reload_test`. A driver test jumps from a review row into the file and from the file back into the review.
