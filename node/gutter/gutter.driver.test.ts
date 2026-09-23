@@ -1,0 +1,211 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import type { Nvim } from "../nvim/nvim-node/index.ts";
+import { luaEval, pollUntil, startBackend, withNvim } from "../test/driver.ts";
+import { makeRepo } from "../test/repo.ts";
+
+const UNSEEN =
+  "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAdd";
+const ROW4_SEEN =
+  "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd";
+
+function repo() {
+  const r = makeRepo([
+    { files: { "f.txt": "one\ntwo\nthree\n", "d.txt": "a\nb\nc\nd\ne\n" } },
+    { msg: "c1", files: { "f.txt": "one\ntwo\nthree\nfour\n" } },
+  ]);
+  writeFileSync(join(r.root, "f.txt"), "one\ntwo more\nthree\nfour\nfive\n");
+  writeFileSync(join(r.root, "d.txt"), "a\nd\ne\n");
+  return r;
+}
+
+/** Sorted "lnum:hl" of the gutter namespace in the current buffer. */
+const signs = (nvim: Nvim, ns = "glean_gutter", field = "sign_hl_group") =>
+  luaEval<string>(
+    nvim,
+    `(function()
+  local ns = vim.api.nvim_create_namespace(${JSON.stringify(ns)})
+  local out = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(0, ns, 0, -1, { details = true })) do
+    out[#out + 1] = (m[2] + 1) .. ":" .. vim.trim(m[4].${field})
+  end
+  table.sort(out)
+  return table.concat(out, " ")
+end)()`,
+  );
+const waitSigns = (nvim: Nvim, want: string, ns?: string, field?: string) =>
+  pollUntil(async () =>
+    (await signs(nvim, ns, field)) === want ? true : undefined,
+  );
+
+async function openFile(nvim: Nvim, preamble = "") {
+  const r = repo();
+  const stateDir = mkdtempSync(join(tmpdir(), "glean-gutter-"));
+  await luaEval(
+    nvim,
+    `(function() vim.cmd.cd(${JSON.stringify(r.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)}; ${preamble} end)()`,
+  );
+  await startBackend(nvim);
+  await nvim.call("nvim_command", [`GleanNode open ${r.shas[0]}`]);
+  await pollUntil(async () =>
+    (
+      await luaEval<string[]>(
+        nvim,
+        "vim.api.nvim_buf_get_lines(0, 0, -1, false)",
+      )
+    ).some((l) => l.includes("f.txt"))
+      ? true
+      : undefined,
+  );
+  await nvim.call("nvim_command", ["edit f.txt"]);
+  await waitSigns(nvim, UNSEEN);
+  return r;
+}
+const input = async (nvim: Nvim, keys: string) => {
+  await nvim.call("nvim_input", [keys]);
+};
+const cursor = (nvim: Nvim, row: number) =>
+  nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
+
+describe("file-buffer gutter (driver)", () => {
+  it("paints, goes stale on edit, and repaints on revert", async () => {
+    await withNvim(async (nvim) => {
+      await openFile(nvim);
+      await nvim.call("nvim_buf_set_lines", [0, 0, 1, false, ["ONE"]]);
+      await nvim.call("nvim_exec_autocmds", ["TextChanged", { buffer: 0 }]);
+      await waitSigns(
+        nvim,
+        "2:GleanGutterStale 3:GleanGutterStale 4:GleanGutterStale 5:GleanGutterStale",
+      );
+      await nvim.call("nvim_command", ["silent edit!"]);
+      await waitSigns(nvim, UNSEEN);
+    });
+  });
+  it("marks with gmm/gm2j, and u/<C-r> ride the mark stack", async () => {
+    await withNvim(async (nvim) => {
+      await openFile(nvim);
+      await cursor(nvim, 4);
+      await input(nvim, "gmm");
+      await waitSigns(nvim, ROW4_SEEN);
+      await cursor(nvim, 1);
+      await pollUntil(async () =>
+        (await luaEval<{ undo: number } | null>(nvim, "vim.b.glean_undo"))
+          ?.undo === 1
+          ? true
+          : undefined,
+      );
+      await input(nvim, "u");
+      await waitSigns(nvim, UNSEEN);
+      await pollUntil(async () =>
+        (await luaEval<number[]>(nvim, "vim.api.nvim_win_get_cursor(0)"))[0] ===
+        4
+          ? true
+          : undefined,
+      );
+      await pollUntil(async () =>
+        (await luaEval<{ redo: number } | null>(nvim, "vim.b.glean_undo"))
+          ?.redo === 1
+          ? true
+          : undefined,
+      );
+      await input(nvim, "<C-r>");
+      await waitSigns(nvim, ROW4_SEEN);
+      await cursor(nvim, 2);
+      await input(nvim, "gm2j");
+      await waitSigns(
+        nvim,
+        "2:GleanGutterChangeSeen 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd",
+      );
+    });
+  });
+  it("a write reconciles the model, and a novel edit wipes the mark stack", async () => {
+    await withNvim(async (nvim) => {
+      await openFile(nvim);
+      await nvim.call("nvim_buf_set_lines", [0, 4, 5, false, ["five edited"]]);
+      await nvim.call("nvim_command", ["silent write"]);
+      await cursor(nvim, 5);
+      // Past one poll tick, so the write is in the model.
+      await new Promise((r) => setTimeout(r, 1500));
+      await input(nvim, "gmm");
+      await waitSigns(
+        nvim,
+        "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAddSeen",
+      );
+      await input(nvim, "A x<Esc>");
+      await input(nvim, "u");
+      await pollUntil(async () =>
+        (await luaEval<boolean>(nvim, "vim.bo.modified")) ? undefined : true,
+      );
+      await nvim.call("nvim_exec_autocmds", ["BufWritePost", { buffer: 0 }]);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(await signs(nvim)).toContain("5:GleanGutterAddSeen");
+    });
+  });
+  it("gmc marks the hunk and the focus overlay covers it", async () => {
+    await withNvim(async (nvim) => {
+      await openFile(nvim);
+      await cursor(nvim, 4);
+      await waitSigns(
+        nvim,
+        "2:█ 3:▎ 4:█ 5:█",
+        "glean_gutter_focus",
+        "sign_text",
+      );
+      await cursor(nvim, 3);
+      await waitSigns(nvim, "", "glean_gutter_focus", "sign_text");
+      await cursor(nvim, 2);
+      await input(nvim, "gmc");
+      await waitSigns(
+        nvim,
+        "2:GleanGutterChangeSeen 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAddSeen",
+      );
+    });
+  });
+  it("uncommitted deletions, ]c, and per-buffer/global toggles", async () => {
+    await withNvim(async (nvim) => {
+      await openFile(nvim);
+      await cursor(nvim, 1);
+      await input(nvim, "]c");
+      await pollUntil(async () =>
+        (await luaEval<number[]>(nvim, "vim.api.nvim_win_get_cursor(0)"))[0] ===
+        2
+          ? true
+          : undefined,
+      );
+      await input(nvim, "gt");
+      await waitSigns(nvim, "");
+      await input(nvim, "gt");
+      await waitSigns(nvim, UNSEEN);
+      await nvim.call("nvim_command", ["GleanNode toggle-gutter"]);
+      await waitSigns(nvim, "");
+      await nvim.call("nvim_command", ["GleanNode toggle-gutter"]);
+      await waitSigns(nvim, UNSEEN);
+      await nvim.call("nvim_command", ["edit d.txt"]);
+      await waitSigns(nvim, "1:GleanGutterDelete");
+      await nvim.call("nvim_command", ["1GleanNode toggle-mark"]);
+      await waitSigns(nvim, "1:GleanGutterDeleteSeen");
+    });
+  });
+  it("suppresses the foreign provider and reattaches on backend exit", async () => {
+    await withNvim(async (nvim) => {
+      await openFile(
+        nvim,
+        `vim.g.calls = {}
+require("glean.node_gutter").setup({ suppress = {
+  detach = function(b) local c = vim.g.calls; c[#c + 1] = "detach"; vim.g.calls = c end,
+  attach = function(b) local c = vim.g.calls; c[#c + 1] = "attach"; vim.g.calls = c end,
+} })`,
+      );
+      expect(await luaEval<string[]>(nvim, "vim.g.calls")).toContain("detach");
+      await luaEval(nvim, `vim.fn.jobstop(require("glean.node").job_id)`);
+      await pollUntil(async () =>
+        (await luaEval<string[]>(nvim, "vim.g.calls")).at(-1) === "attach"
+          ? true
+          : undefined,
+      );
+      expect(await signs(nvim)).toBe("");
+    });
+  });
+});

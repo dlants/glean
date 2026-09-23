@@ -88,6 +88,16 @@ export class Session {
   private redoStack: Undoable[] = [];
   /** Called after each applied refresh (the view re-renders from here). */
   onChange: (s: Snapshot) => void = () => {};
+  /** Other surfaces (the file-buffer gutter) that follow the model. */
+  private readonly listeners = new Set<(s: Snapshot) => void>();
+  subscribe(fn: (s: Snapshot) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+  private emit(s: Snapshot) {
+    this.onChange(s);
+    for (const fn of this.listeners) fn(s);
+  }
 
   constructor(private readonly opts: SessionOpts) {
     this.poller = new Poller(async () => {
@@ -154,6 +164,9 @@ export class Session {
       this.opts.build?.ignoreWhitespace ?? false,
     );
   }
+  get repoRoot(): string {
+    return this.opts.git.repoRoot;
+  }
   get worktree(): boolean {
     return this.opts.target.kind === "worktree";
   }
@@ -185,7 +198,7 @@ export class Session {
       cls: new Classifier(model, store, wt.value, ignore),
     };
     this.current = snapshot;
-    this.onChange(snapshot);
+    this.emit(snapshot);
     return { kind: "applied", snapshot };
   }
 
@@ -209,7 +222,7 @@ export class Session {
       cls: new Classifier(cur.model, cur.store, wt.value, ignore),
     };
     this.current = snapshot;
-    this.onChange(snapshot);
+    this.emit(snapshot);
     return { kind: "applied", snapshot };
   }
 

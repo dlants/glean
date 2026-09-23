@@ -15,6 +15,7 @@ M.teardown_bridge = function(reason, expected)
     M.bridge_augroup = nil
   end
   pcall(vim.api.nvim_del_user_command, M.command_name)
+  if had_bridge then pcall(require("glean.node_gutter").teardown) end
   M.channel_id = nil
   vim.g.glean_node_channel = nil
   if had_bridge and not expected then
@@ -102,8 +103,20 @@ M.bridge = function(channel_id)
   M.bridge_augroup = vim.api.nvim_create_augroup("GleanNodeBridge", { clear = true })
 
   vim.api.nvim_create_user_command(M.command_name, function(opts)
+    -- toggle-mark acts on the current file buffer, so it carries the range.
+    if opts.fargs[1] == "toggle-mark" then
+      local ev = { kind = "toggle-mark", buf = vim.api.nvim_get_current_buf() }
+      if opts.range > 0 then
+        ev.line1, ev.line2 = opts.line1, opts.line2
+      else
+        ev.line1 = vim.api.nvim_win_get_cursor(0)[1]
+      end
+      M.safe_rpcnotify(channel_id, "gleanGutter", ev)
+      return
+    end
     M.safe_rpcnotify(channel_id, "gleanCommand", opts.fargs)
-  end, { nargs = "+", desc = "Send a command to the glean node backend" })
+  end, { nargs = "+", range = true, desc = "Send a command to the glean node backend" })
+  require("glean.node_gutter").bridge(M.bridge_augroup)
 
   -- Stop node early in shutdown so nvim doesn't wait out SIGTERM->SIGKILL.
   vim.api.nvim_create_autocmd("VimLeavePre", {

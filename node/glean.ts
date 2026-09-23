@@ -1,17 +1,23 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Git, spawnRunner } from "./git/git.ts";
+import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
 import { Session } from "./session/session.ts";
 import { parseAction, ReviewView } from "./view/view.ts";
 
 export const GLEAN_COMMAND = "gleanCommand";
 export const GLEAN_ACTION = "gleanAction";
+export const GLEAN_GUTTER = "gleanGutter";
 const views = new Map<number, ReviewView>();
+/** The live review the file-buffer gutter follows: the most recently opened. */
+let liveSession: Session | undefined;
+let gutter: FileGutter | undefined;
 
 type Command =
   | { kind: "ping" }
   | { kind: "open"; base: string }
+  | { kind: "toggle-gutter" }
   | { kind: "unknown"; args: readonly string[] };
 
 export function parseCommand(args: unknown): Command {
@@ -22,6 +28,7 @@ export function parseCommand(args: unknown): Command {
     return { kind: "unknown", args: [] };
   }
   if (args[0] === "ping") return { kind: "ping" };
+  if (args[0] === "toggle-gutter") return { kind: "toggle-gutter" };
   if (args[0] === "open") return { kind: "open", base: args[1] ?? "HEAD" };
   return { kind: "unknown", args };
 }
@@ -38,6 +45,16 @@ vim.notify("glean: pong")`,
     case "open":
       await openReview(nvim, command.base);
       return;
+    case "toggle-gutter": {
+      if (!gutter) return;
+      await gutter.setEnabled(!gutter.enabled);
+      await nvim.call("nvim_notify", [
+        `glean: gutter ${gutter.enabled ? "on" : "off"}`,
+        2,
+        {},
+      ]);
+      return;
+    }
     case "unknown":
       await nvim.call("nvim_notify", [
         `glean: unknown command ${JSON.stringify(command.args)}`,
@@ -102,6 +119,10 @@ async function openReview(nvim: Nvim, base: string): Promise<void> {
   });
   await view.init();
   views.set(bufnr, view);
+  liveSession = session;
+  session.subscribe(() => {
+    if (liveSession === session) void gutter?.refreshAll();
+  });
   await session.refresh();
   session.startLive(1000);
 }
@@ -114,6 +135,13 @@ export async function startGlean(nvim: Nvim): Promise<void> {
     } catch (err) {
       nvim.logger.error(err instanceof Error ? err : String(err));
     }
+  });
+  const g = new FileGutter(nvim, () => liveSession);
+  await g.init();
+  gutter = g;
+  nvim.onNotification(GLEAN_GUTTER, async (args: unknown[]) => {
+    const ev = parseGutterEvent(args[0]);
+    if (ev) await g.handle(ev);
   });
   nvim.onNotification(GLEAN_ACTION, async (args: unknown[]) => {
     try {
