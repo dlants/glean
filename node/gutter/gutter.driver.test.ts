@@ -48,7 +48,7 @@ async function openFile(nvim: Nvim, preamble = "") {
     `(function() vim.cmd.cd(${JSON.stringify(r.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)}; ${preamble} end)()`,
   );
   await startBackend(nvim);
-  await nvim.call("nvim_command", [`GleanNode open ${r.shas[0]}`]);
+  await nvim.call("nvim_command", [`Glean open ${r.shas[0]}`]);
   await pollUntil(async () =>
     (
       await luaEval<string[]>(
@@ -178,13 +178,13 @@ describe("file-buffer gutter (driver)", () => {
       await waitSigns(nvim, "");
       await input(nvim, "gt");
       await waitSigns(nvim, UNSEEN);
-      await nvim.call("nvim_command", ["GleanNode toggle-gutter"]);
+      await nvim.call("nvim_command", ["Glean toggle-gutter"]);
       await waitSigns(nvim, "");
-      await nvim.call("nvim_command", ["GleanNode toggle-gutter"]);
+      await nvim.call("nvim_command", ["Glean toggle-gutter"]);
       await waitSigns(nvim, UNSEEN);
       await nvim.call("nvim_command", ["edit d.txt"]);
       await waitSigns(nvim, "1:GleanGutterDelete");
-      await nvim.call("nvim_command", ["1GleanNode toggle-mark"]);
+      await nvim.call("nvim_command", ["1Glean toggle-mark"]);
       await waitSigns(nvim, "1:GleanGutterDeleteSeen");
     });
   });

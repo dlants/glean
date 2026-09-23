@@ -21,7 +21,7 @@ describe("agent api (driver)", () => {
       );
       await startBackend(nvim);
       const api = (expr: string) =>
-        luaEval<unknown>(nvim, `require("glean.node_api").${expr}`);
+        luaEval<unknown>(nvim, `require("glean.api").${expr}`);
       expect(await api("comments()")).toEqual([]);
       const id = await api(
         `add_comment({ path = "a.txt", lnum = 2, text = "why" })`,
@@ -31,19 +31,16 @@ describe("agent api (driver)", () => {
         { id, text: "why", reply: "because", state: "file" },
       ]);
       expect(
-        await luaEval(
-          nvim,
-          `select(2, pcall(require("glean.node_api").hunks))`,
-        ),
+        await luaEval(nvim, `select(2, pcall(require("glean.api").hunks))`),
       ).toContain("no review is open");
       expect(
         await luaEval(
           nvim,
-          `select(2, pcall(require("glean.node_api").comments, { repo = "/" }))`,
+          `select(2, pcall(require("glean.api").comments, { repo = "/" }))`,
         ),
       ).toContain("/ is not inside a git repository");
 
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       const sessions = await pollUntil(async () => {
         const s = (await api("sessions()")) as { id: string; title: string }[];
         return s.length === 1 ? s : undefined;
@@ -95,14 +92,14 @@ describe("agent api (driver)", () => {
         setup(repo.root, mkdtempSync(join(tmpdir(), "glean-api-"))),
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       let worst = 0;
       let answered = false;
       await pollUntil(async () => {
         const t = performance.now();
         const r = (await luaEval<{ status?: string; total?: number }>(
           nvim,
-          `require("glean.node_api").hunks(nil, { limit = 1 })`,
+          `require("glean.api").hunks(nil, { limit = 1 })`,
         ).catch(() => undefined)) ?? { status: "no-session" };
         worst = Math.max(worst, performance.now() - t);
         if (r.total !== undefined) answered = true;

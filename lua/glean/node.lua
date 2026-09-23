@@ -1,12 +1,9 @@
 -- Lua half of the node backend: start the process, bridge its channel back
 -- into commands/autocmds, and tear everything down when node goes away. Every
 -- handler here is O(1) plus one rpcnotify; all real work happens in node.
---
--- During the TypeScript port the Lua implementation still owns `:Glean`, so
--- the node backend is reached through `:GleanNode` until cutover.
 local M = {}
 
-M.command_name = "GleanNode"
+M.command_name = "Glean"
 
 M.teardown_bridge = function(reason, expected)
   local had_bridge = M.channel_id ~= nil or M.bridge_augroup ~= nil
@@ -100,7 +97,7 @@ M.bridge = function(channel_id)
   M.teardown_bridge("re-registering bridge", true)
   M.channel_id = channel_id
   vim.g.glean_node_channel = channel_id
-  M.bridge_augroup = vim.api.nvim_create_augroup("GleanNodeBridge", { clear = true })
+  M.bridge_augroup = vim.api.nvim_create_augroup("GleanBridge", { clear = true })
 
   vim.api.nvim_create_user_command(M.command_name, function(opts)
     -- toggle-mark acts on the current file buffer, so it carries the range.
@@ -114,8 +111,13 @@ M.bridge = function(channel_id)
       M.safe_rpcnotify(channel_id, "gleanGutter", ev)
       return
     end
-    M.safe_rpcnotify(channel_id, "gleanCommand", opts.fargs)
-  end, { nargs = "+", range = true, desc = "Send a command to the glean node backend" })
+    local args = opts.fargs
+    -- Bare `:Glean` reviews the configured base plus the dirty work tree.
+    if #args == 0 then
+      args = { "open", require("glean").config.default_base }
+    end
+    M.safe_rpcnotify(channel_id, "gleanCommand", args)
+  end, { nargs = "*", range = true, desc = "glean: open a review or run a subcommand" })
   require("glean.node_gutter").bridge(M.bridge_augroup)
 
   -- Stop node early in shutdown so nvim doesn't wait out SIGTERM->SIGKILL.
@@ -166,7 +168,7 @@ M.open_review_buffer = function(id)
     action(buf, { kind = "visual-mark", srow = s, erow = e })
   end)
   -- BufWinLeave fires only when the buffer leaves its last window.
-  local group = vim.api.nvim_create_augroup("GleanNodeReview" .. buf, { clear = true })
+  local group = vim.api.nvim_create_augroup("GleanReview" .. buf, { clear = true })
   vim.api.nvim_create_autocmd("BufWinEnter", {
     group = group, buffer = buf,
     callback = function() action(buf, { kind = "visibility", visible = true }) end,

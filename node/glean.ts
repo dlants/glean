@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { Api, ApiError, type LiveReview } from "./api/api.ts";
-import { Store } from "./core/state.ts";
+import { COMMENTS_ID, Store } from "./core/state.ts";
 import { Git, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
@@ -91,19 +91,29 @@ export function parseOpenConfig(v: unknown): OpenConfig {
     ignoreWs: ws === true,
   };
 }
-function stateDirFor(
-  root: string,
+type StoreLocation = { stateDir: string; wtShard: string };
+/** Same location the Lua implementation used, so existing stores keep loading:
+ * `<data>/glean/<sha256(git common dir)[:16]>`, worktree shard `WORKTREE/<branch>`. */
+async function storeLocation(
+  git: Git,
   dataDir: string,
   override: string | undefined,
-): string {
-  return (
+): Promise<StoreLocation> {
+  const [common, branch] = await Promise.all([
+    git.commonDir(),
+    git.currentBranch(),
+  ]);
+  const base = join(dataDir, "glean");
+  const stateDir =
     override ??
-    join(
-      dataDir,
-      "glean-node",
-      createHash("sha256").update(root).digest("hex").slice(0, 16),
-    )
-  );
+    (common.kind === "ok"
+      ? join(
+          base,
+          createHash("sha256").update(common.value).digest("hex").slice(0, 16),
+        )
+      : base);
+  const name = branch.kind === "ok" && branch.value ? branch.value : "HEAD";
+  return { stateDir, wtShard: `${COMMENTS_ID}/${name}` };
 }
 
 /** Resolved `rev-parse --show-toplevel` per probe path, so repeat repo-mode calls skip git. */
@@ -126,11 +136,13 @@ async function repoContext(nvim: Nvim, path: string | undefined) {
     root = top.value.trim();
     repoRoots.set(probePath, root);
   }
-  const store = new Store(stateDirFor(root, dataDir, stateOverride));
+  const git = new Git({ repoRoot: root, runner: spawnRunner() });
+  const loc = await storeLocation(git, dataDir, stateOverride);
+  const store = new Store(loc.stateDir, loc.wtShard);
   await store.load([]);
   return {
     root,
-    git: new Git({ repoRoot: root, runner: spawnRunner() }),
+    git,
     store,
   };
 }
@@ -141,12 +153,17 @@ async function openReview(nvim: Nvim, base: string): Promise<void> {
   const { root, dataDir, stateOverride, minSeenRun, ignoreWs } =
     parseOpenConfig(await nvim.call("nvim_exec_lua", [OPEN_CONFIG_LUA, []]));
   const git = new Git({ repoRoot: root, runner: spawnRunner() });
-  const stateDir = stateDirFor(root, dataDir, stateOverride);
+  const { stateDir, wtShard } = await storeLocation(
+    git,
+    dataDir,
+    stateOverride,
+  );
   const session = new Session({
     git,
     base,
     target: { kind: "worktree" },
     stateDir,
+    wtShard,
     build: { ignoreWhitespace: ignoreWs },
   });
   const id = `g${nextReviewId++}`;

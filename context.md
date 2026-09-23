@@ -8,6 +8,15 @@ and every interaction is an action that mutates the store and re-renders. See
 
 ## Architecture
 
+glean is split like magenta: a thin Lua layer and one node process per nvim.
+Lua only starts node, bridges its channel back (`:Glean`, autocmds, keymaps)
+and forwards each event as one `rpcnotify` (or `rpcrequest` for the agent
+api). Node owns the model, store, git (async, every call with a timeout),
+diffing and rendering, and writes to nvim in bounded batches. Superlinear pure
+work is capped and yields between blocks; stale async results are dropped by
+generation. See `.github/instructions/` for the review rules that enforce this,
+including branded/union types over nullable fields.
+
 The core invariant: the **model is the source of truth, the buffer is a pure
 projection**. A parallel `row_map[row]` resolves any cursor row back to its
 commit/file/hunk/line so actions act on the semantic target rather than buffer
@@ -68,65 +77,31 @@ in. With H the file at the review's tip commit and W the work tree:
   unseen and leaves its neighbours seen.
 
 A moved H (a commit) drops the anchor-mismatched record — dels included — for
-exactly the paths whose content changed. `baseline.lua` holds the pure adds-only
+exactly the paths whose content changed. `node/core/baseline.ts` holds the pure adds-only
 algebra; `plans/2026-08-28-reviewed-baseline.md` holds the original reasoning and
 `plans/2026-08-29-explicit-del-seen.md` the split.
 
-## Layout (`lua/glean/`)
+## Layout
 
-- `init.lua` — the bulk of the plugin (~2.5k lines): `setup`, the `:Glean`
-  command, model build, renderer, `row_map`, keymaps/actions, live work-tree
-  polling, and the two scopes (combined / commits). Start here.
-- `git.lua` — the git handle. All git calls go through `Git:run`; the runner is
-  injectable (`opts.run`) so tests never shell out. Produces FileEntries/Commits.
-- `diff.lua` — pure unified-diff parser (no git, no IO). Turns `git diff` text
-  into ordered FileEntries / Hunks / DiffLines, each carrying `new_lnum`.
-- `api.lua` — the flat, JSON-only programmatic surface (session/comment listing,
-  agent replies, and paged hunk query / seen-marking) that magenta drives over
-  `nvim_exec_lua`; documented for agents by
-  `skills/glean-review/skill.md`, which dotfiles symlinks into `~/.claude/skills`.- `state.lua` — the persisted ReviewStore. Keyed by commit sha, sharded one JSON
-  file per commit on disk (`<dir>/<sha>.json`), merged in memory. Holds seen
-  ranges, del ranges, and — in the `WORKTREE` shard — content-addressed comments
-  and the per-path uncommitted records (`{ head, lines, dels }`: the reviewed
-  baseline for approved additions, explicit head-line ranges for approved
-  deletions).
-- `gutter.lua` — projects the live work-tree review into the sign column of
-  ordinary file buffers (add/change/delete glyphs coloured by seen status), and
-  detaches/reattaches the foreign sign provider (gitsigns) for those buffers.
-  `M.project` is pure and headless-tested.
-  Each projected row also retains the `{hunk, li}` coordinates of the diff lines
-  folded into it, which is the inverse the file-buffer marking path
-  (`:Glean toggle-mark` → `M.toggle_mark` → `Session:toggle_marks`) rides back
-  into `diff(B, W)` before resolving identities and calling the usual
-  `Session:perform{kind = "seen"}`. The map is many-to-one, so one row can carry
-  its paired del and any attached deletions.
-  A cursor-tracked second namespace paints the hunk `gmc` would act on with a
-  heavier glyph (`M.hunk_range`, pure), so the keystroke's target is visible
-  before it is pressed.
-- `ignore.lua` — pure `.gleanignore` matcher (gitignore syntax compiled to vim
-  regex). A matching path is *derived*-seen via `Session:is_generated` short-
-  circuiting `id_seen`, so generated files collapse and leave the unreviewed
-  counts without any store write to unwind when a pattern goes away.
-- `baseline.lua` — pure reviewed-baseline algebra for *additions only*
-  (alignment via `vim.diff`, `seen_adds` classification, `mark_adds`/
-  `unmark_adds` as edits to R). Deletions are not its business. No git, no store.
-- `provenance.lua` — pure `git blame -p` porcelain parser for per-line ownership
-  in the combined view; git invocation injected by the caller.
-- `intraline.lua` — pure word-level intra-line diff highlighting helpers
-  (tokenizer + alignment), no nvim API so it is headless-testable.
-- `testutil.lua` — tiny dependency-free assert harness shared by all test suites.
-- `run_tests.lua` — runs every `*_test.lua` in one shot.
+- `lua/glean/` — the thin side.
+  - `init.lua`: `setup` (config into `vim.g.glean_*`, highlights, starts node).
+  - `node.lua`: `start` (bundle `dist/glean.mjs`, or source with `GLEAN_DEV=1`), `bridge`/`teardown_bridge`, `safe_rpcnotify`, `:Glean`, and the review buffer keymaps.
+  - `node_gutter.lua`: file-buffer autocmds/maps, buffer info queries, gitsigns detach/attach.
+  - `api.lua`: the agent api shim (one `rpcrequest` per call), documented by `skills/glean-review/skill.md`.
+- `node/` — the backend.
+  - `index.ts`/`glean.ts`: attach, command/action/gutter/api dispatch, review registry, store location (`<data>/glean/<sha256(git common dir)[:16]>`, worktree shard `WORKTREE/<branch>`).
+  - `core/`: pure modules — `diff`, `linediff` (Myers), `intraline` (capped), `baseline`, `lineage`, `ranges`, `state` (sharded JSON store), `ignore`, `comments`, `dirtree`, `types` (brands, `LineId`).
+  - `git/`: `git.ts` (injectable `GitRunner`, `Outcome` results, `Poller`), `scheduler.ts` (`GenerationGuard`, `runRefine`, `RefineCache`).
+  - `session/`: `model.ts` (`buildModel`, `Classifier`), `session.ts` (refresh/poll, seen writes, undo/redo, collapse).
+  - `render/`: pure `render` → `Frame` with a `RowTarget` per row, markers, actions planners, scope anchor, comment placement.
+  - `view/view.ts`: applies frames to the scratch buffer (row-diffed, batched), intraline highlighting, suspend/resume.
+  - `gutter/`: pure projection and marking, `FileGutter`, per-buffer mark undo.
+  - `api/api.ts`: the agent api, served from memory with a pending fallback.
+  - `nvim/`: RPC client copied from magenta; `test/`: embedded-nvim driver and fixture repos.
 
-## Tests
+## Commands
 
-Each module has a colocated `*_test.lua` run headless via `nvim -l`. Run the
-whole suite from the repo root:
-
-```sh
-nvim -l lua/glean/run_tests.lua
-```
-
-It exits nonzero if any suite fails. Run one suite directly with
-`nvim -l lua/glean/<name>_test.lua`. The pure modules (`diff`, `state`,
-`provenance`, `intraline`) test directly; `git`-dependent code injects a fake
-runner.
+- `npx tsc -p .` — typecheck
+- `npx vitest run` — all tests (unit tests colocated as `*.test.ts`, driver tests as `*.driver.test.ts` against a real headless nvim)
+- `npx biome check .` — lint/format
+- `npm run build` (or `npm run bundle` without `npm ci`) — builds `dist/glean.mjs`, which is gitignored and built on install like magenta

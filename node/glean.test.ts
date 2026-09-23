@@ -19,10 +19,10 @@ describe("parseCommand", () => {
 });
 
 describe("node bridge", () => {
-  it(":GleanNode ping reaches node and node answers", async () => {
+  it(":Glean ping reaches node and node answers", async () => {
     await withNvim(async (nvim) => {
       await startBackend(nvim);
-      await nvim.call("nvim_command", ["GleanNode ping"]);
+      await nvim.call("nvim_command", ["Glean ping"]);
       const pongs = await pollUntil(() =>
         luaEval<number | null>(nvim, "vim.g.glean_pong").then(
           (p) => p ?? undefined,
@@ -41,7 +41,7 @@ describe("node bridge", () => {
       );
       process.kill(pid, "SIGKILL");
       await pollUntil(async () =>
-        (await luaEval<number>(nvim, `vim.fn.exists(":GleanNode")`)) === 0
+        (await luaEval<number>(nvim, `vim.fn.exists(":Glean")`)) === 0
           ? true
           : undefined,
       );

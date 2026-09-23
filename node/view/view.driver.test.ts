@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ describe("review view (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       const lines = () =>
         luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
       const first = await pollUntil(async () => {
@@ -50,7 +51,7 @@ describe("review view (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       const lines = () =>
         luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
       const first = await pollUntil(async () => {
@@ -83,7 +84,7 @@ describe("review view (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       const text = () =>
         luaEval<string[]>(
           nvim,
@@ -110,7 +111,7 @@ describe("review view (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       await pollUntil(async () => {
         const n = await luaEval<number>(
           nvim,
@@ -153,7 +154,7 @@ describe("review view (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       const getLines = () =>
         luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
       await pollUntil(async () =>
@@ -187,7 +188,11 @@ describe("review view (driver)", () => {
       { msg: "one", files: { "a.txt": "1\nX\n3\n" } },
     ]);
     const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
-    const store = new Store(stateDir);
+    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: repo.root,
+      encoding: "utf8",
+    }).trim();
+    const store = new Store(stateDir, `WORKTREE/${branch}`);
     await store.load([]);
     store.addCommentRecord("a.txt" as RepoPath, {
       lnum: 2,
@@ -203,7 +208,7 @@ describe("review view (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       const lines = () =>
         luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
       const hits = (l: string[]) =>
@@ -247,7 +252,7 @@ describe("review view (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       let worst = 0;
       await pollUntil(async () => {
         const t = performance.now();
@@ -277,7 +282,7 @@ describe("review view visibility (driver)", () => {
         `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
       );
       await startBackend(nvim);
-      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
       const buf = await pollUntil(async () => {
         const b = await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()");
         const name = await luaEval<string>(
