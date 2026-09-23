@@ -3,12 +3,16 @@
  * against the previous one (common prefix/suffix) and written in bounded
  * batches so nvim never handles one huge request; Lua only dispatches Actions.
  */
+
+import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
   collapseTarget,
   planToggleSeen,
   planVisualMark,
 } from "../render/actions.ts";
+import { cursorAnchor, restoreAnchor } from "../render/anchor.ts";
+import type { IntraBlock } from "../render/render.ts";
 import { type Frame, render } from "../render/render.ts";
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
@@ -21,7 +25,7 @@ export type Action =
   | { kind: "toggle-seen"; row: number }
   | { kind: "visual-mark"; srow: number; erow: number }
   | { kind: "toggle-fold"; row: number }
-  | { kind: "toggle-scope" }
+  | { kind: "toggle-scope"; row: number }
   | { kind: "undo" }
   | { kind: "redo" };
 
@@ -31,6 +35,7 @@ export function parseAction(v: unknown): Action | undefined {
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
   switch (o.kind) {
     case "toggle-seen":
+    case "toggle-scope":
     case "toggle-fold": {
       const row = num("row");
       return row === undefined ? undefined : { kind: o.kind, row };
@@ -42,7 +47,6 @@ export function parseAction(v: unknown): Action | undefined {
         ? undefined
         : { kind: "visual-mark", srow, erow };
     }
-    case "toggle-scope":
     case "undo":
     case "redo":
       return { kind: o.kind };
@@ -75,6 +79,11 @@ export class ReviewView {
   frame: Frame | undefined;
   scope: Scope = "combined";
   private ns = 0;
+  private nsIntra = 0;
+  private readonly intraGuard = new GenerationGuard();
+  private readonly refineCache = new RefineCache();
+  /** Resolves when the latest frame's intra-line refinement finishes or goes stale. */
+  intraDone: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly nvim: Nvim,
@@ -90,6 +99,9 @@ export class ReviewView {
 
   async init() {
     this.ns = await this.nvim.call("nvim_create_namespace", ["glean-review"]);
+    this.nsIntra = await this.nvim.call("nvim_create_namespace", [
+      "glean-review-intra",
+    ]);
   }
 
   private build(): Frame | undefined {
@@ -109,6 +121,7 @@ export class ReviewView {
   async redraw() {
     const frame = this.build();
     if (!frame) return;
+    const gen = this.intraGuard.bump();
     this.frame = frame;
     const edit = lineEdit(this.shown, frame.lines);
     const b = this.bufnr;
@@ -161,8 +174,79 @@ export class ReviewView {
       await this.nvim.call("nvim_call_atomic", [
         calls.slice(i, i + MAX_BATCH_CALLS),
       ]);
+    if (!this.intraGuard.isCurrent(gen)) return;
+    await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsIntra, 0, -1]);
+    this.intraDone = runRefine(
+      this.intraGuard,
+      gen,
+      frame.intraBlocks.map((blk) => ({
+        blk,
+        dels: blk.dels.map((d) => d.text),
+        adds: blk.adds.map((a) => a.text),
+      })),
+      ({ blk }, refined) => {
+        const out: unknown[] = [];
+        for (const r of refined) {
+          const d = blk.dels[r.di];
+          const a = blk.adds[r.ai];
+          if (!d || !a) continue;
+          this.intraCalls(out, d, r.aSegs, "GleanDelText", "GleanDelEmph");
+          this.intraCalls(out, a, r.bSegs, "GleanAddText", "GleanAddEmph");
+        }
+        this.pending = this.pending.then(async () => {
+          if (!this.intraGuard.isCurrent(gen)) return;
+          for (let i = 0; i < out.length; i += MAX_BATCH_CALLS)
+            await this.nvim.call("nvim_call_atomic", [
+              out.slice(i, i + MAX_BATCH_CALLS),
+            ]);
+        });
+      },
+      this.refineCache,
+    ).then(() => this.pending);
+  }
+  private pending: Promise<void> = Promise.resolve();
+  /**
+   * A refined pair drops its full-line background to a foreground-only colour
+   * (a higher-priority line highlight) so the changed spans carry the diff
+   * background.
+   */
+  private intraCalls(
+    out: unknown[],
+    line: IntraBlock["dels"][number],
+    segs: readonly { startCol: number; endCol: number }[],
+    textHl: string,
+    emphHl: string,
+  ) {
+    const b = this.bufnr;
+    const len = Buffer.byteLength(line.text);
+    out.push([
+      "nvim_buf_set_extmark",
+      [b, this.nsIntra, line.row, 0, { line_hl_group: textHl, priority: 4100 }],
+    ]);
+    for (const s of segs) {
+      const e = Math.min(s.endCol, len);
+      if (e > s.startCol)
+        out.push([
+          "nvim_buf_set_extmark",
+          [
+            b,
+            this.nsIntra,
+            line.row,
+            s.startCol,
+            { end_col: e, hl_group: emphHl, priority: 4200 },
+          ],
+        ]);
+    }
   }
 
+  private async setCursor(row: number) {
+    const win = await this.nvim.call("nvim_call_function", [
+      "bufwinid",
+      [this.bufnr],
+    ]);
+    if (typeof win === "number" && win > 0)
+      await this.nvim.call("nvim_win_set_cursor", [win, [row + 1, 0]]);
+  }
   async dispatch(a: Action) {
     const snap = this.session.current;
     const frame = this.frame;
@@ -201,10 +285,15 @@ export class ReviewView {
         await this.redraw();
         return;
       }
-      case "toggle-scope":
+      case "toggle-scope": {
+        const anchor = cursorAnchor(snap.cls, frame.rows[a.row]);
         this.scope = this.scope === "combined" ? "commits" : "combined";
         await this.redraw();
+        const next = this.frame;
+        const row = anchor && next && restoreAnchor(snap.cls, next, anchor);
+        if (row !== undefined) await this.setCursor(row);
         return;
+      }
       case "undo":
       case "redo": {
         const r = await (a.kind === "undo"

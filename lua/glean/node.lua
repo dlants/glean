@@ -136,7 +136,7 @@ M.open_review_buffer = function()
   end
   map("n", "m", function() action(buf, { kind = "toggle-seen", row = row0() }) end)
   map("n", "=", function() action(buf, { kind = "toggle-fold", row = row0() }) end)
-  map("n", "S", function() action(buf, { kind = "toggle-scope" }) end)
+  map("n", "S", function() action(buf, { kind = "toggle-scope", row = row0() }) end)
   map("n", "u", function() action(buf, { kind = "undo" }) end)
   map("n", "<C-r>", function() action(buf, { kind = "redo" }) end)
   map("x", "m", function()

@@ -63,4 +63,47 @@ describe("review view (driver)", () => {
       );
     });
   });
+  it("paints intra-line emphasis and keeps the cursor line across scopes", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "keep\nalpha beta gamma\n" } },
+      { msg: "edit", files: { "a.txt": "keep\nalpha BETA gamma\n" } },
+    ]);
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      await pollUntil(async () => {
+        const n = await luaEval<number>(
+          nvim,
+          `#vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace("glean-review-intra"), 0, -1, {})`,
+        );
+        return n > 0 ? true : undefined;
+      });
+      const lines = await luaEval<string[]>(
+        nvim,
+        "vim.api.nvim_buf_get_lines(0, 0, -1, false)",
+      );
+      const row = lines.indexOf("alpha BETA gamma") + 1;
+      expect(row).toBeGreaterThan(0);
+      await nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
+      await nvim.call("nvim_input", ["S"]);
+      await pollUntil(async () => {
+        const cur = await luaEval<string>(
+          nvim,
+          "vim.api.nvim_get_current_line()",
+        );
+        const all = await luaEval<string[]>(
+          nvim,
+          "vim.api.nvim_buf_get_lines(0, 0, -1, false)",
+        );
+        return all.some((l) => l.includes("edit")) && cur === "alpha BETA gamma"
+          ? true
+          : undefined;
+      });
+    });
+  });
 });
