@@ -192,7 +192,7 @@ Lua ↔ node:
   - Config done: `ViewOpts {minSeenRun, ignoreWhitespace}` read from `vim.g.glean_min_seen_run` / `vim.g.glean_ignore_whitespace` in `openReview` (whitespace also goes into `Session` build opts). 50 ms responsiveness driver test done (3000×3000 rewritten long-line hunk; worst `nvim_eval` latency measured until intra marks land).
   - Still to do for 4d:
     - Section-level highlight diffing.
-    - Cursor placement after mark/visual mark (undo/redo done: redraw then restore `Undoable.cursor`, clamped).
+    - Cursor placement after mark/visual mark: done (`ReviewView.markAndAdvance`: a mark lands on `nextUnseenHunk` computed from the pre-mark frame, else stays on the row clamped; unmark stays). No driver test yet.
     - Scope-toggle: expand a collapsed destination before restoring the anchor.
     - Summary-row actions.
     - Suspend/resume and `suspend_test`.

@@ -8,8 +8,11 @@ import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
   collapseTarget,
+  nextUnseenHunk,
   planToggleSeen,
   planVisualMark,
+  rowOfHunk,
+  type SeenPlan,
 } from "../render/actions.ts";
 import { cursorAnchor, restoreAnchor } from "../render/anchor.ts";
 import type { IntraBlock } from "../render/render.ts";
@@ -249,6 +252,18 @@ export class ReviewView {
     if (typeof win === "number" && win > 0)
       await this.nvim.call("nvim_win_set_cursor", [win, [row + 1, 0]]);
   }
+  /** After marking, land on the next unseen hunk below the cursor, as Lua does. */
+  private async markAndAdvance(plan: SeenPlan, row: number) {
+    const before = this.frame;
+    const next =
+      plan.op === "mark" && before ? nextUnseenHunk(before, row) : undefined;
+    await this.session.perform({ kind: "seen", plan, cursor: row });
+    await this.redraw();
+    const frame = this.frame;
+    if (!frame || frame.rows.length === 0) return;
+    const dest = next === undefined ? undefined : rowOfHunk(frame, next);
+    await this.setCursor(dest ?? Math.min(row, frame.rows.length - 1));
+  }
   async dispatch(a: Action) {
     const snap = this.session.current;
     const frame = this.frame;
@@ -257,8 +272,7 @@ export class ReviewView {
       case "toggle-seen": {
         const t = frame.rows[a.row];
         const plan = t && planToggleSeen(snap.cls, this.scope, t);
-        if (plan)
-          await this.session.perform({ kind: "seen", plan, cursor: a.row });
+        if (plan) await this.markAndAdvance(plan, a.row);
         return;
       }
       case "visual-mark": {
@@ -269,8 +283,7 @@ export class ReviewView {
           a.srow,
           a.erow,
         );
-        if (plan)
-          await this.session.perform({ kind: "seen", plan, cursor: a.srow });
+        if (plan) await this.markAndAdvance(plan, a.srow);
         return;
       }
       case "toggle-fold": {
