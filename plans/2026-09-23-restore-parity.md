@@ -129,6 +129,7 @@ GitHub access (PRs) goes through an injectable `gh` runner, matching the old `op
   - `session(id)` added (`node/api/api.ts`, `lua/glean/api.lua`). The old Lua returned the Session object; nothing but JSON crosses the boundary now, so it returns that review's `sessions()` entry, with the same errors (none open / ambiguous / unknown id listing open reviews). Ids resolve by `g<N>` or the review buffer number (`LiveReview.bufnr`), as in Lua; the previous node-only `N` → `gN` shorthand is dropped.
   - The `target` field of a dirty review is `"WORKTREE"` again (old shape).
   - Titles (abbreviated oids, symbolic ref with `∕`, reopen keeps buffer/id) are covered by `targets.test.ts` "review titles" + `openReview` from stage 1; one-review-at-a-time is enforced by `openReview` (stage 1). `api.test.ts` adds the "single" cases: `session` by id and buffer, stale id errors naming the live one, no-arg resolves the only review. Skill doc updated.
+  - Review follow-ups: `LiveReview.target` is the `Target` union (`worktree` | `ref`), so a ref named `WORKTREE` can't be confused with the work tree; only `sessions()`/`describe` render it as a string. Session addresses are a `SessionKey` union (`{kind:"id"}` | `{kind:"bufnr"}`) parsed once at dispatch; `session(key)`/`review(key)` match on the kind. Tests pin `session(id).target === WORKTREE` for a dirty review and that a bare g-number (not a buffer number) fails with the 'no review' error.
 
 ## Parity audit and docs
 - Goal:

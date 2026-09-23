@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
-import type { RepoPath } from "../core/types.ts";
+import { type RepoPath, WORKTREE } from "../core/types.ts";
 import { Git, spawnRunner } from "../git/git.ts";
 import type { Target } from "../session/model.ts";
 import { Session } from "../session/session.ts";
@@ -84,7 +84,7 @@ function harness() {
       bufnr: 100 + n,
       session,
       base,
-      target: target.kind === "ref" ? target.ref : "WORKTREE",
+      target,
       title: `Glean:g${n}`,
       scope: () => "combined",
       frame: () => undefined,
@@ -269,6 +269,12 @@ describe("agent api: comments", () => {
     expect(await h.call<{ id: string }>("session", b.bufnr)).toMatchObject({
       id: b.id,
     });
+    // A number is a buffer number, never shorthand for `g<N>`.
+    const gNumber = Number(b.id.slice(1));
+    expect(gNumber).not.toBe(b.bufnr);
+    await expect(h.call("session", gNumber)).rejects.toThrow(
+      "no review with session id",
+    );
     await expect(h.call("session", "g999")).rejects.toThrow(
       "no review with session id",
     );
@@ -413,6 +419,9 @@ describe("agent api: hunks", () => {
     writeFileSync(join(repo.root, "d.txt"), "--\nkeep\n");
     const h = harness();
     const r = await h.open(repo, repo.shas[0]!, { kind: "worktree" });
+    expect(await h.call<{ target: string }>("session", r.id)).toMatchObject({
+      target: WORKTREE,
+    });
     const hk = (await h.call<Page>("hunks", r.id)).hunks[0]!;
     expect(hk).toMatchObject({ dels: 4, unseen_lines: 4 });
     expect(await h.call("mark", r.id, hk.id)).toMatchObject({ lines: 4 });

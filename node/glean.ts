@@ -3,12 +3,7 @@ import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { Api, ApiError, type LiveReview } from "./api/api.ts";
 import { COMMENTS_ID, Store } from "./core/state.ts";
-import {
-  type PostLnum,
-  type RepoPath,
-  toRepoPath,
-  WORKTREE,
-} from "./core/types.ts";
+import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
@@ -433,7 +428,7 @@ require("glean.node").show_buffer(buf)`,
     bufnr,
     session,
     base,
-    target: spec.target.kind === "worktree" ? WORKTREE : spec.target.ref,
+    target: spec.target,
     title,
     scope: () => current?.view.scope ?? "combined",
     frame: () => current?.view.frame,

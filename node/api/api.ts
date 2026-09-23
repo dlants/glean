@@ -15,6 +15,7 @@ import { WORKTREE } from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import { resolveFile, type Sticky } from "../render/actions.ts";
 import type { Frame } from "../render/render.ts";
+import type { Target } from "../session/model.ts";
 import { type Classifier, type OwnerFn, splitLines } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
 
@@ -26,7 +27,7 @@ export type LiveReview = {
   bufnr: number;
   session: Session;
   base: string;
-  target: string;
+  target: Target;
   title: string;
   scope: () => "combined" | "commits";
   frame: () => Frame | undefined;
@@ -89,16 +90,27 @@ type HunkEntry = {
 /** A session slot: an id / buffer number, `{ repo }` / `{ session }`, or nothing. */
 type Address =
   | { kind: "default" }
-  | { kind: "session"; id: string | number }
+  | { kind: "session"; key: SessionKey }
   | { kind: "repo"; repo: string | undefined };
+/** A review is addressed by its `g<N>` id or its review buffer number. */
+export type SessionKey =
+  | { kind: "id"; id: string }
+  | { kind: "bufnr"; bufnr: number };
+function sessionKey(v: unknown): SessionKey | undefined {
+  if (typeof v === "string") return { kind: "id", id: v };
+  if (typeof v === "number") return { kind: "bufnr", bufnr: v };
+  return undefined;
+}
+const showKey = (k: SessionKey) => (k.kind === "id" ? k.id : String(k.bufnr));
+const showTarget = (t: Target) => (t.kind === "worktree" ? WORKTREE : t.ref);
 function parseAddress(v: unknown): Address {
   if (v === null || v === undefined) return { kind: "default" };
-  if (typeof v === "string" || typeof v === "number")
-    return { kind: "session", id: v };
+  const key = sessionKey(v);
+  if (key) return { kind: "session", key };
   if (typeof v === "object") {
     const o = v as Record<string, unknown>;
-    if (typeof o.session === "string" || typeof o.session === "number")
-      return { kind: "session", id: o.session };
+    const k = sessionKey(o.session);
+    if (k) return { kind: "session", key: k };
     return { kind: "repo", repo: str(o.repo) };
   }
   return fail(`bad session argument ${JSON.stringify(v)}`);
@@ -254,7 +266,14 @@ export class Api {
         case "sessions":
           return Promise.resolve(this.sessions());
         case "session":
-          return Promise.resolve(this.session(a[0]));
+          return Promise.resolve(
+            this.session(
+              a[0] == null
+                ? undefined
+                : (sessionKey(a[0]) ??
+                    fail(`bad session id ${JSON.stringify(a[0])}`)),
+            ),
+          );
         case "comments":
           return this.comments(a[0], a[1]);
         case "hunks":
@@ -296,9 +315,7 @@ export class Api {
 
   /** The `sessions()` entry for one review (by id or buffer number); the
    * same errors as every session-addressed call. */
-  session(id: unknown) {
-    const key =
-      typeof id === "string" || typeof id === "number" ? id : undefined;
+  session(key: SessionKey | undefined) {
     const r = this.review(key);
     return this.sessions().find((e) => e.id === r.id);
   }
@@ -307,7 +324,7 @@ export class Api {
       id: r.id,
       repo: r.session.repoRoot,
       base: r.base,
-      target: r.target,
+      target: showTarget(r.target),
       scope: r.scope(),
       title: r.title,
     }));
@@ -316,28 +333,33 @@ export class Api {
   private describe(): string {
     return this.host
       .reviews()
-      .map((r) => `${r.id} (${r.session.repoRoot} ${r.base}..${r.target})`)
+      .map(
+        (r) =>
+          `${r.id} (${r.session.repoRoot} ${r.base}..${showTarget(r.target)})`,
+      )
       .join(", ");
   }
 
-  review(id: string | number | undefined): LiveReview {
+  review(key: SessionKey | undefined): LiveReview {
     const live = this.host.reviews();
     if (live.length === 0)
       return fail(
         "no review is open; open one with :Glean before using glean.api",
       );
-    if (id === undefined) {
+    if (key === undefined) {
       const [only] = live;
       if (only && live.length === 1) return only;
       return fail(
         `${live.length} reviews are open; pass a session id — ${this.describe()}`,
       );
     }
-    const hit = live.find((r) => r.id === id || r.bufnr === id);
+    const hit = live.find((r) =>
+      key.kind === "id" ? r.id === key.id : r.bufnr === key.bufnr,
+    );
     return (
       hit ??
       fail(
-        `no review with session id "${id}"; open reviews: ${this.describe()}`,
+        `no review with session id "${showKey(key)}"; open reviews: ${this.describe()}`,
       )
     );
   }
@@ -348,7 +370,7 @@ export class Api {
     | { kind: "review"; r: LiveReview }
     | { kind: "repo"; repo: string | undefined } {
     if (addr.kind === "session")
-      return { kind: "review", r: this.review(addr.id) };
+      return { kind: "review", r: this.review(addr.key) };
     if (addr.kind === "repo") return { kind: "repo", repo: addr.repo };
     const live = this.host.reviews();
     if (live.length === 0) return { kind: "repo", repo: undefined };
@@ -444,7 +466,7 @@ export class Api {
   private reviewArg(sessionArg: unknown): LiveReview {
     const addr = parseAddress(sessionArg);
     if (addr.kind === "repo") return fail("this call needs an open review");
-    return this.review(addr.kind === "session" ? addr.id : undefined);
+    return this.review(addr.kind === "session" ? addr.key : undefined);
   }
 
   async mark(sessionArg: unknown, selArg: unknown, seenArg: unknown) {
