@@ -68,7 +68,9 @@ export type Action =
   | { kind: "delete-comments"; srow: number; erow: number }
   | { kind: "undo" }
   | { kind: "redo" }
-  | { kind: "visibility"; visible: boolean };
+  | { kind: "visibility"; visible: boolean }
+  /** The review buffer was wiped; handled by the registry, not the view. */
+  | { kind: "gone" };
 
 export function parseAction(v: unknown): Action | undefined {
   if (typeof v !== "object" || v === null) return undefined;
@@ -96,6 +98,7 @@ export function parseAction(v: unknown): Action | undefined {
         : undefined;
     case "undo":
     case "redo":
+    case "gone":
       return { kind: o.kind };
     default:
       return undefined;

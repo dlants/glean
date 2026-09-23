@@ -22,6 +22,7 @@ import {
   parsePrList,
   renderLog,
   renderPrs,
+  revBase,
   reviewKey,
   reviewTitle,
   spawnGhRunner,
@@ -117,7 +118,7 @@ vim.notify("glean: pong")`,
     case "range": {
       const ctx = await openContext(nvim);
       await openReview(nvim, ctx, {
-        base: command.base,
+        base: revBase(command.base),
         target: { kind: "ref", ref: command.target },
       });
       return;
@@ -328,7 +329,12 @@ async function openReview(
       current.bufnr,
     ])) as boolean;
     if (valid) {
-      const title = reviewTitle(root, current.review.id, spec);
+      const title = reviewTitle(
+        root,
+        current.review.id,
+        spec,
+        current.review.base,
+      );
       current.review.title = title;
       await nvim.call("nvim_exec_lua", [
         `local buf, title = ...
@@ -345,8 +351,9 @@ require("glean.node").show_buffer(buf)`,
     spec.storageBranch !== undefined
       ? `${COMMENTS_ID}/${spec.storageBranch}`
       : loc.wtShard;
-  let base = spec.base;
-  if (spec.fromRoot) {
+  let base: string;
+  if (spec.base.kind === "rev") base = spec.base.rev;
+  else {
     const empty = await git.emptyTree();
     if (empty.kind !== "ok")
       throw new TargetError(
@@ -360,10 +367,13 @@ require("glean.node").show_buffer(buf)`,
     target: spec.target,
     stateDir: loc.stateDir,
     wtShard,
-    build: { ignoreWhitespace: ctx.ignoreWs, fromRoot: spec.fromRoot === true },
+    build: {
+      ignoreWhitespace: ctx.ignoreWs,
+      fromRoot: spec.base.kind === "root",
+    },
   });
   const id = `g${nextReviewId++}`;
-  const title = reviewTitle(root, id, { ...spec, base });
+  const title = reviewTitle(root, id, spec, base);
   const bufnr = (await nvim.call("nvim_exec_lua", [
     `return require("glean.node").open_review_buffer(...)`,
     [title],
@@ -469,13 +479,22 @@ async function fetchLog(root: string, want: number) {
   return { commits: hasMore ? r.value.slice(0, want) : r.value, hasMore };
 }
 
+/** `vim.g.glean_log_page_size` exists so tests can page a small fixture. */
+async function logPageSize(nvim: Nvim): Promise<number> {
+  const v = await nvim.call("nvim_exec_lua", [
+    "return vim.g.glean_log_page_size",
+    [],
+  ]);
+  return typeof v === "number" && v > 0 ? v : LOG_PAGE_SIZE;
+}
 async function openLog(nvim: Nvim, root: string, show = true) {
   const k = `log\0${root}`;
   const prevBuf = listBuffers.get(k);
   const prev = prevBuf !== undefined ? lists.get(prevBuf) : undefined;
+  const pageSize = await logPageSize(nvim);
   // A reopen restores however much history was loaded before.
   const want = Math.max(
-    LOG_PAGE_SIZE,
+    pageSize,
     prev?.kind === "log" ? prev.commits.length : 0,
   );
   const { commits, hasMore } = await fetchLog(root, want);
@@ -553,14 +572,15 @@ async function handleList(nvim: Nvim, ev: ListEvent) {
     if (ev.kind === "page") {
       if (!st.hasMore || ev.delta <= 0) return;
       const git = new Git({ repoRoot: st.root, runner: spawnRunner() });
+      const pageSize = await logPageSize(nvim);
       const r = await git.logCommits({
         skip: st.commits.length,
-        limit: LOG_PAGE_SIZE + 1,
+        limit: pageSize + 1,
       });
       if (r.kind !== "ok")
         throw new TargetError(`glean: git log failed: ${r.message}`);
-      st.hasMore = r.value.length > LOG_PAGE_SIZE;
-      st.commits.push(...r.value.slice(0, LOG_PAGE_SIZE));
+      st.hasMore = r.value.length > pageSize;
+      st.commits.push(...r.value.slice(0, pageSize));
       st.frame = renderLog(st.root, st.commits, st.hasMore);
       await paintList(nvim, ev.buf, st.frame);
       return;
@@ -569,18 +589,7 @@ async function handleList(nvim: Nvim, ev: ListEvent) {
     if (sel.kind === "none") return;
     const ctx = { ...(await openContext(nvim)), root: st.root };
     ctx.git = new Git({ repoRoot: st.root, runner: spawnRunner() });
-    await openReview(
-      nvim,
-      ctx,
-      sel.kind === "open"
-        ? sel.spec
-        : {
-            base: "",
-            target: sel.target,
-            identifier: sel.identifier,
-            fromRoot: true,
-          },
-    );
+    await openReview(nvim, ctx, sel.spec);
     return;
   }
   if (ev.kind === "page") {
@@ -638,15 +647,15 @@ export async function startGlean(nvim: Nvim): Promise<void> {
   });
   nvim.onNotification(GLEAN_ACTION, async (args: unknown[]) => {
     try {
-      const view = views.get(Number(args[0]));
-      const raw = args[1] as { kind?: unknown } | undefined;
-      if (raw?.kind === "gone") {
-        if (current?.bufnr === Number(args[0]))
+      const bufnr = args[0];
+      const action = parseAction(args[1]);
+      if (typeof bufnr !== "number" || !action) return;
+      if (action.kind === "gone") {
+        if (current?.bufnr === bufnr)
           await closeCurrent(nvim, { keepBuf: true });
         return;
       }
-      const action = parseAction(args[1]);
-      if (view && action) await view.dispatch(action);
+      await views.get(bufnr)?.dispatch(action);
     } catch (err) {
       nvim.logger.error(err instanceof Error ? err : String(err));
     }

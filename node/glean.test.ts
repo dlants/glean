@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseCommand, storePaths } from "./glean.ts";
+import { parseCommand, parseListEvent, storePaths } from "./glean.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
 import { luaEval, pollUntil, startBackend, withNvim } from "./test/driver.ts";
 import { makeRepo } from "./test/repo.ts";
@@ -115,6 +115,39 @@ describe("storePaths", () => {
   });
 });
 
+describe("parseListEvent", () => {
+  it("accepts well-formed events", () => {
+    expect(parseListEvent({ kind: "open", buf: 3, srow: 1, erow: 2 })).toEqual({
+      kind: "open",
+      buf: 3,
+      srow: 1,
+      erow: 2,
+    });
+    expect(parseListEvent({ kind: "page", buf: 3, delta: -1 })).toEqual({
+      kind: "page",
+      buf: 3,
+      delta: -1,
+    });
+    expect(parseListEvent({ kind: "reload", buf: 3 })).toEqual({
+      kind: "reload",
+      buf: 3,
+    });
+    expect(parseListEvent({ kind: "gone", buf: 3 })).toEqual({
+      kind: "gone",
+      buf: 3,
+    });
+  });
+  it("rejects missing or non-numeric fields", () => {
+    expect(parseListEvent(undefined)).toBeUndefined();
+    expect(parseListEvent("open")).toBeUndefined();
+    expect(parseListEvent({ kind: "open", srow: 1, erow: 1 })).toBeUndefined();
+    expect(parseListEvent({ kind: "open", buf: 1, srow: "1", erow: 1 })).toBe(
+      undefined,
+    );
+    expect(parseListEvent({ kind: "page", buf: 1 })).toBeUndefined();
+    expect(parseListEvent({ kind: "nope", buf: 1 })).toBeUndefined();
+  });
+});
 describe("review targets (driver)", () => {
   const setup = async (nvim: Nvim, root: string) => {
     const stateDir = mkdtempSync(join(tmpdir(), "glean-targets-"));
@@ -198,6 +231,65 @@ describe("review targets (driver)", () => {
         `require("glean.api").sessions()`,
       );
       expect(sessions).toHaveLength(1);
+    });
+  });
+  it(":Glean log pages forward, stops at the end, and survives a wipe", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "0\n" } },
+      ...[1, 2, 3, 4].map((i) => ({
+        msg: `c${i}`,
+        files: { "a.txt": `${i}\n` },
+      })),
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      await luaEval(nvim, "(function() vim.g.glean_log_page_size = 2 end)()");
+      await nvim.call("nvim_command", ["Glean log"]);
+      const commitRows = (l: string[]) =>
+        l.filter((s) => /^[0-9a-f]{7,} /.test(s));
+      const first = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return l[0]?.startsWith("Glean log") ? l : undefined;
+      });
+      expect(commitRows(first).map((s) => s.split("  ")[1])).toEqual([
+        "c4",
+        "c3",
+      ]);
+      expect(first.at(-1)).toContain("]p to load more");
+      await nvim.call("nvim_input", ["]p"]);
+      const second = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return commitRows(l).length === 4 ? l : undefined;
+      });
+      expect(commitRows(second).map((s) => s.split("  ")[1])).toEqual([
+        "c4",
+        "c3",
+        "c2",
+        "c1",
+      ]);
+      expect(second.at(-1)).toContain("]p to load more");
+      await nvim.call("nvim_input", ["]p"]);
+      const last = await pollUntil(async () => {
+        const l = await lines(nvim);
+        return commitRows(l).length === 5 ? l : undefined;
+      });
+      expect(last.at(-1)).not.toContain("]p to load more");
+      await nvim.call("nvim_input", ["]p"]);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(commitRows(await lines(nvim))).toHaveLength(5);
+      // A wiped list buffer is forgotten: the next :Glean log makes a fresh one.
+      const oldBuf = await luaEval<number>(
+        nvim,
+        "vim.api.nvim_get_current_buf()",
+      );
+      await nvim.call("nvim_command", [`bwipeout! ${oldBuf}`]);
+      await nvim.call("nvim_command", ["Glean log"]);
+      const fresh = await pollUntil(async () => {
+        const b = await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()");
+        const l = await lines(nvim);
+        return b !== oldBuf && l[0]?.startsWith("Glean log") ? l : undefined;
+      });
+      expect(commitRows(fresh)).toHaveLength(2);
     });
   });
 });

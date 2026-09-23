@@ -7,7 +7,12 @@
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
 import type { Sha } from "./core/types.ts";
-import { DEFAULT_TIMEOUT_MS, type Git, type LogCommit } from "./git/git.ts";
+import {
+  DEFAULT_TIMEOUT_MS,
+  type Git,
+  type LogCommit,
+  type Outcome,
+} from "./git/git.ts";
 import type { Target } from "./session/model.ts";
 
 export type GhResult =
@@ -82,18 +87,19 @@ export function githubRemoteRepo(url: string | undefined): string | undefined {
   return `${m[1]}/${repo}`.toLowerCase();
 }
 
+/** A review base: a revision, or the empty tree with history from the root. */
+export type SpecBase = { kind: "rev"; rev: string } | { kind: "root" };
+export const revBase = (rev: string): SpecBase => ({ kind: "rev", rev });
 export type OpenSpec = {
-  base: string;
+  base: SpecBase;
   target: Target;
   /** Shown in the title; defaults to the range identifier. */
   identifier?: string;
   /** Branch owning the content-addressed shard; defaults to the checkout's. */
   storageBranch?: string;
-  /** Base is the empty tree and history includes the root commit. */
-  fromRoot?: boolean;
 };
 
-const okOr = <T>(o: { kind: string; value?: T }): T | undefined =>
+const okOr = <T>(o: Outcome<T>): T | undefined =>
   o.kind === "ok" ? o.value : undefined;
 
 /** "Current branch + dirty": fork point from the trunk on a feature branch,
@@ -124,7 +130,7 @@ export async function openDirtySpec(
   const reviewBase = explicitBase ?? base;
   const target: Target = { kind: "worktree" };
   return {
-    base: reviewBase,
+    base: revBase(reviewBase),
     target,
     identifier: explicitBase ?? branch ?? rangeIdentifier(reviewBase, target),
   };
@@ -167,9 +173,16 @@ export async function resolvePr(
   if (head.kind !== "ok") fail(`fetching PR head failed: ${head.message}`);
   const base = await git.fetch("origin", info.baseRefName);
   if (base.kind !== "ok") fail(`fetching PR base failed: ${base.message}`);
+  // Validates the gh-reported oids against the fetched objects.
+  const [baseOid, headOid] = await Promise.all([
+    git.revParse(`${info.baseRefOid}^{commit}`),
+    git.revParse(`${info.headRefOid}^{commit}`),
+  ]);
+  if (baseOid.kind !== "ok" || headOid.kind !== "ok")
+    return fail("`gh pr view` returned unknown commit oids");
   return {
-    base: info.baseRefOid as Sha,
-    target: info.headRefOid as Sha,
+    base: baseOid.value,
+    target: headOid.value,
     branch: info.headRefName,
     number: info.number,
   };
@@ -182,7 +195,7 @@ export async function openPrSpec(
 ): Promise<OpenSpec> {
   const r = await resolvePr(git, pr, gh);
   return {
-    base: r.base,
+    base: revBase(r.base),
     target: { kind: "ref", ref: r.target },
     storageBranch: r.branch,
     identifier: `PR #${r.number}`,
@@ -212,7 +225,7 @@ export async function openBranchSpec(
 ): Promise<OpenSpec> {
   const r = await resolveBranch(git, branch, defaultBase);
   return {
-    base: r.base,
+    base: revBase(r.base),
     target: { kind: "ref", ref: r.target },
     storageBranch: branch,
     identifier: branch,
@@ -232,12 +245,13 @@ export function reviewTitle(
   repoRoot: string,
   id: string,
   spec: OpenSpec,
+  base: string,
 ): string {
   const repo = basename(repoRoot);
-  const range = rangeIdentifier(spec.base, spec.target);
+  const range = rangeIdentifier(base, spec.target);
   const identifier = spec.identifier ?? range;
   const short = rangeIdentifier(
-    abbrevRef(spec.base),
+    abbrevRef(base),
     spec.target.kind === "worktree"
       ? spec.target
       : { kind: "ref", ref: abbrevRef(spec.target.ref) },
@@ -251,7 +265,8 @@ export function reviewTitle(
 /** `(repo, base, target)`: reopening the same key reuses the review. */
 export function reviewKey(repoRoot: string, spec: OpenSpec): string {
   const t = spec.target.kind === "worktree" ? "WORKTREE" : spec.target.ref;
-  return [repoRoot, spec.base, t].join("\0");
+  const b = spec.base.kind === "rev" ? spec.base.rev : "ROOT";
+  return [repoRoot, b, t].join("\0");
 }
 
 function parseJson(text: string, what: string): unknown {
@@ -297,10 +312,7 @@ export function renderLog(
   return { lines, highlights, rowMap };
 }
 
-export type LogSelection =
-  | { kind: "none" }
-  | { kind: "open"; spec: OpenSpec }
-  | { kind: "from-root"; target: Target; identifier: string };
+export type LogSelection = { kind: "none" } | { kind: "open"; spec: OpenSpec };
 
 /** The review a log selection opens: the work tree row makes the target the
  * work tree; the base is the oldest selected commit's first parent. */
@@ -329,11 +341,14 @@ export function logSelection(
   const target: Target = newest
     ? { kind: "ref", ref: newest.sha }
     : { kind: "worktree" };
-  if (oldest && oldest.parents[0] === undefined)
-    return { kind: "from-root", target, identifier };
+  const parent = oldest ? oldest.parents[0] : "HEAD";
   return {
     kind: "open",
-    spec: { base: oldest?.parents[0] ?? "HEAD", target, identifier },
+    spec: {
+      base: parent === undefined ? { kind: "root" } : revBase(parent),
+      target,
+      identifier,
+    },
   };
 }
 

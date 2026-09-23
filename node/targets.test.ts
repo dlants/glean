@@ -22,6 +22,7 @@ import {
   resolveBranch,
   resolveDirty,
   resolvePr,
+  revBase,
   reviewKey,
   reviewTitle,
 } from "./targets.ts";
@@ -39,6 +40,8 @@ function fakeGit(remote: string, fetches: string[]): Git {
         fetches.push(`${args[1]}:${args[2]}`);
         return { kind: "ok", stdout: "" };
       }
+      if (args[0] === "rev-parse")
+        return { kind: "ok", stdout: `${args[1]?.replace("^{commit}", "")}\n` };
       return { kind: "error", code: 1, stderr: "unexpected" };
     },
   };
@@ -195,26 +198,32 @@ describe("review titles", () => {
   const target = "b".repeat(40);
   const ref = { kind: "ref", ref: target } as const;
   it("abbreviates full oids; keeps symbolic identifiers with ∕", () => {
-    expect(reviewTitle("/x/repo", "g1", { base, target: ref })).toBe(
-      "Glean:g1 repo aaaaaaaa..bbbbbbbb",
-    );
     expect(
-      reviewTitle("/x/repo", "g2", {
+      reviewTitle("/x/repo", "g1", { base: revBase(base), target: ref }, base),
+    ).toBe("Glean:g1 repo aaaaaaaa..bbbbbbbb");
+    expect(
+      reviewTitle(
+        "/x/repo",
+        "g2",
+        { base: revBase(base), target: ref, identifier: "feature/review-ui" },
         base,
-        target: ref,
-        identifier: "feature/review-ui",
-      }),
+      ),
     ).toBe("Glean:g2 repo feature∕review-ui [aaaaaaaa..bbbbbbbb]");
     expect(
-      reviewTitle("/x/repo", "g3", {
-        base: "main",
-        target: { kind: "worktree" },
-      }),
+      reviewTitle(
+        "/x/repo",
+        "g3",
+        { base: revBase("main"), target: { kind: "worktree" } },
+        "main",
+      ),
     ).toBe("Glean:g3 repo main..dirty");
   });
   it("keys reuse on the full refs", () => {
-    expect(reviewKey("/r", { base, target: ref })).not.toBe(
-      reviewKey("/r", { base, target: { kind: "ref", ref: "other" } }),
+    expect(reviewKey("/r", { base: revBase(base), target: ref })).not.toBe(
+      reviewKey("/r", {
+        base: revBase(base),
+        target: { kind: "ref", ref: "other" },
+      }),
     );
   });
 });
@@ -244,26 +253,33 @@ describe("log view", () => {
     expect(sel(0, 0)).toEqual({ kind: "none" });
     expect(sel(1, 1)).toEqual({
       kind: "open",
-      spec: { base: "HEAD", target: { kind: "worktree" }, identifier: "dirty" },
+      spec: {
+        base: revBase("HEAD"),
+        target: { kind: "worktree" },
+        identifier: "dirty",
+      },
     });
     expect(sel(1, 2)).toMatchObject({
-      spec: { base: "2".repeat(40), target: { kind: "worktree" } },
+      spec: { base: revBase("2".repeat(40)), target: { kind: "worktree" } },
     });
     expect(sel(2, 2)).toEqual({
       kind: "open",
       spec: {
-        base: "2".repeat(40),
+        base: revBase("2".repeat(40)),
         target: { kind: "ref", ref: "3".repeat(40) },
         identifier: "33333333",
       },
     });
     expect(sel(3, 2)).toMatchObject({
-      spec: { base: "1".repeat(40), identifier: "22222222..33333333" },
+      spec: { base: revBase("1".repeat(40)), identifier: "22222222..33333333" },
     });
     expect(sel(2, 4)).toEqual({
-      kind: "from-root",
-      target: { kind: "ref", ref: "3".repeat(40) },
-      identifier: "11111111..33333333",
+      kind: "open",
+      spec: {
+        base: { kind: "root" },
+        target: { kind: "ref", ref: "3".repeat(40) },
+        identifier: "11111111..33333333",
+      },
     });
   });
 });
