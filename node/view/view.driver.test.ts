@@ -2,6 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { Store } from "../core/state.ts";
+import type { RepoPath } from "../core/types.ts";
 import { luaEval, pollUntil, startBackend, withNvim } from "../test/driver.ts";
 import { makeRepo } from "../test/repo.ts";
 
@@ -179,6 +181,54 @@ describe("review view (driver)", () => {
     });
   });
 
+  it("summary <CR> reveals the comment and visual d deletes it", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "1\n2\n3\n" } },
+      { msg: "one", files: { "a.txt": "1\nX\n3\n" } },
+    ]);
+    const stateDir = mkdtempSync(join(tmpdir(), "glean-view-"));
+    const store = new Store(stateDir);
+    await store.load([]);
+    store.addCommentRecord("a.txt" as RepoPath, {
+      lnum: 2,
+      content: [{ kind: "add", text: "X" }],
+      text: "why X?",
+      reply: undefined,
+      origin: undefined,
+    });
+    await store.save(store.wtShard);
+    await withNvim(async (nvim) => {
+      await luaEval(
+        nvim,
+        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+      );
+      await startBackend(nvim);
+      await nvim.call("nvim_command", [`GleanNode open ${repo.shas[0]}`]);
+      const lines = () =>
+        luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+      const hits = (l: string[]) =>
+        l.flatMap((s, i) => (s.includes("why X?") ? [i + 1] : []));
+      const first = await pollUntil(async () => {
+        const l = await lines();
+        return hits(l).length === 2 ? l : undefined;
+      });
+      const [inline, summary] = hits(first) as [number, number];
+      await nvim.call("nvim_win_set_cursor", [0, [summary, 0]]);
+      await nvim.call("nvim_input", ["<CR>"]);
+      await pollUntil(async () => {
+        const [cur] = await luaEval<[number, number]>(
+          nvim,
+          "vim.api.nvim_win_get_cursor(0)",
+        );
+        return cur === inline ? true : undefined;
+      });
+      await nvim.call("nvim_win_set_cursor", [0, [summary, 0]]);
+      await nvim.call("nvim_input", ["Vd"]);
+      await pollUntil(async () =>
+        hits(await lines()).length === 0 ? true : undefined,
+      );
+    });
+  });
   it("nvim stays responsive (<50 ms) while a huge hunk renders", async () => {
     const n = 3000;
     const mk = (tag: string) =>

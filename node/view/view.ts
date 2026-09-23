@@ -12,10 +12,12 @@ import {
   nextUnseenHunk,
   planToggleSeen,
   planVisualMark,
+  resolveFile,
   rowOfHunk,
   type SeenPlan,
 } from "../render/actions.ts";
 import { cursorAnchor, restoreAnchor } from "../render/anchor.ts";
+import type { SummaryGroup } from "../render/comments.ts";
 import type { IntraBlock } from "../render/render.ts";
 import {
   type CollapseKey,
@@ -23,7 +25,6 @@ import {
   keys,
   render,
 } from "../render/render.ts";
-
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
 
@@ -63,6 +64,8 @@ export type Action =
   | { kind: "visual-mark"; srow: number; erow: number }
   | { kind: "toggle-fold"; row: number }
   | { kind: "toggle-scope"; row: number }
+  | { kind: "reveal-comment"; row: number }
+  | { kind: "delete-comments"; srow: number; erow: number }
   | { kind: "undo" }
   | { kind: "redo" }
   | { kind: "visibility"; visible: boolean };
@@ -74,16 +77,18 @@ export function parseAction(v: unknown): Action | undefined {
   switch (o.kind) {
     case "toggle-seen":
     case "toggle-scope":
-    case "toggle-fold": {
+    case "toggle-fold":
+    case "reveal-comment": {
       const row = num("row");
       return row === undefined ? undefined : { kind: o.kind, row };
     }
-    case "visual-mark": {
+    case "visual-mark":
+    case "delete-comments": {
       const srow = num("srow");
       const erow = num("erow");
       return srow === undefined || erow === undefined
         ? undefined
-        : { kind: "visual-mark", srow, erow };
+        : { kind: o.kind, srow, erow };
     }
     case "visibility":
       return typeof o.visible === "boolean"
@@ -171,7 +176,7 @@ export class ReviewView {
     ]);
   }
 
-  private build(): Frame | undefined {
+  private build(summary: readonly SummaryGroup[]): Frame | undefined {
     const snap = this.session.current;
     if (!snap) return undefined;
     return render({
@@ -182,6 +187,7 @@ export class ReviewView {
       minSeenRun: this.opts.minSeenRun ?? 5,
       ignoreWhitespace: this.opts.ignoreWhitespace ?? false,
       comments: this.session.commentsHook(),
+      summary,
     });
   }
 
@@ -194,7 +200,7 @@ export class ReviewView {
     return next;
   }
   private async draw() {
-    const frame = this.build();
+    const frame = this.build(await this.session.commentSummary());
     if (!frame) return;
     const gen = this.intraGuard.bump();
     this.frame = frame;
@@ -402,6 +408,53 @@ export class ReviewView {
         const cls = this.session.current?.cls ?? snap.cls;
         const row = anchor && next && restoreAnchor(cls, next, anchor);
         if (row !== undefined) await this.setCursor(row);
+        return;
+      }
+      case "reveal-comment": {
+        const t = frame.rows[a.row];
+        if (t?.kind !== "summary-comment") return;
+        const find = (f: Frame | undefined) =>
+          f?.rows.findIndex(
+            (r) =>
+              r.kind === "comment" &&
+              r.commentId === t.commentId &&
+              resolveFile(snap.cls, r.file)?.file.path === t.path,
+          ) ?? -1;
+        let row = find(frame);
+        if (row < 0) {
+          const shas =
+            this.scope === "combined"
+              ? [undefined]
+              : snap.model.commits
+                  .filter((c) => c.files.some((f) => f.path === t.path))
+                  .map((c) => c.sha);
+          this.session.expand(
+            shas.flatMap((s) => revealKeys(this.scope, t.path, s)),
+          );
+          await this.redraw();
+          row = find(this.frame);
+        }
+        if (row >= 0) await this.setCursor(row);
+        return;
+      }
+      case "delete-comments": {
+        const lo = Math.min(a.srow, a.erow);
+        const hi = Math.max(a.srow, a.erow);
+        for (const t of frame.rows.slice(lo, hi + 1)) {
+          if (t.kind !== "summary-comment") continue;
+          const before = snap.store
+            .commentsFor(t.path)
+            .find((r) => r.id === t.commentId);
+          if (before)
+            await this.session.perform({
+              kind: "comment",
+              path: t.path,
+              before,
+              after: undefined,
+              cursor: lo,
+            });
+        }
+        await this.redraw();
         return;
       }
       case "undo":
