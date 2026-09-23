@@ -171,6 +171,7 @@ Lua ↔ node:
   - 4c `actions.ts`: reducer for perform/undo/redo, toggle-seen/visual/unmark*, collapse, comments, nav, scope toggle with cursor anchor. Tests: `scope_cursor_test` and action cases of `init_test`.
   - 4d `nvimView.ts` + Lua keymaps dispatching `glean.action`, suspend/resume on BufWinEnter/Leave. Tests: `suspend_test`, keymap round-trip driver test, 50 ms responsiveness driver test.
   - LogView/PrView/jump/diffsplit/sticky float: port in 4d or defer to cutover explicitly.
+- Test-run note: a single `npx vitest run` passes (22 files, 197 tests, ~30 s) as of 9d582a0; the earlier 300 s timeouts didn't reproduce.
 - 4a progress (partial): `node/session/model.ts` + `model.test.ts`.
   - `buildModel(git, base, Target, {ignoreWhitespace, fromRoot})` runs every git call concurrently (`Promise.all`) and returns `Outcome<ModelData>` (display `files`/`commits` with the WORKTREE layer last, exact `canonicalFiles`/`lineageCommits`/`lineageWorktreeFiles`, resolved `head`). The Lua patch cache (`cached_patches`) is not ported yet.
   - `loadWorktreeSeen` preloads, for uncommitted paths with a stored record only, H via one `showMany` and W from disk, into `WorktreeSeen {unseenAdds, dels}`. This replaces the lazy `wt_versions`/`wt_seen_sets` so classification stays synchronous and IO-free.
