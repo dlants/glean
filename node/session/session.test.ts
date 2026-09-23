@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Git, spawnRunner } from "../git/git.ts";
+import { render } from "../render/render.ts";
 import { makeRepo } from "../test/repo.ts";
 import { Session } from "./session.ts";
 
@@ -75,6 +76,48 @@ describe("Session", () => {
     expect(all.map((p) => [p.record.text, p.outdated])).toEqual([
       ["why X?", false],
     ]);
+  });
+
+  it("commentSummary classifies diff, file and outdated comments", async () => {
+    const { s } = session();
+    await s.refresh();
+    const cur = s.current;
+    if (!cur) throw new Error("no snapshot");
+    const f = cur.model.files.find((x) => x.path === "a.txt");
+    if (!f) throw new Error("no file");
+    const add = (text: string, line: string) =>
+      cur.store.addCommentRecord(f.path, {
+        lnum: 2,
+        content: [{ kind: "context", text: line }],
+        text,
+        reply: undefined,
+        origin: undefined,
+      });
+    add("in diff", "X");
+    add("gone", "no such line anywhere");
+    const groups = await s.commentSummary();
+    expect(
+      groups.flatMap((g) =>
+        g.entries.map((e) => [g.path, e.record.text, e.state]),
+      ),
+    ).toEqual([
+      ["a.txt", "in diff", "diff"],
+      ["a.txt", "gone", "outdated"],
+    ]);
+    const frame = render({
+      scope: "combined",
+      cls: cur.cls,
+      collapse: new Map(),
+      isSticky: () => false,
+      minSeenRun: 5,
+      ignoreWhitespace: false,
+      summary: groups,
+    });
+    const at = frame.rows.findIndex((r) => r.kind === "summary-header");
+    expect(frame.lines[at]).toBe("comments (2)");
+    expect(frame.rows.filter((r) => r.kind === "summary-comment").length).toBe(
+      4,
+    );
   });
 
   it("comment add/edit/delete are undoable", async () => {

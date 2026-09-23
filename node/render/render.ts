@@ -14,7 +14,7 @@ import type {
   OwnerFn,
   Scope,
 } from "../session/model.ts";
-import type { PlacedComment } from "./comments.ts";
+import type { PlacedComment, SummaryGroup } from "./comments.ts";
 import {
   displaySeenSet,
   hunkMarkerRuns,
@@ -74,6 +74,9 @@ export type RowTarget =
       commentId: number;
     }
   | { kind: "line"; file: FileRef; hunk: number; li: number; sec: Sec }
+  | { kind: "summary-header" }
+  | { kind: "summary-file"; path: RepoPath }
+  | { kind: "summary-comment"; path: RepoPath; commentId: number }
   | {
       kind: "marker";
       file: FileRef;
@@ -119,7 +122,33 @@ export type RenderInput = {
     ref: FileRef,
     file: FileEntry,
   ) => ReadonlyMap<number, readonly PlacedComment[]>;
+  /** The bottom comment summary (see `collectComments`). */
+  summary?: readonly SummaryGroup[];
 };
+
+/** Summary rows are laid out, not soft-wrapped, so the frame stays a pure list of strings. */
+const SUMMARY_WIDTH = 100;
+const chars = (s: string) => [...s].length;
+function wrapText(text: string, indent: string, cont: string): string[] {
+  const out: string[] = [];
+  for (const para of text.split("\n")) {
+    let lead = indent;
+    let room = SUMMARY_WIDTH - chars(lead);
+    let line: string | undefined;
+    for (const word of para.split(/\s+/).filter((w) => w !== "")) {
+      if (line === undefined) line = word;
+      else if (chars(line) + 1 + chars(word) <= room) line = `${line} ${word}`;
+      else {
+        out.push(lead + line);
+        lead = cont;
+        room = SUMMARY_WIDTH - chars(cont);
+        line = word;
+      }
+    }
+    out.push(lead + (line ?? ""));
+  }
+  return out;
+}
 
 const sign = (dl: DiffLine) =>
   dl.kind === "add" ? "+" : dl.kind === "del" ? "-" : " ";
@@ -416,6 +445,61 @@ export function render(input: RenderInput): Frame {
           );
         }
       });
+    });
+  }
+  const groups = input.summary ?? [];
+  if (groups.length > 0) {
+    section("comments", () => {
+      const total = groups.reduce((n, g) => n + g.entries.length, 0);
+      emit(
+        `comments (${total})`,
+        { kind: "summary-header" },
+        "GleanModeHeader",
+      );
+      for (const g of groups) {
+        emit("", { kind: "blank" });
+        emit(
+          `▾ ${g.path}`,
+          { kind: "summary-file", path: g.path },
+          "GleanFileHeader",
+        );
+        for (const e of g.entries) {
+          const r = e.record;
+          const loc =
+            e.state === "outdated"
+              ? "(outdated)"
+              : e.hidden
+                ? "(hidden)"
+                : e.state === "file"
+                  ? `file L${e.fileLnum}`
+                  : e.displayLnum !== undefined
+                    ? `L${e.displayLnum}`
+                    : "L?";
+          const target: RowTarget = {
+            kind: "summary-comment",
+            path: g.path,
+            commentId: r.id,
+          };
+          const tag = `[${r.id}]`;
+          let snippet = (r.content[0]?.text ?? "").replace(/^\s+/, "");
+          if (r.content.length > 1) snippet += ` …+${r.content.length - 1}`;
+          const prefix = `  ${tag} ${loc}  `;
+          const room = Math.max(20, SUMMARY_WIDTH - prefix.length);
+          if (chars(snippet) > room)
+            snippet = `${[...snippet].slice(0, room - 1).join("")}…`;
+          const row = emit(
+            prefix + snippet,
+            target,
+            e.state === "outdated" || e.hidden ? "GleanSeen" : "GleanContext",
+          );
+          span(row, 2, 2 + tag.length, "GleanCommentId");
+          for (const l of wrapText(r.text, "      💬 ", "         "))
+            emit(l, target, "GleanComment");
+          if (r.reply !== undefined)
+            for (const l of wrapText(r.reply, "      ↳ ", "        "))
+              emit(l, target, "GleanCommentReply");
+        }
+      }
     });
   }
   return f;

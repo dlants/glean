@@ -2,9 +2,10 @@
  * Pure comment placement for the review buffer: resolve each stored record in
  * the canonical (exact-whitespace) file, then map it onto a display ordinal.
  */
-import { locate } from "../core/comments.ts";
+import { fileProjection, locate } from "../core/comments.ts";
 import type { DiffLine, FileEntry } from "../core/diff.ts";
 import type { CommentRecord } from "../core/state.ts";
+import type { RepoPath } from "../core/types.ts";
 
 export type PlacedComment = {
   record: CommentRecord;
@@ -71,4 +72,89 @@ export function resolveComments(
     out.set(idx, list);
   }
   return out;
+}
+
+export type SummaryState = "diff" | "file" | "outdated";
+export type SummaryEntry = {
+  path: RepoPath;
+  record: CommentRecord;
+  state: SummaryState;
+  /** Anchored in the diff but filtered out of the display by whitespace mode. */
+  hidden: boolean;
+  /** Post-image (or pre-image for dels) line of the diff anchor. */
+  displayLnum: number | undefined;
+  /** Work-tree line, for comments that miss the diff but match the file. */
+  fileLnum: number | undefined;
+};
+export type SummaryGroup = { path: RepoPath; entries: SummaryEntry[] };
+export type CommentPair = {
+  path: RepoPath;
+  canonical: FileEntry | undefined;
+  display: FileEntry | undefined;
+};
+
+const recordKey = (r: CommentRecord) =>
+  `${r.lnum}\0${r.content.map((e) => e.text).join("\n")}\0${r.text}`;
+const rank = (e: SummaryEntry) =>
+  e.state === "outdated" ? 0 : e.state === "file" ? 1 : e.hidden ? 2 : 3;
+
+/**
+ * Port of `collect_comments`: every comment record of every path, classified
+ * as anchored in the diff, in the work-tree file only, or outdated. Duplicate
+ * records (same authored fields) keep the best-anchored copy.
+ */
+export function collectComments(
+  pairs: readonly CommentPair[],
+  recordsFor: (path: RepoPath) => readonly CommentRecord[],
+  worktreeLines: (path: RepoPath) => readonly string[] | undefined,
+  ignoreWhitespace: boolean,
+): SummaryGroup[] {
+  const groups: SummaryGroup[] = [];
+  for (const pair of pairs) {
+    const best = new Map<string, SummaryEntry>();
+    const flat = pair.canonical ? flattenLines(pair.canonical) : [];
+    const shown = pair.display ? flattenLines(pair.display) : [];
+    const texts = flat.map((dl) => dl.text);
+    for (const record of recordsFor(pair.path)) {
+      const loc = locate(record, texts, (i) => flat[i]?.newLnum);
+      const anchor = loc.kind === "found" ? flat[loc.index] : undefined;
+      let fileLnum: number | undefined;
+      if (loc.kind === "outdated" && fileProjection(record).length > 0) {
+        const wt = worktreeLines(pair.path);
+        if (wt) {
+          const f = locate(record, wt, undefined, "file");
+          if (f.kind === "found") fileLnum = f.lnum;
+        }
+      }
+      const entry: SummaryEntry = {
+        path: pair.path,
+        record,
+        state: anchor ? "diff" : fileLnum !== undefined ? "file" : "outdated",
+        hidden:
+          anchor !== undefined &&
+          ignoreWhitespace &&
+          !shown.some((dl) => sameCoordinates(dl, anchor)),
+        displayLnum:
+          anchor === undefined
+            ? undefined
+            : anchor.kind === "del"
+              ? anchor.oldLnum
+              : anchor.newLnum,
+        fileLnum,
+      };
+      const key = recordKey(record);
+      const prev = best.get(key);
+      if (!prev || rank(entry) > rank(prev)) best.set(key, entry);
+    }
+    if (best.size === 0) continue;
+    const entries = [...best.values()].sort(
+      (a, b) =>
+        (a.displayLnum ?? a.fileLnum ?? a.record.lnum) -
+        (b.displayLnum ?? b.fileLnum ?? b.record.lnum),
+    );
+    groups.push({ path: pair.path, entries });
+  }
+  return groups.sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+  );
 }

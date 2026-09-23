@@ -19,7 +19,13 @@ import type {
 import { type Git, type Outcome, Poller } from "../git/git.ts";
 import { GenerationGuard } from "../git/scheduler.ts";
 import type { SeenPlan, Sticky } from "../render/actions.ts";
-import { type PlacedComment, resolveComments } from "../render/comments.ts";
+import {
+  type CommentPair,
+  collectComments,
+  type PlacedComment,
+  resolveComments,
+  type SummaryGroup,
+} from "../render/comments.ts";
 import type { CollapseKey, CollapseState, FileRef } from "../render/render.ts";
 import {
   type BuildOpts,
@@ -106,6 +112,45 @@ export class Session {
       );
       return resolveComments(file, canonical, records);
     };
+  }
+  /**
+   * The bottom comment summary: every path in the diff plus every path the
+   * store holds comments for, so no comment is ever invisible. Work-tree text
+   * is read up front so classification itself stays synchronous.
+   */
+  async commentSummary(): Promise<SummaryGroup[]> {
+    const snap = this.current;
+    if (!snap) return [];
+    const { model, store } = snap;
+    const pairs = new Map<RepoPath, CommentPair>();
+    for (const canonical of model.canonicalFiles)
+      pairs.set(canonical.path, {
+        path: canonical.path,
+        canonical,
+        display: model.files.find((f) => f.path === canonical.path),
+      });
+    for (const path of store.commentPaths())
+      if (!pairs.has(path))
+        pairs.set(path, { path, canonical: undefined, display: undefined });
+    const commented = [...pairs.keys()].filter(
+      (p) => store.commentsFor(p).length > 0,
+    );
+    const wt = new Map<RepoPath, string[]>();
+    await Promise.all(
+      commented.map(async (p) => {
+        const text = await readFile(
+          join(this.opts.git.repoRoot, p),
+          "utf8",
+        ).catch(() => undefined);
+        if (text !== undefined) wt.set(p, splitLines(text));
+      }),
+    );
+    return collectComments(
+      commented.flatMap((p) => pairs.get(p) ?? []),
+      (p) => store.commentsFor(p),
+      (p) => wt.get(p),
+      this.opts.build?.ignoreWhitespace ?? false,
+    );
   }
   get worktree(): boolean {
     return this.opts.target.kind === "worktree";
