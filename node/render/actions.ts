@@ -5,7 +5,12 @@
  * seen edits to the store and the view owns cursor placement.
  */
 import type { FileEntry, Hunk } from "../core/diff.ts";
-import { type LineId, type RepoPath, WORKTREE } from "../core/types.ts";
+import {
+  type Layer,
+  type LineId,
+  type RepoPath,
+  WORKTREE,
+} from "../core/types.ts";
 import type { Classifier, OwnerFn, Scope } from "../session/model.ts";
 import {
   type CollapseKey,
@@ -17,7 +22,7 @@ import {
   type Sec,
 } from "./render.ts";
 
-type Resolved = { file: FileEntry; owner: OwnerFn; sha: string | undefined };
+type Resolved = { file: FileEntry; owner: OwnerFn; sha: Layer | undefined };
 
 export function resolveFile(
   cls: Classifier,

@@ -48,14 +48,35 @@ vim.notify("glean: pong")`,
   }
 }
 
+type OpenConfig = {
+  root: string;
+  dataDir: string;
+  stateOverride: string | undefined;
+  minSeenRun: number | undefined;
+  ignoreWs: boolean;
+};
+/** Validates the config tuple from nvim; vim.NIL arrives as null. */
+export function parseOpenConfig(v: unknown): OpenConfig {
+  if (!Array.isArray(v) || v.length !== 5) throw new Error("glean: bad config");
+  const [root, dataDir, state, msr, ws] = v as unknown[];
+  if (typeof root !== "string" || typeof dataDir !== "string")
+    throw new Error("glean: bad config paths");
+  return {
+    root,
+    dataDir,
+    stateOverride: typeof state === "string" ? state : undefined,
+    minSeenRun: typeof msr === "number" ? msr : undefined,
+    ignoreWs: ws === true,
+  };
+}
 async function openReview(nvim: Nvim, base: string): Promise<void> {
-  const [root, dataDir, stateOverride, minSeenRun, ignoreWs] = (await nvim.call(
-    "nvim_exec_lua",
-    [
-      `return { vim.fn.getcwd(), vim.fn.stdpath("data"), vim.g.glean_state_dir or vim.NIL, vim.g.glean_min_seen_run or vim.NIL, vim.g.glean_ignore_whitespace == true }`,
-      [],
-    ],
-  )) as [string, string, string | null, number | null, boolean];
+  const { root, dataDir, stateOverride, minSeenRun, ignoreWs } =
+    parseOpenConfig(
+      await nvim.call("nvim_exec_lua", [
+        `return { vim.fn.getcwd(), vim.fn.stdpath("data"), vim.g.glean_state_dir or vim.NIL, vim.g.glean_min_seen_run or vim.NIL, vim.g.glean_ignore_whitespace == true }`,
+        [],
+      ]),
+    );
   const git = new Git({ repoRoot: root, runner: spawnRunner() });
   const stateDir =
     stateOverride ??

@@ -4,7 +4,7 @@
  * batches so nvim never handles one huge request; Lua only dispatches Actions.
  */
 
-import type { LineId, RepoPath } from "../core/types.ts";
+import type { Layer, LineId, RepoPath } from "../core/types.ts";
 import { GenerationGuard, RefineCache, runRefine } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
@@ -32,7 +32,7 @@ import type { Session } from "../session/session.ts";
 function revealKeys(
   scope: Scope,
   path: RepoPath,
-  sha: string | undefined,
+  sha: Layer | undefined,
 ): CollapseKey[] {
   const parts = path.split("/");
   const prefixes = parts
@@ -49,7 +49,7 @@ function revealKeys(
   ];
 }
 
-function ownerSha(id: LineId | undefined): string | undefined {
+function ownerSha(id: LineId | undefined): Layer | undefined {
   if (id?.kind === "committed-add") return id.sha;
   if (id?.kind === "committed-del") return id.removerSha;
   return undefined;
@@ -449,8 +449,7 @@ export class ReviewView {
             await this.session.perform({
               kind: "comment",
               path: t.path,
-              before,
-              after: undefined,
+              change: { op: "delete", before },
               cursor: lo,
             });
         }

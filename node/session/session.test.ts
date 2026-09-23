@@ -138,16 +138,23 @@ describe("Session", () => {
       store()
         ?.commentsFor(path)
         .map((r) => r.text);
-    await s.perform({ kind: "comment", path, before: undefined, after: base });
+    await s.perform({
+      kind: "comment",
+      path,
+      change: { op: "add", after: base },
+    });
     expect(texts()).toEqual(["a"]);
     const edited = { ...base, text: "b" };
-    await s.perform({ kind: "comment", path, before: base, after: edited });
+    await s.perform({
+      kind: "comment",
+      path,
+      change: { op: "edit", before: base, after: edited },
+    });
     expect(texts()).toEqual(["b"]);
     await s.perform({
       kind: "comment",
       path,
-      before: edited,
-      after: undefined,
+      change: { op: "delete", before: edited },
     });
     expect(texts()).toEqual([]);
     await s.undo();

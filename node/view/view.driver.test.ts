@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -266,7 +266,6 @@ describe("review view (driver)", () => {
 
 describe("review view visibility (driver)", () => {
   it("suspends painting while hidden and catches up when re-displayed", async () => {
-    const { writeFileSync } = await import("node:fs");
     const repo = makeRepo([
       { files: { "a.txt": "1\n" } },
       { msg: "one", files: { "a.txt": "ONE\n" } },

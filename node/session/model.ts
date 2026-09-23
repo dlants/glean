@@ -211,8 +211,10 @@ export async function loadWorktreeSeen(
 
 /** Who owns a changed line: a commit (in its own coordinates) or the work tree. */
 export type LineOwner =
-  | { kind: "commit"; sha: Sha; lnum: number }
-  | { kind: "worktree"; lnum: number }
+  | { kind: "commit-add"; sha: Sha; lnum: PostLnum }
+  | { kind: "commit-del"; sha: Sha; lnum: PreLnum }
+  | { kind: "worktree-add"; lnum: WorktreeLnum }
+  | { kind: "worktree-del"; lnum: HeadLnum }
   | { kind: "none" };
 export type OwnerFn = (dl: DiffLine) => LineOwner;
 
@@ -224,10 +226,15 @@ export type Counts = {
   dels: number;
 };
 
-function layerOwner(sha: Layer, lnum: number): LineOwner {
-  return sha === WORKTREE
-    ? { kind: "worktree", lnum }
-    : { kind: "commit", sha, lnum };
+/** `lnum` is the owning layer's post-image line (an add) or pre-image line (a del). */
+function layerOwner(sha: Layer, side: "add" | "del", lnum: number): LineOwner {
+  if (sha === WORKTREE)
+    return side === "add"
+      ? { kind: "worktree-add", lnum: lnum as WorktreeLnum }
+      : { kind: "worktree-del", lnum: lnum as HeadLnum };
+  return side === "add"
+    ? { kind: "commit-add", sha, lnum: lnum as PostLnum }
+    : { kind: "commit-del", sha, lnum: lnum as PreLnum };
 }
 
 /**
@@ -253,10 +260,9 @@ export class Classifier {
   commitOwner(commit: ModelCommit): OwnerFn {
     return (dl) => {
       if (dl.kind === "context") return { kind: "none" };
-      return layerOwner(
-        commit.sha,
-        dl.kind === "add" ? dl.newLnum : dl.oldLnum,
-      );
+      return dl.kind === "add"
+        ? layerOwner(commit.sha, "add", dl.newLnum)
+        : layerOwner(commit.sha, "del", dl.oldLnum);
     };
   }
 
@@ -272,17 +278,17 @@ export class Classifier {
       if (dl.kind === "del") {
         const a = lin?.delAttr.get(dl.oldLnum);
         return a
-          ? layerOwner(a.sha, a.lnum)
-          : { kind: "worktree", lnum: dl.oldLnum };
+          ? layerOwner(a.sha, "del", a.lnum)
+          : layerOwner(WORKTREE, "del", dl.oldLnum);
       }
       const p = lin?.prov.get(dl.newLnum);
-      if (p) return layerOwner(p.sha, p.lnum);
+      if (p) return layerOwner(p.sha, "add", p.lnum);
       // An add inherited unchanged from the base image only reads as an add
       // because the display diff aligned a repeated line differently; it owns
       // no review content.
       if (lin?.base(dl.newLnum) !== undefined || !worktree)
         return { kind: "none" };
-      return { kind: "worktree", lnum: dl.newLnum };
+      return layerOwner(WORKTREE, "add", dl.newLnum);
     };
   }
 
@@ -296,27 +302,16 @@ export class Classifier {
     switch (o.kind) {
       case "none":
         return undefined;
-      case "worktree":
-        return dl.kind === "add"
-          ? { kind: "worktree-add", path, lnum: o.lnum as WorktreeLnum }
-          : { kind: "worktree-del", path, lnum: o.lnum as HeadLnum };
-      case "commit":
-        return dl.kind === "add"
-          ? {
-              kind: "committed-add",
-              sha: o.sha,
-              path,
-              lnum: o.lnum as PostLnum,
-            }
-          : {
-              kind: "committed-del",
-              removerSha: o.sha,
-              path,
-              lnum: o.lnum as PreLnum,
-            };
+      case "worktree-add":
+        return { kind: "worktree-add", path, lnum: o.lnum };
+      case "worktree-del":
+        return { kind: "worktree-del", path, lnum: o.lnum };
+      case "commit-add":
+        return { kind: "committed-add", sha: o.sha, path, lnum: o.lnum };
+      case "commit-del":
+        return { kind: "committed-del", removerSha: o.sha, path, lnum: o.lnum };
     }
   }
-
   changedIds(hunk: Hunk, path: RepoPath, owner: OwnerFn): LineId[] {
     const ids: LineId[] = [];
     for (const dl of hunk.lines) {

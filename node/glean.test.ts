@@ -9,6 +9,11 @@ describe("parseCommand", () => {
       kind: "unknown",
       args: ["nope", "x"],
     });
+    expect(parseCommand(["open"])).toEqual({ kind: "open", base: "HEAD" });
+    expect(parseCommand(["open", "main"])).toEqual({
+      kind: "open",
+      base: "main",
+    });
     expect(parseCommand([1])).toEqual({ kind: "unknown", args: [] });
   });
 });

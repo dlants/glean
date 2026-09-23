@@ -6,7 +6,7 @@
  * file, then the file header.
  */
 import type { DiffLine } from "../core/diff.ts";
-import type { LineId, RepoPath } from "../core/types.ts";
+import type { Layer, LineId, RepoPath } from "../core/types.ts";
 import type { Classifier } from "../session/model.ts";
 import { resolveFile } from "./actions.ts";
 import type { Frame, RowTarget } from "./render.ts";
@@ -16,7 +16,7 @@ export type CursorAnchor =
   | {
       kind: "line";
       path: RepoPath;
-      sha: string | undefined;
+      sha: Layer | undefined;
       line: DiffLine;
       id: LineId | undefined;
     };

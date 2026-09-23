@@ -49,15 +49,17 @@ export type SessionOpts = {
 
 export type Snapshot = { model: ModelData; store: Store; cls: Classifier };
 
+export type CommentChange =
+  | { op: "add"; after: CommentRecord }
+  | { op: "delete"; before: CommentRecord }
+  | { op: "edit"; before: CommentRecord; after: CommentRecord };
 /** An undoable user action. `cursor` is the row to restore on undo. */
 export type Undoable =
   | { kind: "seen"; plan: SeenPlan; cursor?: number }
   | {
-      /** Replace `before` with `after` (add: no before; delete: no after; edit/reply: both). */
       kind: "comment";
       path: RepoPath;
-      before: CommentRecord | undefined;
-      after: CommentRecord | undefined;
+      change: CommentChange;
       cursor?: number;
     }
   | {
@@ -348,10 +350,13 @@ export class Session {
       return;
     }
     if (a.kind === "comment") {
+      const c = a.change;
+      const before = c.op === "add" ? undefined : c.before;
+      const after = c.op === "delete" ? undefined : c.after;
       await this.swapComment(
         a.path,
-        reverse ? a.after : a.before,
-        reverse ? a.before : a.after,
+        reverse ? after : before,
+        reverse ? before : after,
       );
       return;
     }
