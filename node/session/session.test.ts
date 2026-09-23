@@ -55,6 +55,28 @@ describe("Session", () => {
     expect(await s.redo()).toBeUndefined();
   });
 
+  it("commentsHook places store comments on the display file", async () => {
+    const { s } = session();
+    await s.refresh();
+    const cur = s.current;
+    if (!cur) throw new Error("no snapshot");
+    const idx = cur.model.files.findIndex((x) => x.path === "a.txt");
+    const f = cur.model.files[idx];
+    if (!f) throw new Error("no file");
+    cur.store.addCommentRecord(f.path, {
+      lnum: 2,
+      content: [{ kind: "add", text: "X" }],
+      text: "why X?",
+      reply: undefined,
+      origin: undefined,
+    });
+    const placed = s.commentsHook()({ scope: "combined", file: idx }, f);
+    const all = [...placed.values()].flat();
+    expect(all.map((p) => [p.record.text, p.outdated])).toEqual([
+      ["why X?", false],
+    ]);
+  });
+
   it("drops a refresh superseded by a newer one", async () => {
     const { s } = session();
     const [a, b] = await Promise.all([s.refresh(), s.refresh()]);
