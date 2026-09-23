@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
-import { luaEval, pollUntil, startBackend, withNvim } from "../test/driver.ts";
+import {
+  luaEval,
+  pollUntil,
+  sleep,
+  startBackend,
+  withNvim,
+} from "../test/driver.ts";
 import { makeRepo } from "../test/repo.ts";
 
 type Mark = {
@@ -57,6 +63,14 @@ async function author(nvim: Nvim, text: string) {
   await nvim.call("nvim_input", ["<Esc>"]);
   await nvim.call("nvim_buf_set_lines", [0, 0, -1, false, text.split("\n")]);
   await nvim.call("nvim_command", ["write"]);
+  await waitFor(
+    async () =>
+      !(await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)")).includes(
+        "glean-comment://",
+      ),
+  );
+  // The record is saved before its undo entry is pushed.
+  await sleep(300);
 }
 
 describe("file-buffer comment overlay (driver, overlay_test)", () => {
@@ -229,6 +243,68 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
           ),
       );
 
+      const has = async (t: string) =>
+        (await records(nvim, repo.root)).some((r) => r.text === t);
+      const find = async (t: string) =>
+        (await records(nvim, repo.root)).find((r) => r.text === t);
+      const replyOf = async (id: number) =>
+        (
+          await luaEval<{ id: number; reply?: string }[]>(
+            nvim,
+            `require("glean.api").comments({ repo = ${root} })`,
+          )
+        ).find((r) => r.id === id)?.reply;
+      // Edit swaps the text; u restores the original.
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-edit)"]);
+      await author(nvim, "edited two");
+      await waitFor(() => has("edited two"));
+      expect(await has("about two")).toBe(false);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(() => has("about two"));
+      await sleep(300);
+      expect(await has("edited two")).toBe(false);
+      // An unchanged edit does nothing (nothing new to undo).
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-edit)"]);
+      await author(nvim, "about two");
+      // Reply fills the slot, replying again replaces it; u restores each before.
+      const twoId = (await find("about two"))!.id;
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-reply)"]);
+      await author(nvim, "r1");
+      await waitFor(async () => (await replyOf(twoId)) === "r1");
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-reply)"]);
+      await author(nvim, "r2");
+      await waitFor(async () => (await replyOf(twoId)) === "r2");
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => (await replyOf(twoId)) === "r1");
+      await sleep(300);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => (await replyOf(twoId)) === undefined);
+      expect(await has("about two")).toBe(true);
+      // Add: u removes it, <C-r> brings it back under the same id, u removes it again.
+      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_command", ["Glean comment"]);
+      await author(nvim, "added one");
+      const added = await waitFor(() => find("added one"));
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => !(await has("added one")));
+      await sleep(300);
+      await nvim.call("nvim_input", ["<C-r>"]);
+      const redone = await waitFor(() => find("added one"));
+      expect(redone.id).toBe(added.id);
+      await sleep(300);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => !(await has("added one")));
+      // An agent api write re-stamps the open file buffer.
+      const before = (await signs(nvim)).length;
+      await luaEval(
+        nvim,
+        `require("glean.api").add_comment({ repo = ${root}, path = "author.txt", lnum = 1, text = "from agent" })`,
+      );
+      await waitFor(async () =>
+        (await marks(nvim)).some((m) => m.text?.includes("from agent")),
+      );
+      expect((await signs(nvim)).length).toBeGreaterThan(before);
       // Quickfix: every record, named by file.
       await nvim.call("nvim_command", ["Glean comments"]);
       const qf = await waitFor(async () => {
@@ -236,7 +312,7 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
           nvim,
           "vim.fn.getqflist()",
         );
-        return items.length === 3 && items;
+        return items.length === 4 && items;
       });
       expect(qf.map((i) => i.text).join("\n")).toContain("(outdated)");
     });

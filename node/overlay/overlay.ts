@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CommentRecord, NewComment, Store } from "../core/state.ts";
-import { type Layer, type RepoPath, WORKTREE } from "../core/types.ts";
+import { type RepoPath, type Sha, toSha, WORKTREE } from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
@@ -20,6 +20,7 @@ import {
   firstLine,
   floatLines,
   jumpLnum,
+  type QuickfixItem,
   quickfixItems,
   recordsAt,
   resolveOverlay,
@@ -114,7 +115,7 @@ type BufFacts = {
 };
 type Target = { repo: OverlayRepo; path: RepoPath };
 type CommentOp =
-  | { op: "add"; record: CommentRecord }
+  | { op: "add"; record: NewComment }
   | { op: "remove"; record: CommentRecord }
   | { op: "edit"; before: CommentRecord; after: CommentRecord }
   | {
@@ -124,6 +125,10 @@ type CommentOp =
       before: string | undefined;
     };
 
+/** Without a HEAD the selection can only be work-tree content, hence dirty. */
+type FileOrigin =
+  | { sha: Sha; dirty: boolean }
+  | { sha: typeof WORKTREE; dirty: true };
 const NOT_A_REPO = "glean: not inside a git repository";
 
 export class Overlay {
@@ -219,10 +224,15 @@ if not vim.api.nvim_buf_is_loaded(b) then return vim.NIL end
 return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
   vim.api.nvim_buf_call(b, function() return vim.fn.undotree().seq_last end) }`,
       [buf],
-    ])) as [string, string, boolean, number] | null;
+    ])) as unknown;
     if (!Array.isArray(r)) return undefined;
-    const [name, buftype, modified, seq] = r;
-    return { name, buftype, modified, seq };
+    const [name, buftype, modified, seq] = r as unknown[];
+    return typeof name === "string" &&
+      typeof buftype === "string" &&
+      typeof modified === "boolean" &&
+      typeof seq === "number"
+      ? { name, buftype, modified, seq }
+      : undefined;
   }
 
   /** The repo and repo-relative path of a file buffer, if it is one. */
@@ -328,11 +338,14 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
       git.run(["rev-parse", "HEAD"]),
       git.run(["status", "--porcelain", "--", path]),
     ]);
-    const sha =
-      head.kind === "ok" ? /^[0-9a-f]+/.exec(head.value)?.[0] : undefined;
-    if (!sha) return { sha: WORKTREE as Layer, dirty: true };
-    const dirty = modified || (status.kind === "ok" && /\S/.test(status.value));
-    return { sha: sha as Layer, dirty };
+    const sha = head.kind === "ok" ? toSha(head.value.trim()) : undefined;
+    const origin: FileOrigin = sha
+      ? {
+          sha,
+          dirty: modified || (status.kind === "ok" && /\S/.test(status.value)),
+        }
+      : { sha: WORKTREE, dirty: true };
+    return origin;
   }
 
   /** A file view never sees a deletion: the run is captured as post-image lines. */
@@ -347,10 +360,12 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
       false,
     ]);
     if (!Array.isArray(got) || got.length === 0) return;
-    const content = (got as string[]).map((text) => ({
-      kind: "add" as const,
-      text,
-    }));
+    const content = got
+      .filter((text): text is string => typeof text === "string")
+      .map((text) => ({
+        kind: "add" as const,
+        text,
+      }));
     const origin = await this.origin(t.repo.git, t.path, f.modified);
     await this.openEditor([], async (text) => {
       const record: NewComment = {
@@ -360,12 +375,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
         reply: undefined,
         origin,
       };
-      await this.perform(
-        buf,
-        t.path,
-        { op: "add", record: record as CommentRecord },
-        line1,
-      );
+      await this.perform(buf, t.path, { op: "add", record }, line1);
     });
   }
 
@@ -406,9 +416,11 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     if (!t) return undefined;
     const { store } = t.repo;
     let out = op;
-    const put = (r: CommentRecord) => store.addCommentRecord(path, { ...r });
-    const drop = (r: CommentRecord) =>
-      store.removeCommentRecord(path, { id: r.id });
+    const put = (r: NewComment) => store.addCommentRecord(path, { ...r });
+    const drop = (r: NewComment) => {
+      // An add is only reversed after apply() stamped its store id.
+      if (r.id !== undefined) store.removeCommentRecord(path, { id: r.id });
+    };
     switch (op.op) {
       case "add":
         if (reverse) drop(op.record);
@@ -519,7 +531,12 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
         ),
       })),
     );
-    const items = quickfixItems(repo.root, files);
+    const items: QuickfixItem[] = [];
+    for (const file of files) {
+      items.push(...quickfixItems(repo.root, [file]));
+      // Yield between files so a large comment set never blocks the loop.
+      await new Promise((r) => setImmediate(r));
+    }
     await this.nvim.call("nvim_exec_lua", [
       `vim.fn.setqflist({}, " ", { title = "glean comments", items = ... })
 vim.cmd("copen")`,

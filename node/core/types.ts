@@ -19,6 +19,10 @@ export type PreLnum = Brand<number, "PreLnum">;
 /** The pseudo-commit naming the uncommitted work-tree layer. */
 export const WORKTREE = "WORKTREE";
 export type Layer = Sha | typeof WORKTREE;
+/** Validates a full hex object id (e.g. from `git rev-parse`). */
+export function toSha(s: string): Sha | undefined {
+  return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s) ? (s as Sha) : undefined;
+}
 
 /** sha256 hex of a line's or a file's content. */
 export type ContentHash = Brand<string, "ContentHash">;
