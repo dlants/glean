@@ -77,6 +77,45 @@ describe("Session", () => {
     ]);
   });
 
+  it("comment add/edit/delete are undoable", async () => {
+    const { s } = session();
+    await s.refresh();
+    const store = () => s.current?.store;
+    const path = s.current?.model.files[0]?.path;
+    if (!path) throw new Error("no file");
+    const base = {
+      id: 7,
+      lnum: 2,
+      content: [{ kind: "add" as const, text: "X" }],
+      text: "a",
+      reply: undefined,
+      origin: undefined,
+    };
+    const texts = () =>
+      store()
+        ?.commentsFor(path)
+        .map((r) => r.text);
+    await s.perform({ kind: "comment", path, before: undefined, after: base });
+    expect(texts()).toEqual(["a"]);
+    const edited = { ...base, text: "b" };
+    await s.perform({ kind: "comment", path, before: base, after: edited });
+    expect(texts()).toEqual(["b"]);
+    await s.perform({
+      kind: "comment",
+      path,
+      before: edited,
+      after: undefined,
+    });
+    expect(texts()).toEqual([]);
+    await s.undo();
+    expect(texts()).toEqual(["b"]);
+    await s.undo();
+    expect(texts()).toEqual(["a"]);
+    await s.undo();
+    expect(texts()).toEqual([]);
+    await s.redo();
+    expect(store()?.commentsFor(path)[0]?.id).toBe(7);
+  });
   it("drops a refresh superseded by a newer one", async () => {
     const { s } = session();
     const [a, b] = await Promise.all([s.refresh(), s.refresh()]);

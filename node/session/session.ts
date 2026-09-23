@@ -9,7 +9,7 @@ import * as baseline from "../core/baseline.ts";
 import type { FileEntry } from "../core/diff.ts";
 import { load as loadIgnore } from "../core/ignore.ts";
 import * as ranges from "../core/ranges.ts";
-import { contentHash, Store } from "../core/state.ts";
+import { type CommentRecord, contentHash, Store } from "../core/state.ts";
 import type {
   HeadLnum,
   LineId,
@@ -46,6 +46,14 @@ export type Snapshot = { model: ModelData; store: Store; cls: Classifier };
 /** An undoable user action. `cursor` is the row to restore on undo. */
 export type Undoable =
   | { kind: "seen"; plan: SeenPlan; cursor?: number }
+  | {
+      /** Replace `before` with `after` (add: no before; delete: no after; edit/reply: both). */
+      kind: "comment";
+      path: RepoPath;
+      before: CommentRecord | undefined;
+      after: CommentRecord | undefined;
+      cursor?: number;
+    }
   | {
       kind: "collapse";
       key: CollapseKey;
@@ -255,6 +263,20 @@ export class Session {
     return this.reclassify();
   }
 
+  private async swapComment(
+    path: RepoPath,
+    from: CommentRecord | undefined,
+    to: CommentRecord | undefined,
+  ): Promise<void> {
+    const cur = this.current;
+    if (!cur) return;
+    const { store } = cur;
+    if (from) store.removeCommentRecord(path, { id: from.id });
+    if (to) store.addCommentRecord(path, { ...to });
+    await store.save(store.wtShard);
+    await this.reclassify();
+  }
+
   private setCollapse(key: CollapseKey, v: boolean | undefined) {
     const next = new Map(this.collapse);
     if (v === undefined) next.delete(key);
@@ -265,6 +287,14 @@ export class Session {
   private async apply(a: Undoable, reverse: boolean): Promise<void> {
     if (a.kind === "collapse") {
       this.setCollapse(a.key, reverse ? a.prev : a.value);
+      return;
+    }
+    if (a.kind === "comment") {
+      await this.swapComment(
+        a.path,
+        reverse ? a.after : a.before,
+        reverse ? a.before : a.after,
+      );
       return;
     }
     const { plan } = a;
