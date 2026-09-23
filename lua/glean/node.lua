@@ -111,6 +111,19 @@ M.bridge = function(channel_id)
       M.safe_rpcnotify(channel_id, "gleanGutter", ev)
       return
     end
+    if opts.fargs[1] == "comment" then
+      local line1, line2 = opts.line1, opts.line2
+      if opts.range == 0 then
+        line1 = vim.api.nvim_win_get_cursor(0)[1]
+        line2 = line1
+      end
+      require("glean.node_overlay").add_range(line1, line2)
+      return
+    end
+    if opts.fargs[1] == "comments" then
+      M.safe_rpcnotify(channel_id, "gleanOverlay", { kind = "quickfix", buf = vim.api.nvim_get_current_buf() })
+      return
+    end
     M.safe_rpcnotify(channel_id, "gleanCommand", opts.fargs)
   end, {
     nargs = "*",
@@ -126,6 +139,7 @@ M.bridge = function(channel_id)
     end,
   })
   require("glean.node_gutter").bridge(M.bridge_augroup)
+  require("glean.node_overlay").bridge(M.bridge_augroup)
 
   -- Stop node early in shutdown so nvim doesn't wait out SIGTERM->SIGKILL.
   vim.api.nvim_create_autocmd("VimLeavePre", {
@@ -141,6 +155,16 @@ end
 
 local function action(buf, a)
   M.safe_rpcnotify(M.channel_id, "gleanAction", buf, a)
+end
+
+-- Prompt results go back to whoever opened the prompt: a review buffer
+-- (`gleanAction`) or the file-buffer overlay (`target == "overlay"`).
+local function reply(target, ev)
+  if target == "overlay" then
+    require("glean.node_overlay").notify(ev)
+  else
+    action(target, ev)
+  end
 end
 
 local function row0()
@@ -357,7 +381,7 @@ end
 -- Ephemeral multi-line comment editor in a split above `win` (port of the old
 -- `comments.open_editor`). `:w` or normal `<CR>` submits, `q`/`<C-c>` cancel;
 -- the text returns to node as one `editor-submit` action.
-M.comment_editor = function(review_buf, win, initial, token)
+M.comment_editor = function(target, win, initial, token)
   local api = vim.api
   local ebuf = api.nvim_create_buf(false, true)
   vim.bo[ebuf].buftype = "acwrite"
@@ -378,7 +402,7 @@ M.comment_editor = function(review_buf, win, initial, token)
     local text = submit and table.concat(api.nvim_buf_get_lines(ebuf, 0, -1, false), "\n") or nil
     if api.nvim_win_is_valid(ewin) then pcall(api.nvim_win_close, ewin, true) end
     if text and text:match("%S") then
-      action(review_buf, { kind = "editor-submit", token = token, text = text })
+      reply(target, { kind = "editor-submit", token = token, text = text })
     end
   end
   api.nvim_create_autocmd("BufWriteCmd", { buffer = ebuf, callback = function() finish(true) end })
@@ -395,10 +419,10 @@ M.comment_editor = function(review_buf, win, initial, token)
 end
 
 -- `dc` with several comments on the line: the user picks which to delete.
-M.pick_comment = function(review_buf, choices, token)
+M.pick_comment = function(target, choices, token, prompt)
   vim.schedule(function()
-    vim.ui.select(choices, { prompt = "glean: delete comment" }, function(_, idx)
-      if idx then action(review_buf, { kind = "pick", token = token, index = idx - 1 }) end
+    vim.ui.select(choices, { prompt = prompt or "glean: delete comment" }, function(_, idx)
+      if idx then reply(target, { kind = "pick", token = token, index = idx - 1 }) end
     end)
   end)
 end

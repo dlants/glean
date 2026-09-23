@@ -10,6 +10,8 @@ M.config = {
   -- Columns the active hunk's body shifts right, after a short delay.
   hunk_indent = 2,
   hunk_indent_delay_ms = 50,
+  -- File-buffer comments; `overlay_keymaps = "<prefix>"` maps the defaults.
+  overlay = {},
 }
 local function fg_only(src)
   local hl = vim.api.nvim_get_hl(0, { name = src, link = false })
@@ -49,6 +51,7 @@ function M.setup(opts)
   vim.g.glean_min_seen_run = M.config.min_seen_run
   vim.g.glean_ignore_whitespace = M.config.ignore_whitespace
   require("glean.node_gutter").setup(M.config.gutter)
+  require("glean.node_overlay").setup(M.config.overlay)
   setup_highlights()
   vim.api.nvim_create_autocmd("ColorScheme", {
     group = vim.api.nvim_create_augroup("GleanHighlights", { clear = true }),

@@ -73,11 +73,34 @@ local function maps(buf)
       api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
       notify({ kind = "toggle-mark", buf = buf, line1 = math.min(a, b), line2 = math.max(a, b) })
     end, "glean: toggle mark on selection" },
-    { "n", "u", function() M.undo(buf) end, "glean: undo mark, then text" },
-    { "n", "<C-r>", function() M.redo(buf) end, "glean: redo text, then mark" },
   }
 end
 local mapped = {}
+-- `u`/`<C-r>` are shared by the gutter (marks) and the comment overlay: the
+-- maps stay while either holds the buffer.
+local undo_users = {}
+function M.activate_undo(buf, who)
+  if not api.nvim_buf_is_valid(buf) then return end
+  local users = undo_users[buf]
+  if not users then
+    users = {}
+    undo_users[buf] = users
+    local o = { buffer = buf, silent = true, nowait = true }
+    vim.keymap.set("n", "u", function() M.undo(buf) end, vim.tbl_extend("force", o, { desc = "glean: undo glean action, then text" }))
+    vim.keymap.set("n", "<C-r>", function() M.redo(buf) end, vim.tbl_extend("force", o, { desc = "glean: redo text, then glean action" }))
+  end
+  users[who] = true
+end
+local function release_undo(buf, who)
+  local users = undo_users[buf]
+  if not users then return end
+  users[who] = nil
+  if next(users) ~= nil then return end
+  undo_users[buf] = nil
+  if not api.nvim_buf_is_valid(buf) then return end
+  pcall(vim.keymap.del, "n", "u", { buffer = buf })
+  pcall(vim.keymap.del, "n", "<C-r>", { buffer = buf })
+end
 
 --- Called by node when `buf` joins the review: take the sign column from the
 --- foreign provider (re-asserted every time, since it re-attaches itself) and
@@ -94,6 +117,7 @@ function M.attach(buf)
   for _, m in ipairs(maps(buf)) do
     vim.keymap.set(m[1], m[2], m[3], { buffer = buf, silent = true, nowait = true, desc = m[4] })
   end
+  M.activate_undo(buf, "gutter")
 end
 
 --- Called by node when `buf` leaves the review (or on teardown).
@@ -107,6 +131,7 @@ function M.detach(buf)
   mapped[buf] = nil
   if not api.nvim_buf_is_valid(buf) then return end
   for _, m in ipairs(maps(buf)) do pcall(vim.keymap.del, m[1], m[2], { buffer = buf }) end
+  release_undo(buf, "gutter")
 end
 
 --- Node's one query per event: the facts it needs about each buffer. With
@@ -177,7 +202,7 @@ function M.bridge(group)
   api.nvim_create_autocmd("BufWipeout", {
     group = group,
     callback = function(args)
-      mapped[args.buf], suppressed[args.buf] = nil, nil
+      mapped[args.buf], suppressed[args.buf], undo_users[args.buf] = nil, nil, nil
       if vim.g.glean_node_channel then notify({ kind = "wipe", buf = args.buf }) end
     end,
   })
@@ -191,7 +216,12 @@ end
 --- Bridge teardown: give every buffer back.
 function M.teardown()
   for buf in pairs(vim.tbl_extend("force", {}, mapped, suppressed)) do M.detach(buf) end
-  local ns = { api.nvim_create_namespace("glean_gutter"), api.nvim_create_namespace("glean_gutter_focus") }
+  for buf in pairs(vim.tbl_extend("force", {}, undo_users)) do
+    release_undo(buf, "gutter")
+    release_undo(buf, "overlay")
+  end
+  local ns = { api.nvim_create_namespace("glean_gutter"), api.nvim_create_namespace("glean_gutter_focus"),
+    api.nvim_create_namespace("glean_overlay") }
   for _, b in ipairs(api.nvim_list_bufs()) do
     if api.nvim_buf_is_valid(b) then
       for _, n in ipairs(ns) do api.nvim_buf_clear_namespace(b, n, 0, -1) end

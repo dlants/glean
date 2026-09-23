@@ -140,14 +140,22 @@ const STALE_GLYPH = "╎";
 const FOCUS_PRIORITY = 4097;
 
 type Painted = { path: RepoPath; marks: GutterMarks; stale: boolean };
-type MarkUndo = { plan: SeenPlan; cursor: WorktreeLnum };
+/** One entry of a file buffer's glean stack: a seen-mark, or a comment
+ * change made through the overlay (`node/overlay/overlay.ts`). */
+export type FileUndo =
+  | { kind: "mark"; plan: SeenPlan; cursor: WorktreeLnum }
+  | {
+      kind: "comment";
+      run: (reverse: boolean) => Promise<void>;
+      cursor: number;
+    };
 
 export class FileGutter {
   enabled = true;
   private readonly off = new Set<number>();
   private readonly painted = new Map<number, Painted>();
   private readonly members = new Set<number>();
-  readonly undo = new BufUndo<MarkUndo>();
+  readonly undo = new BufUndo<FileUndo>();
   private chain: Promise<void> = Promise.resolve();
   private readonly pendingRefresh = new Set<number>();
   /** Bumped per `refreshAll`; a superseded full repaint is skipped. */
@@ -377,6 +385,12 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     ]);
   }
 
+  /** Record an already-applied action on `buf`'s stack (seq: its `seq_last`). */
+  async push(buf: number, seq: number, a: FileUndo) {
+    this.undo.push(buf, seq, a);
+    await this.syncUndoVar(buf);
+  }
+
   private async syncUndoVar(buf: number) {
     const d = this.undo.depth(buf);
     if (d) await this.nvim.call("nvim_buf_set_var", [buf, "glean_undo", d]);
@@ -431,11 +445,11 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     );
     if (r.kind === "inert") return void (await this.warn(r.reason));
     await s.applySeen(r.plan.ids, r.plan.op, r.plan.sticky);
-    this.undo.push(buf, info.seq, {
+    await this.push(buf, info.seq, {
+      kind: "mark",
       plan: r.plan,
       cursor: line2 !== undefined && line2 < line1 ? line2 : line1,
     });
-    await this.syncUndoVar(buf);
   }
 
   private async step(dir: "undo" | "redo", buf: number, seq: number) {
@@ -443,7 +457,13 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     const a =
       dir === "undo" ? this.undo.undo(buf, seq) : this.undo.redo(buf, seq);
     await this.syncUndoVar(buf);
-    if (!a || !s) return;
+    if (!a) return;
+    if (a.kind === "comment") {
+      await a.run(dir === "undo");
+      await this.park(buf, a.cursor);
+      return;
+    }
+    if (!s) return;
     const { plan } = a;
     const op =
       dir === "redo" ? plan.op : plan.op === "mark" ? "unmark" : "mark";

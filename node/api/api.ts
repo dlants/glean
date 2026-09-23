@@ -34,6 +34,9 @@ export interface ApiHost {
   reviews(): readonly LiveReview[];
   /** The repo containing `path` (the nvim cwd when undefined), store loaded. */
   repoContext(path: string | undefined): Promise<RepoContext>;
+  /** Fire-and-forget after a repo-mode store write: live reviews over the
+   * repo re-read the store, file buffers re-stamp their comments. */
+  afterRepoWrite?(root: string): void;
 }
 
 export class ApiError extends Error {}
@@ -558,17 +561,9 @@ export class Api {
     return rec.id;
   }
 
-  /** A live review over the same repo re-reads the store it shares with repo mode. */
-  // Fire-and-forget: a full rebuild must not hold the rpcrequest (and so nvim).
   private afterRepoWrite(root: string) {
-    void Promise.all(
-      this.host
-        .reviews()
-        .filter((r) => r.session.repoRoot === root)
-        .map((r) => r.session.refresh()),
-    ).catch(() => undefined);
+    this.host.afterRepoWrite?.(root);
   }
-
   async setReply(
     sessionArg: unknown,
     idArg: unknown,

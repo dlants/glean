@@ -7,6 +7,7 @@ import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
+import { Overlay, parseOverlayEvent } from "./overlay/overlay.ts";
 import { Session, type SessionOpts } from "./session/session.ts";
 import {
   clampPage,
@@ -43,6 +44,7 @@ export const GLEAN_GUTTER = "gleanGutter";
 export const GLEAN_API = "gleanApi";
 export const GLEAN_LIST = "gleanList";
 export const GLEAN_QUERY = "gleanQuery";
+export const GLEAN_OVERLAY = "gleanOverlay";
 const views = new Map<number, ReviewView>();
 /** There is one review at a time (as in the Lua version): opening another
  * range discards it; reopening the same `reviewKey` reuses buffer and id. */
@@ -60,6 +62,16 @@ let nextReviewId = 1;
 /** The live review the file-buffer gutter follows. */
 let liveSession: Session | undefined;
 let gutter: FileGutter | undefined;
+let overlay: Overlay | undefined;
+/** A store write from repo mode (api, overlay): live reviews of the repo
+ * re-read it, and file buffers re-stamp their comments. */
+function afterRepoWrite(root: string) {
+  void Promise.all(
+    reviews
+      .filter((r) => r.session.repoRoot === root)
+      .map((r) => r.session.refresh()),
+  ).catch(() => undefined);
+}
 
 type Command =
   | { kind: "ping" }
@@ -435,6 +447,7 @@ async function startView(slot: Current) {
   liveSession = session;
   session.subscribe(() => {
     if (liveSession === session) void gutter?.refreshAll();
+    void overlay?.refreshAll();
   });
   await session.refresh();
   session.startLive(1000);
@@ -782,6 +795,18 @@ export async function startGlean(nvim: Nvim): Promise<void> {
     const ev = parseGutterEvent(args[0]);
     if (ev) await g.handle(ev);
   });
+  const o = new Overlay(nvim, {
+    repoContext: (dir) => repoContext(nvim, dir),
+    repoRelative,
+    pushUndo: (buf, seq, a) => g.push(buf, seq, a),
+    afterWrite: afterRepoWrite,
+  });
+  await o.init();
+  overlay = o;
+  nvim.onNotification(GLEAN_OVERLAY, async (args: unknown[]) => {
+    const ev = parseOverlayEvent(args[0]);
+    if (ev) await o.handle(ev);
+  });
   nvim.onNotification(GLEAN_ACTION, async (args: unknown[]) => {
     try {
       const bufnr = args[0];
@@ -809,6 +834,10 @@ export async function startGlean(nvim: Nvim): Promise<void> {
   const api = new Api({
     reviews: () => reviews,
     repoContext: (path) => repoContext(nvim, path),
+    afterRepoWrite: (root) => {
+      afterRepoWrite(root);
+      void o.refreshAll();
+    },
   });
   // Errors travel back as the rpcrequest error, so the Lua caller sees them raised.
   nvim.onRequest(GLEAN_API, async (args: unknown[]) => {
