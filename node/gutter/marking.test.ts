@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { contentHash } from "../core/state.ts";
-import type { HeadLnum, RepoPath } from "../core/types.ts";
+import type { HeadLnum, RepoPath, WorktreeLnum } from "../core/types.ts";
 import { Git, spawnRunner } from "../git/git.ts";
 import { Session } from "../session/session.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -31,12 +31,21 @@ async function open() {
     return s.current.cls;
   };
   const toggle = async (p: RepoPath, a: number, b: number, expand = false) => {
-    const r = planFileMarks(cls(), p, a, b, expand);
+    const r = planFileMarks(
+      cls(),
+      p,
+      a as WorktreeLnum,
+      b as WorktreeLnum,
+      expand,
+    );
     if (r.kind === "ok")
       await s.applySeen(r.plan.ids, r.plan.op, r.plan.sticky);
     return r;
   };
-  const status = (p: RepoPath) => fileStatus(cls(), p);
+  const status = (p: RepoPath) => {
+    const m = fileStatus(cls(), p);
+    return m && { get: (l: number) => m.get(l as WorktreeLnum) };
+  };
   return { s, cls, toggle, status };
 }
 
@@ -49,6 +58,13 @@ describe("file-buffer marking (toggle_mark_test)", () => {
     expect(status(F)?.get(2)?.seen).toBe(false);
     await toggle(F, 4, 5);
     expect(status(F)?.get(4)?.seen).toBe(false);
+  });
+  it("a reversed (upward) range addresses the same rows", async () => {
+    const { toggle, status } = await open();
+    expect((await toggle(F, 5, 4)).kind).toBe("ok");
+    expect(status(F)?.get(4)?.seen).toBe(true);
+    expect(status(F)?.get(5)?.seen).toBe(true);
+    expect(status(F)?.get(2)?.seen).toBe(false);
   });
   it("a partial selection completes rather than flips", async () => {
     const { toggle, status } = await open();

@@ -2,7 +2,7 @@
  * The file-buffer side of the seen model: the gutter projection of one path
  * and its inverse (`:Glean toggle-mark`), both over the combined scope.
  */
-import type { LineId, RepoPath } from "../core/types.ts";
+import type { LineId, RepoPath, WorktreeLnum } from "../core/types.ts";
 import type { SeenPlan, Sticky } from "../render/actions.ts";
 import type { Classifier } from "../session/model.ts";
 import { type GutterMarks, type GutterSource, project } from "./project.ts";
@@ -34,8 +34,8 @@ export type FilePlan =
 export function planFileMarks(
   cls: Classifier,
   path: RepoPath,
-  srow: number,
-  erow: number,
+  srow: WorktreeLnum,
+  erow: WorktreeLnum,
   expandHunk: boolean,
 ): FilePlan {
   const marks = fileStatus(cls, path);
@@ -46,7 +46,7 @@ export function planFileMarks(
   const take = (s: GutterSource) => picked.set(`${s.hunk}:${s.li}`, s);
   const hunks = new Set<number>();
   for (let l = Math.min(srow, erow); l <= Math.max(srow, erow); l++)
-    for (const s of marks.get(l)?.sources ?? [])
+    for (const s of marks.get(l as WorktreeLnum)?.sources ?? [])
       if (expandHunk) hunks.add(s.hunk);
       else take(s);
   for (const hi of [...hunks].sort((a, b) => a - b))

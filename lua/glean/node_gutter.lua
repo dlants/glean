@@ -110,8 +110,9 @@ function M.detach(buf)
 end
 
 --- Node's one query per event: the facts it needs about each buffer. With
---- `bufs` nil, every loaded named buffer.
-function M.info(bufs)
+--- `bufs` nil, every loaded named buffer. `seq_last` (which builds the whole
+--- undo tree) is only computed when `with_seq` is set.
+function M.info(bufs, with_seq)
   if bufs == nil or bufs == vim.NIL then
     bufs = {}
     for _, b in ipairs(api.nvim_list_bufs()) do
@@ -130,7 +131,7 @@ function M.info(bufs)
         modified = vim.bo[b].modified,
         lines = api.nvim_buf_line_count(b),
         cursor = cursor,
-        seq = api.nvim_buf_call(b, function() return vim.fn.undotree().seq_last end),
+        seq = with_seq and api.nvim_buf_call(b, function() return vim.fn.undotree().seq_last end) or vim.NIL,
         focus = M.config.focus ~= false,
       }
     end

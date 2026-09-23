@@ -6,7 +6,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { RepoPath } from "../core/types.ts";
+import type { RepoPath, WorktreeLnum } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { SeenPlan } from "../render/actions.ts";
 import { splitLines } from "../session/model.ts";
@@ -24,9 +24,14 @@ import {
 
 export type GutterEvent =
   | { kind: "refresh"; buf: number }
-  | { kind: "focus"; buf: number; row: number }
-  | { kind: "toggle-mark"; buf: number; line1: number; line2?: number }
-  | { kind: "goto-hunk"; buf: number; row: number; dir: 1 | -1 }
+  | { kind: "focus"; buf: number; row: WorktreeLnum }
+  | {
+      kind: "toggle-mark";
+      buf: number;
+      line1: WorktreeLnum;
+      line2?: WorktreeLnum;
+    }
+  | { kind: "goto-hunk"; buf: number; row: WorktreeLnum; dir: 1 | -1 }
   | { kind: "undo" | "redo"; buf: number; seq: number }
   | { kind: "toggle"; buf: number }
   | { kind: "wipe"; buf: number };
@@ -37,25 +42,28 @@ export function parseGutterEvent(v: unknown): GutterEvent | undefined {
   const buf = o.buf;
   if (typeof buf !== "number") return undefined;
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
+  // File-buffer rows are 1-based; the gutter only acts on buffers whose text
+  // is the work tree, so they name work-tree lines.
+  const lnum = (k: string) => num(k) as WorktreeLnum | undefined;
   switch (o.kind) {
     case "refresh":
     case "toggle":
     case "wipe":
       return { kind: o.kind, buf };
     case "focus": {
-      const row = num("row");
+      const row = lnum("row");
       return row === undefined ? undefined : { kind: "focus", buf, row };
     }
     case "toggle-mark": {
-      const line1 = num("line1");
+      const line1 = lnum("line1");
       if (line1 === undefined) return undefined;
-      const line2 = num("line2");
+      const line2 = lnum("line2");
       return line2 === undefined
         ? { kind: "toggle-mark", buf, line1 }
         : { kind: "toggle-mark", buf, line1, line2 };
     }
     case "goto-hunk": {
-      const row = num("row");
+      const row = lnum("row");
       const dir = o.dir === -1 ? -1 : o.dir === 1 ? 1 : undefined;
       return row === undefined || dir === undefined
         ? undefined
@@ -76,8 +84,9 @@ type BufInfo = {
   name: string;
   modified: boolean;
   lines: number;
-  cursor: number | undefined;
-  seq: number;
+  cursor: WorktreeLnum | undefined;
+  /** Only fetched on request (`undotree()` is not constant work). */
+  seq: number | undefined;
   focus: boolean;
 };
 function parseInfos(v: unknown): BufInfo[] {
@@ -85,16 +94,18 @@ function parseInfos(v: unknown): BufInfo[] {
   return v.flatMap((x: Record<string, unknown>) =>
     typeof x.buf === "number" &&
     typeof x.name === "string" &&
-    typeof x.lines === "number" &&
-    typeof x.seq === "number"
+    typeof x.lines === "number"
       ? [
           {
             buf: x.buf,
             name: x.name,
             modified: x.modified === true,
             lines: x.lines,
-            cursor: typeof x.cursor === "number" ? x.cursor : undefined,
-            seq: x.seq,
+            cursor:
+              typeof x.cursor === "number"
+                ? (x.cursor as WorktreeLnum)
+                : undefined,
+            seq: typeof x.seq === "number" ? x.seq : undefined,
             focus: x.focus !== false,
           },
         ]
@@ -129,7 +140,7 @@ const STALE_GLYPH = "╎";
 const FOCUS_PRIORITY = 4097;
 
 type Painted = { path: RepoPath; marks: GutterMarks; stale: boolean };
-type MarkUndo = { plan: SeenPlan; cursor: number };
+type MarkUndo = { plan: SeenPlan; cursor: WorktreeLnum };
 
 export class FileGutter {
   enabled = true;
@@ -138,6 +149,9 @@ export class FileGutter {
   private readonly members = new Set<number>();
   readonly undo = new BufUndo<MarkUndo>();
   private chain: Promise<void> = Promise.resolve();
+  private readonly pendingRefresh = new Set<number>();
+  /** Bumped per `refreshAll`; a superseded full repaint is skipped. */
+  private allGen = 0;
   private ns = 0;
   private nsFocus = 0;
 
@@ -162,11 +176,24 @@ export class FileGutter {
   }
 
   handle(ev: GutterEvent): Promise<void> {
+    // A typing burst sends one refresh per keystroke; one queued repaint per
+    // buffer covers all of them.
+    if (ev.kind === "refresh") {
+      if (this.pendingRefresh.has(ev.buf)) return this.chain;
+      this.pendingRefresh.add(ev.buf);
+      return this.enqueue(() => {
+        this.pendingRefresh.delete(ev.buf);
+        return this.repaint([ev.buf]);
+      });
+    }
     return this.enqueue(() => this.run(ev));
   }
   /** Repaint every loaded named buffer (the model moved). */
   refreshAll(): Promise<void> {
-    return this.enqueue(() => this.repaint(undefined));
+    const gen = ++this.allGen;
+    return this.enqueue(() =>
+      gen === this.allGen ? this.repaint(undefined, gen) : Promise.resolve(),
+    );
   }
   setEnabled(on: boolean): Promise<void> {
     this.enabled = on;
@@ -213,11 +240,16 @@ export class FileGutter {
     }
   }
 
-  private async infos(bufs: number[] | undefined): Promise<BufInfo[]> {
+  private async infos(
+    bufs: number[] | undefined,
+    withSeq = false,
+  ): Promise<BufInfo[]> {
+    // Lua reads an absent list as "every buffer"; msgpack needs nil here.
+    const args = bufs === undefined ? [null, withSeq] : [bufs, withSeq];
     return parseInfos(
       await this.nvim.call("nvim_exec_lua", [
         `return require("glean.node_gutter").info(...)`,
-        [bufs ?? null],
+        args,
       ]),
     );
   }
@@ -239,9 +271,15 @@ export class FileGutter {
     return marks && { path, marks };
   }
 
-  private async repaint(bufs: number[] | undefined) {
+  private async repaint(bufs: number[] | undefined, gen?: number) {
     const calls: unknown[] = [];
     for (const info of await this.infos(bufs)) {
+      // Projection is per buffer; yield between them, and abandon a full
+      // repaint once a newer one is queued.
+      if (gen !== undefined) {
+        await new Promise((r) => setImmediate(r));
+        if (gen !== this.allGen) return;
+      }
       const { buf } = info;
       const st = this.statusFor(buf, info.name);
       // Membership (not paintedness) owns the maps and the sign column, so a
@@ -297,7 +335,7 @@ export class FileGutter {
       l <= Math.min(range.hi, info.lines);
       l++
     ) {
-      const m = p.marks.get(l);
+      const m = p.marks.get(l as WorktreeLnum);
       if (!m) continue;
       calls.push([
         "nvim_buf_set_extmark",
@@ -320,7 +358,7 @@ export class FileGutter {
   private async atomic(calls: unknown[]) {
     for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS)
       await this.nvim.call("nvim_call_atomic", [
-        calls.slice(i, i + MAX_BATCH_CALLS) as never,
+        calls.slice(i, i + MAX_BATCH_CALLS),
       ]);
   }
 
@@ -349,11 +387,15 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
    * work tree the model was built from, is refused: its rows would name
    * lines the reviewer is not looking at.
    */
-  private async toggleMark(buf: number, line1: number, line2?: number) {
+  private async toggleMark(
+    buf: number,
+    line1: WorktreeLnum,
+    line2?: WorktreeLnum,
+  ) {
     const s = this.session();
     if (!s?.worktree) return void (await this.warn("no live work-tree review"));
-    const [info] = await this.infos([buf]);
-    if (!info) return;
+    const [info] = await this.infos([buf], true);
+    if (!info || info.seq === undefined) return;
     if (info.modified)
       return void (await this.warn("buffer is modified; write it first"));
     const path = this.relPath(info.name);
@@ -368,7 +410,12 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
       this.nvim.call("nvim_buf_get_lines", [buf, 0, -1, false]),
       readFile(resolve(s.repoRoot, path), "utf8").then(splitLines, () => []),
     ]);
-    const lines = bufLines as string[];
+    if (
+      !Array.isArray(bufLines) ||
+      !bufLines.every((l) => typeof l === "string")
+    )
+      return;
+    const lines: readonly string[] = bufLines;
     if (lines.length !== disk.length || lines.some((l, i) => l !== disk[i]))
       return void (await this.warn(
         "review is out of date for this file; refreshing, try again",
@@ -386,7 +433,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     await s.applySeen(r.plan.ids, r.plan.op, r.plan.sticky);
     this.undo.push(buf, info.seq, {
       plan: r.plan,
-      cursor: Math.min(line1, line2 ?? line1),
+      cursor: line2 !== undefined && line2 < line1 ? line2 : line1,
     });
     await this.syncUndoVar(buf);
   }

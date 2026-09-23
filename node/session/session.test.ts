@@ -30,6 +30,16 @@ describe("Session", () => {
     expect(s.current?.cls.progressCounts("combined").adds).toBe(1);
   });
 
+  it("subscribe returns an unsubscribe that detaches the listener", async () => {
+    const { s } = session();
+    let calls = 0;
+    const off = s.subscribe(() => calls++);
+    await s.refresh();
+    expect(calls).toBe(1);
+    off();
+    await s.refresh();
+    expect(calls).toBe(1);
+  });
   it("perform/undo/redo a seen plan with sticky overrides", async () => {
     const { s } = session();
     await s.refresh();

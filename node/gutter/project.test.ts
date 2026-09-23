@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiffLine, Hunk } from "../core/diff.ts";
+import type { WorktreeLnum } from "../core/types.ts";
 import {
   type GutterMarks,
   type GutterSource,
@@ -43,7 +44,7 @@ function dump(marks: GutterMarks): string {
 }
 /** 1-based "hunk.li", matching the Lua test's expectations. */
 const srcs = (marks: GutterMarks, l: number) =>
-  (marks.get(l)?.sources ?? [])
+  (marks.get(l as WorktreeLnum)?.sources ?? [])
     .map((s) => `${s.hunk + 1}.${s.li + 1}`)
     .join(" ");
 
@@ -57,7 +58,7 @@ describe("gutter project", () => {
     const m = project([hunk(1, [" a", "+b", " c", "+d", " e"])], unseen);
     expect(dump(m)).toBe("2:add 3:contextS 4:add");
     expect(hunkStarts(m)).toEqual([2]);
-    expect(m.get(3)?.sources).toEqual([]);
+    expect(m.get(3 as WorktreeLnum)?.sources).toEqual([]);
   });
   it("similar del+add is a change", () => {
     expect(
@@ -145,7 +146,12 @@ describe("gutter project", () => {
 
 describe("gutter navigation", () => {
   const nm = (seen: boolean, ...s: GutterSource[]) => ({ seen, sources: s });
-  const nav = new Map([
+  const w = (n: number) => n as WorktreeLnum;
+  const navMap = (
+    entries: [number, ReturnType<typeof nm>][],
+  ): Map<WorktreeLnum, ReturnType<typeof nm>> =>
+    new Map(entries.map(([l, m]) => [w(l), m]));
+  const nav = navMap([
     [4, nm(false, { hunk: 0, li: 1 })],
     [5, nm(false, { hunk: 0, li: 2 })],
     [20, nm(false, { hunk: 1, li: 0 })],
@@ -153,16 +159,16 @@ describe("gutter navigation", () => {
   it("hunk starts and next row", () => {
     const starts = hunkStarts(nav);
     expect(starts).toEqual([4, 20]);
-    expect(hunkStarts(new Map())).toEqual([]);
-    expect(nextHunkRow(starts, 1, 1)).toBe(4);
-    expect(nextHunkRow(starts, 5, 1)).toBe(20);
-    expect(nextHunkRow(starts, 20, 1)).toBe(4);
-    expect(nextHunkRow(starts, 20, -1)).toBe(4);
-    expect(nextHunkRow(starts, 4, -1)).toBe(20);
-    expect(nextHunkRow([], 1, 1)).toBeUndefined();
+    expect(hunkStarts(navMap([]))).toEqual([]);
+    expect(nextHunkRow(starts, w(1), 1)).toBe(4);
+    expect(nextHunkRow(starts, w(5), 1)).toBe(20);
+    expect(nextHunkRow(starts, w(20), 1)).toBe(4);
+    expect(nextHunkRow(starts, w(20), -1)).toBe(4);
+    expect(nextHunkRow(starts, w(4), -1)).toBe(20);
+    expect(nextHunkRow([], w(1), 1)).toBeUndefined();
   });
   it("unseen only", () => {
-    const seen = new Map([
+    const seen = navMap([
       [4, nm(true, { hunk: 0, li: 1 })],
       [5, nm(true, { hunk: 0, li: 2 })],
       [20, nm(false, { hunk: 1, li: 0 })],
@@ -170,19 +176,19 @@ describe("gutter navigation", () => {
     expect(hunkStarts(seen, true)).toEqual([20]);
     expect(
       hunkStarts(
-        new Map([
+        navMap([
           [4, nm(true, { hunk: 0, li: 1 })],
           [5, nm(false, { hunk: 0, li: 2 })],
         ]),
         true,
       ),
     ).toEqual([4]);
-    seen.set(20, nm(true, { hunk: 1, li: 0 }));
+    seen.set(w(20), nm(true, { hunk: 1, li: 0 }));
     expect(hunkStarts(seen, true)).toEqual([4, 20]);
   });
   it("hunk range", () => {
-    expect(hunkRange(nav, 5)).toEqual({ lo: 4, hi: 5 });
-    expect(hunkRange(nav, 20)).toEqual({ lo: 20, hi: 20 });
-    expect(hunkRange(nav, 7)).toBeUndefined();
+    expect(hunkRange(nav, w(5))).toEqual({ lo: 4, hi: 5 });
+    expect(hunkRange(nav, w(20))).toEqual({ lo: 20, hi: 20 });
+    expect(hunkRange(nav, w(7))).toBeUndefined();
   });
 });
