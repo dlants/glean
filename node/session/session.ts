@@ -159,13 +159,12 @@ export class Session {
   async refresh(): Promise<RefreshResult> {
     const gen = this.guard.bump();
     const { git, base, target } = this.opts;
-    const built = await buildModel(
-      git,
-      base,
-      target,
-      this.opts.build,
-      this.patchCache,
-    );
+    // Seeding the poll signatures alongside the build means an edit landing
+    // after this refresh starts is seen by the very next poll tick.
+    const [built] = await Promise.all([
+      buildModel(git, base, target, this.opts.build, this.patchCache),
+      this.worktree ? this.seedSignatures() : undefined,
+    ]);
     if (!this.guard.isCurrent(gen)) return { kind: "stale" };
     if (built.kind !== "ok") return built;
     const model = built.value;
@@ -217,6 +216,13 @@ export class Session {
    * `untracked`, the untracked listing) moved. The first check only records
    * the baseline signatures.
    */
+  private async seedSignatures() {
+    const { git } = this.opts;
+    const [p, u] = await Promise.all([git.poll(), git.untrackedSig()]);
+    if (p.kind === "ok") this.sig = p.value.sig;
+    if (u.kind === "ok") this.untrackedSig = u.value;
+  }
+
   async poll(
     o: { untracked?: boolean } = {},
   ): Promise<"refreshed" | "unchanged" | "error"> {

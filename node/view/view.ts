@@ -116,6 +116,15 @@ export function lineEdit(
   };
 }
 
+/** Per-row identity for diffing frames: the text plus that row's highlights. */
+export function frameRowKeys(frame: Frame): string[] {
+  const hl = frame.lines.map(() => "");
+  for (const h of frame.highlights)
+    hl[h.row] +=
+      h.kind === "line" ? `|l:${h.hl}` : `|s:${h.hl}:${h.startCol}:${h.endCol}`;
+  return frame.lines.map((l, i) => `${l}\u0000${hl[i]}`);
+}
+
 export type ViewOpts = { minSeenRun?: number; ignoreWhitespace?: boolean };
 export class ReviewView {
   private shown: string[] = [];
@@ -189,7 +198,10 @@ export class ReviewView {
     if (!frame) return;
     const gen = this.intraGuard.bump();
     this.frame = frame;
-    const edit = lineEdit(this.shown, frame.lines);
+    // Diff on text plus that row's highlights: extmarks outside the edited
+    // span ride along with their unchanged lines, so only the span is repainted.
+    const rowKeys = frameRowKeys(frame);
+    const edit = lineEdit(this.shown, rowKeys);
     const b = this.bufnr;
     await this.nvim.call("nvim_set_option_value", [
       "modifiable",
@@ -201,8 +213,12 @@ export class ReviewView {
       let at = edit.start;
       let end = edit.end;
       let i = 0;
+      const lines = frame.lines.slice(
+        edit.start,
+        edit.start + edit.lines.length,
+      );
       do {
-        const chunk = edit.lines.slice(i, i + MAX_BATCH_LINES);
+        const chunk = lines.slice(i, i + MAX_BATCH_LINES);
         await this.nvim.call("nvim_buf_set_lines", [b, at, end, false, chunk]);
         at += chunk.length;
         end = at;
@@ -214,10 +230,14 @@ export class ReviewView {
       false,
       { buf: b },
     ]);
-    this.shown = frame.lines;
-    await this.nvim.call("nvim_buf_clear_namespace", [b, this.ns, 0, -1]);
+    this.shown = rowKeys;
     const calls: unknown[] = [];
+    const lo = edit?.start ?? 0;
+    const hi = edit ? edit.start + edit.lines.length : 0;
+    if (edit)
+      await this.nvim.call("nvim_buf_clear_namespace", [b, this.ns, lo, hi]);
     for (const h of frame.highlights) {
+      if (h.row < lo || h.row >= hi) continue;
       calls.push(
         h.kind === "line"
           ? [
