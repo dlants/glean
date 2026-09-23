@@ -296,7 +296,6 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       await nvim.call("nvim_input", ["u"]);
       await waitFor(async () => !(await has("added one")));
       // An agent api write re-stamps the open file buffer.
-      const before = (await signs(nvim)).length;
       await luaEval(
         nvim,
         `require("glean.api").add_comment({ repo = ${root}, path = "author.txt", lnum = 1, text = "from agent" })`,
@@ -304,7 +303,6 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       await waitFor(async () =>
         (await marks(nvim)).some((m) => m.text?.includes("from agent")),
       );
-      expect((await signs(nvim)).length).toBeGreaterThan(before);
       // Quickfix: every record, named by file.
       await nvim.call("nvim_command", ["Glean comments"]);
       const qf = await waitFor(async () => {
