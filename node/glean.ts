@@ -3,7 +3,12 @@ import { realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { Api, ApiError, type LiveReview } from "./api/api.ts";
 import { COMMENTS_ID, Store } from "./core/state.ts";
-import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
+import {
+  type PostLnum,
+  type RepoPath,
+  toRepoPath,
+  WORKTREE,
+} from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
@@ -425,9 +430,10 @@ require("glean.node").show_buffer(buf)`,
   const view = new ReviewView(nvim, bufnr, session, viewOpts);
   const review: LiveReview = {
     id,
+    bufnr,
     session,
     base,
-    target: spec.target.kind === "worktree" ? "worktree" : spec.target.ref,
+    target: spec.target.kind === "worktree" ? WORKTREE : spec.target.ref,
     title,
     scope: () => current?.view.scope ?? "combined",
     frame: () => current?.view.frame,

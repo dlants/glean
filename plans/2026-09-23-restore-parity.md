@@ -125,6 +125,10 @@ GitHub access (PRs) goes through an injectable `gh` runner, matching the old `op
 ## Agent api parity
 - Goal: `session(id)`, the title and oid cases, and one-review-at-a-time behaviour.
 - Tests: port the remaining `api_test.lua` cases, checking JSON shapes against the old outputs.
+- Status: **done**.
+  - `session(id)` added (`node/api/api.ts`, `lua/glean/api.lua`). The old Lua returned the Session object; nothing but JSON crosses the boundary now, so it returns that review's `sessions()` entry, with the same errors (none open / ambiguous / unknown id listing open reviews). Ids resolve by `g<N>` or the review buffer number (`LiveReview.bufnr`), as in Lua; the previous node-only `N` → `gN` shorthand is dropped.
+  - The `target` field of a dirty review is `"WORKTREE"` again (old shape).
+  - Titles (abbreviated oids, symbolic ref with `∕`, reopen keeps buffer/id) are covered by `targets.test.ts` "review titles" + `openReview` from stage 1; one-review-at-a-time is enforced by `openReview` (stage 1). `api.test.ts` adds the "single" cases: `session` by id and buffer, stale id errors naming the live one, no-arg resolves the only review. Skill doc updated.
 
 ## Parity audit and docs
 - Goal:

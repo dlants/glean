@@ -65,7 +65,8 @@ return require("glean.api").sessions()
 -- { { id = "g1", repo = "/path/to/repo", base = "...", target = "...",
 --     scope = "combined", title = ".../Glean:g1 repo main" } }
 -- `title` is the raw buffer name, so it may carry a directory prefix; the
--- session id is the `g<N>` right after `Glean:`.
+-- session id is the `g<N>` right after `Glean:`. A dirty review's target is "WORKTREE".
+return require("glean.api").session("g1") -- one entry, by id or buffer number
 ```
 
 List comments (`session` may be `nil` with one review open):

@@ -81,9 +81,10 @@ function harness() {
     await session.refresh();
     const r: LiveReview = {
       id: `g${++n}`,
+      bufnr: 100 + n,
       session,
       base,
-      target: target.kind === "ref" ? target.ref : "worktree",
+      target: target.kind === "ref" ? target.ref : "WORKTREE",
       title: `Glean:g${n}`,
       scope: () => "combined",
       frame: () => undefined,
@@ -257,6 +258,23 @@ describe("agent api: comments", () => {
     await expect(h.call("hunks", "g999")).rejects.toThrow("g999");
     expect((await h.call<Page>("hunks", b.id)).total).toBe(1);
     expect(await h.call<{ id: string }[]>("sessions")).toHaveLength(2);
+    expect(await h.call("session", b.id)).toEqual({
+      id: b.id,
+      repo: repo.root,
+      base: repo.shas[0],
+      target: repo.shas[1],
+      scope: "combined",
+      title: b.title,
+    });
+    expect(await h.call<{ id: string }>("session", b.bufnr)).toMatchObject({
+      id: b.id,
+    });
+    await expect(h.call("session", "g999")).rejects.toThrow(
+      "no review with session id",
+    );
+    h.close(a);
+    await expect(h.call("session", a.id)).rejects.toThrow(b.id);
+    expect(await h.call<{ id: string }>("session")).toMatchObject({ id: b.id });
     await expect(h.call("nope")).rejects.toThrow("unknown api call");
   });
 });

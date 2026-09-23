@@ -22,6 +22,8 @@ export const API_TIMEOUT_MS = 2000;
 
 export type LiveReview = {
   id: string;
+  /** The review buffer; `session(n)` resolves a buffer number like the old api. */
+  bufnr: number;
   session: Session;
   base: string;
   target: string;
@@ -251,6 +253,8 @@ export class Api {
       switch (name) {
         case "sessions":
           return Promise.resolve(this.sessions());
+        case "session":
+          return Promise.resolve(this.session(a[0]));
         case "comments":
           return this.comments(a[0], a[1]);
         case "hunks":
@@ -290,6 +294,14 @@ export class Api {
     }
   }
 
+  /** The `sessions()` entry for one review (by id or buffer number); the
+   * same errors as every session-addressed call. */
+  session(id: unknown) {
+    const key =
+      typeof id === "string" || typeof id === "number" ? id : undefined;
+    const r = this.review(key);
+    return this.sessions().find((e) => e.id === r.id);
+  }
   sessions() {
     return this.host.reviews().map((r) => ({
       id: r.id,
@@ -321,7 +333,7 @@ export class Api {
         `${live.length} reviews are open; pass a session id — ${this.describe()}`,
       );
     }
-    const hit = live.find((r) => r.id === id || r.id === `g${id}`);
+    const hit = live.find((r) => r.id === id || r.bufnr === id);
     return (
       hit ??
       fail(

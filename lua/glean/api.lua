@@ -22,6 +22,7 @@ local function call(name, ...)
 end
 
 function M.sessions() return call("sessions") end
+function M.session(id) return call("session", id) end
 function M.comments(session, opts) return call("comments", session, opts) end
 function M.hunks(session, opts) return call("hunks", session, opts) end
 function M.mark(session, sel, seen) return call("mark", session, sel, seen) end
