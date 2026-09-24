@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execSync, exec } from "child_process";
+import { exec, execSync } from "child_process";
 import { exit } from "process";
 
 function getFileList(command) {

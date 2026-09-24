@@ -4,3 +4,4 @@ dist/
 node/test/tmp/
 /.pkb/cache.db
 /.pkb/queries.jsonl
+*.tsbuildinfo
