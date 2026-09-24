@@ -2,23 +2,29 @@ import { describe, expect, it } from "vitest";
 import { Prompts } from "./prompts.ts";
 
 describe("Prompts", () => {
-  it("runs a callback once, only for a result of its own kind", async () => {
+  it("resolves a prompt once, only for a result of its own kind", async () => {
     const p = new Prompts();
-    const got: unknown[] = [];
-    const e = p.editor(async (t) => void got.push(t));
-    const k = p.pick(async (i) => void got.push(i));
-    expect(await p.submit({ kind: "pick", token: e, index: 0 })).toBe(false);
-    expect(await p.submit({ kind: "editor-submit", token: k, text: "x" })).toBe(
+    const e = p.editor();
+    const k = p.pick();
+    expect(p.submit({ kind: "pick", token: e.token, index: 0 })).toBe(false);
+    expect(p.submit({ kind: "editor-submit", token: k.token, text: "x" })).toBe(
       false,
     );
     expect(
-      await p.submit({ kind: "editor-submit", token: e, text: "hi" }),
+      p.submit({ kind: "editor-submit", token: e.token, text: "hi" }),
     ).toBe(true);
     expect(
-      await p.submit({ kind: "editor-submit", token: e, text: "again" }),
+      p.submit({ kind: "editor-submit", token: e.token, text: "again" }),
     ).toBe(false);
-    expect(await p.submit({ kind: "pick", token: 999, index: 1 })).toBe(false);
-    expect(await p.submit({ kind: "pick", token: k, index: 2 })).toBe(true);
-    expect(got).toEqual(["hi", 2]);
+    expect(p.submit({ kind: "pick", token: 999, index: 1 })).toBe(false);
+    expect(p.submit({ kind: "pick", token: k.token, index: 2 })).toBe(true);
+    expect(await e.result).toBe("hi");
+    expect(await k.result).toBe(2);
+  });
+  it("a dismissed prompt resolves undefined", async () => {
+    const p = new Prompts();
+    const e = p.editor();
+    p.submit({ kind: "editor-submit", token: e.token, text: undefined });
+    expect(await e.result).toBeUndefined();
   });
 });

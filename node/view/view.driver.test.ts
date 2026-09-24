@@ -55,33 +55,6 @@ describe("review view (driver)", () => {
     });
   });
 
-  it("m lands the cursor on the next unseen hunk", async () => {
-    const repo = makeRepo([
-      { files: { "a.txt": "1\n", "b.txt": "1\n" } },
-      { msg: "one", files: { "a.txt": "A\n", "b.txt": "B\n" } },
-    ]);
-    await withShared(repo.root, async (nvim) => {
-      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
-      const lines = () =>
-        luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
-      const first = await pollUntil(async () => {
-        const l = await lines();
-        return l.filter((s) => s.includes("@@")).length === 2 ? l : undefined;
-      });
-      const row = first.findIndex((s) => s.includes("@@")) + 1;
-      await nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
-      await nvim.call("nvim_input", ["m"]);
-      await pollUntil(async () => {
-        const l = await lines();
-        const [cur] = await luaEval<[number, number]>(
-          nvim,
-          "vim.api.nvim_win_get_cursor(0)",
-        );
-        const hunks = l.filter((s) => s.includes("@@")).length;
-        return hunks === 1 && l[cur - 1]?.includes("@@") ? true : undefined;
-      });
-    });
-  });
   it("toggle-scope re-renders in the commits scope", async () => {
     const repo = makeRepo([
       { files: { "a.txt": "1\n" } },
@@ -140,40 +113,6 @@ describe("review view (driver)", () => {
       });
     });
   });
-  it("toggle-scope expands a collapsed destination file", async () => {
-    const repo = makeRepo([
-      { files: { "a.txt": "keep\n" } },
-      { msg: "edit", files: { "a.txt": "keep\nadded line\n" } },
-    ]);
-    await withShared(repo.root, async (nvim) => {
-      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
-      const getLines = () =>
-        luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
-      await pollUntil(async () =>
-        (await getLines()).includes("added line") ? true : undefined,
-      );
-      const header = (await getLines()).findIndex((l) => l.includes("a.txt"));
-      await nvim.call("nvim_win_set_cursor", [0, [header + 1, 0]]);
-      await nvim.call("nvim_input", ["="]);
-      await pollUntil(async () =>
-        (await getLines()).includes("added line") ? undefined : true,
-      );
-      await nvim.call("nvim_input", ["S"]);
-      await pollUntil(async () =>
-        (await getLines()).includes("added line") ? true : undefined,
-      );
-      const row = (await getLines()).indexOf("added line") + 1;
-      await nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
-      await nvim.call("nvim_input", ["S"]);
-      await pollUntil(async () =>
-        (await luaEval<string>(nvim, "vim.api.nvim_get_current_line()")) ===
-        "added line"
-          ? true
-          : undefined,
-      );
-    });
-  });
-
   it("summary <CR> reveals the comment and visual d deletes it", async () => {
     const repo = makeRepo([
       { files: { "a.txt": "1\n2\n3\n" } },

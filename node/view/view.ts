@@ -1,20 +1,13 @@
 /**
- * Projects a Session into a nomodifiable scratch buffer. Each frame is diffed
- * against the previous one (common prefix/suffix) and written in bounded
- * batches so nvim never handles one huge request; Lua only dispatches Actions.
+ * The nvim adapter for a review: implements `ReviewUi` on the scratch buffer.
+ * Each frame is diffed against the previous one (common prefix/suffix) and
+ * written in bounded batches so nvim never handles one huge request; it also
+ * owns the display-only decor (active hunk, indent, sticky float) and
+ * suspend/resume. Every decision lives in `ReviewController`.
  */
 
 import { join } from "node:path";
-import type { CommentRecord } from "../core/state.ts";
-import type {
-  BufNr,
-  Layer,
-  LineId,
-  NsId,
-  PostLnum,
-  RepoPath,
-  WinId,
-} from "../core/types.ts";
+import type { BufNr, NsId, PostLnum, RepoPath, WinId } from "../core/types.ts";
 import {
   type Generation,
   GenerationGuard,
@@ -22,41 +15,8 @@ import {
   runRefine,
 } from "../git/scheduler.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
-import {
-  collapseTarget,
-  nextUnseenHunk,
-  planToggleSeen,
-  planUnmarkAll,
-  planUnmarkHunk,
-  planVisualMark,
-  resolveFile,
-  rowOfHunk,
-  type SeenPlan,
-} from "../render/actions.ts";
-import { cursorAnchor, restoreAnchor } from "../render/anchor.ts";
-import {
-  commentsAtLine,
-  commentTarget,
-  commentUnder,
-  summaryCommentsIn,
-} from "../render/commentActions.ts";
-import type { SummaryGroup } from "../render/comments.ts";
-import {
-  diffContext,
-  fileHeaderRow,
-  hunkRange,
-  jumpTarget,
-  type NavUnit,
-  navRow,
-  sourceLineRow,
-} from "../render/nav.ts";
-import type { IntraBlock } from "../render/render.ts";
-import {
-  type CollapseKey,
-  type Frame,
-  keys,
-  render,
-} from "../render/render.ts";
+import { type DiffContext, hunkRange } from "../render/nav.ts";
+import type { Frame, IntraBlock } from "../render/render.ts";
 import {
   type Ancestry,
   computeAncestry,
@@ -64,148 +24,33 @@ import {
 } from "../render/sticky.ts";
 import type { Scope } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
-import { openDiffsplit, openJump } from "./jump.ts";
+import {
+  bufferLine,
+  type IsStale,
+  openDiffsplit,
+  openJump,
+  type ResolvedJump,
+} from "./jump.ts";
 import { Prompts } from "./prompts.ts";
+import {
+  type Action,
+  type NotifyLevel,
+  type Query,
+  ReviewController,
+  type ReviewUi,
+  type ViewOpts,
+} from "./review.ts";
 
-/** Collapse keys hiding `path`'s lines in `scope`, so navigation can reach them. */
-function revealKeys(
-  scope: Scope,
-  path: RepoPath,
-  sha: Layer | undefined,
-): CollapseKey[] {
-  const parts = path.split("/");
-  const prefixes = parts
-    .slice(1)
-    .map((_, i) => parts.slice(0, i + 1).join("/"));
-  if (scope === "combined")
-    return [keys.cfile(path), keys.cseen(path), ...prefixes.map(keys.cdir)];
-  if (sha === undefined) return [];
-  return [
-    keys.commit(sha),
-    keys.file(sha, path),
-    keys.seen(sha, path),
-    ...prefixes.map((p) => keys.dir(sha, p)),
-  ];
-}
-
-function ownerSha(id: LineId | undefined): Layer | undefined {
-  if (id?.kind === "committed-add") return id.sha;
-  if (id?.kind === "committed-del") return id.removerSha;
-  return undefined;
-}
+export {
+  type Action,
+  parseAction,
+  parseQuery,
+  type Query,
+  type ViewOpts,
+} from "./review.ts";
 
 export const MAX_BATCH_LINES = 500;
 export const MAX_BATCH_CALLS = 1000;
-
-/** Everything the Lua keymaps can send. Rows are 0-based. */
-export type Action =
-  | { kind: "toggle-seen"; row: number }
-  | { kind: "visual-mark"; srow: number; erow: number }
-  | { kind: "toggle-fold"; row: number }
-  | { kind: "toggle-scope"; row: number }
-  | { kind: "jump"; row: number; col: number }
-  | { kind: "diffsplit"; row: number }
-  | { kind: "delete-comments"; srow: number; erow: number }
-  | { kind: "add-comment"; srow: number; erow: number }
-  | { kind: "edit-comment"; row: number }
-  | { kind: "delete-comment"; row: number }
-  | { kind: "delete-comment-at"; row: number }
-  /** A comment editor / picker opened by node returned its result. */
-  | { kind: "editor-submit"; token: number; text: string }
-  | { kind: "pick"; token: number; index: number }
-  | { kind: "undo" }
-  | { kind: "redo" }
-  | { kind: "unmark-hunk"; row: number }
-  | { kind: "unmark-all" }
-  | { kind: "toggle-whitespace"; row: number }
-  /** Cursor moved / scrolled / window layout changed: repaint the cursor decor. */
-  | { kind: "cursor" }
-  | { kind: "sticky-close" }
-  | { kind: "visibility"; visible: boolean }
-  /** Registry-level (not the view): the buffer was wiped, or `:e` hard reset. */
-  | { kind: "gone" }
-  | { kind: "reset"; row: number | undefined };
-
-export function parseAction(v: unknown): Action | undefined {
-  if (typeof v !== "object" || v === null) return undefined;
-  const o = v as Record<string, unknown>;
-  const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
-  switch (o.kind) {
-    case "toggle-seen":
-    case "toggle-scope":
-    case "toggle-fold":
-    case "unmark-hunk":
-    case "toggle-whitespace":
-    case "edit-comment":
-    case "delete-comment":
-    case "delete-comment-at":
-    case "diffsplit": {
-      const row = num("row");
-      return row === undefined ? undefined : { kind: o.kind, row };
-    }
-    case "visual-mark":
-    case "add-comment":
-    case "delete-comments": {
-      const srow = num("srow");
-      const erow = num("erow");
-      return srow === undefined || erow === undefined
-        ? undefined
-        : { kind: o.kind, srow, erow };
-    }
-    case "jump": {
-      const row = num("row");
-      const col = num("col");
-      return row === undefined || col === undefined
-        ? undefined
-        : { kind: "jump", row, col };
-    }
-    case "editor-submit": {
-      const token = num("token");
-      return token === undefined || typeof o.text !== "string"
-        ? undefined
-        : { kind: "editor-submit", token, text: o.text };
-    }
-    case "pick": {
-      const token = num("token");
-      const index = num("index");
-      return token === undefined || index === undefined
-        ? undefined
-        : { kind: "pick", token, index };
-    }
-    case "reset":
-      return { kind: "reset", row: num("row") };
-    case "visibility":
-      return typeof o.visible === "boolean"
-        ? { kind: "visibility", visible: o.visible }
-        : undefined;
-    case "undo":
-    case "redo":
-    case "unmark-all":
-    case "cursor":
-    case "sticky-close":
-    case "gone":
-      return { kind: o.kind };
-    default:
-      return undefined;
-  }
-}
-
-export type Query =
-  | { kind: "hunk-range"; row: number }
-  | { kind: "nav"; row: number; unit: NavUnit; forward: boolean };
-export function parseQuery(v: unknown): Query | undefined {
-  if (typeof v !== "object" || v === null) return undefined;
-  const o = v as Record<string, unknown>;
-  if (typeof o.row !== "number") return undefined;
-  if (o.kind === "hunk-range") return { kind: "hunk-range", row: o.row };
-  if (
-    o.kind === "nav" &&
-    (o.unit === "hunk" || o.unit === "file") &&
-    typeof o.forward === "boolean"
-  )
-    return { kind: "nav", row: o.row, unit: o.unit, forward: o.forward };
-  return undefined;
-}
 
 /** Minimal replacement turning `prev` into `next`. */
 export function lineEdit(
@@ -235,11 +80,6 @@ export function frameRowKeys(frame: Frame): string[] {
   return frame.lines.map((l, i) => `${l}\u0000${hl[i]}`);
 }
 
-export type ViewOpts = {
-  minSeenRun?: number;
-  hunkIndent?: number;
-  hunkIndentDelayMs?: number;
-};
 /** Where the review is displayed, as read by `glean.node.cursor_info`. */
 type CursorInfo = {
   win: number;
@@ -267,22 +107,19 @@ function parseCursorInfo(v: unknown): CursorInfo | undefined {
     return undefined;
   return { win, row, top, width, textoff };
 }
-export class ReviewView {
+export class ReviewView implements ReviewUi {
+  readonly controller: ReviewController;
   private shown: string[] = [];
-  frame: Frame | undefined;
-  scope: Scope = "combined";
+  /** The last painted frame. */
+  private frame: Frame | undefined;
   private ns = 0;
   private nsIntra = 0;
   private readonly intraGuard = new GenerationGuard();
-  /** Latest `<CR>`/`D`/`:Glean jump`; an older one never moves windows or the cursor. */
-  private readonly jumpGuard = new GenerationGuard();
-  private staleCheck() {
-    const gen = this.jumpGuard.bump();
-    return () => !this.jumpGuard.isCurrent(gen);
-  }
   private readonly refineCache = new RefineCache();
   /** Resolves when the latest frame's intra-line refinement finishes or goes stale. */
   intraDone: Promise<unknown> = Promise.resolve();
+  private readonly prompts = new Prompts();
+  readonly worktreeLine;
 
   constructor(
     private readonly nvim: Nvim,
@@ -290,24 +127,34 @@ export class ReviewView {
     readonly session: Session,
     private readonly opts: ViewOpts = {},
   ) {
-    session.onChange = () => {
-      // Hidden: the model keeps refreshing (gutter/file-buffer paths read it),
-      // only the buffer paint waits for `resume`.
-      if (this.suspended) return;
-      void this.redraw().catch((e: unknown) =>
-        nvim.logger.error(e instanceof Error ? e : String(e)),
-      );
-    };
+    this.worktreeLine = bufferLine(nvim);
+    this.controller = new ReviewController(session, this, opts, (e) =>
+      nvim.logger.error(e instanceof Error ? e : String(e)),
+    );
+  }
+  get scope(): Scope {
+    return this.controller.scope;
+  }
+  query(q: Query) {
+    return this.controller.query(q);
+  }
+  redraw() {
+    return this.controller.redraw();
+  }
+  gotoSource(path: RepoPath, lnum: PostLnum) {
+    return this.controller.gotoSource(path, lnum);
   }
 
   suspended = false;
   suspend() {
     this.suspended = true;
+    this.controller.live = false;
     this.intraGuard.bump();
   }
   async resume() {
     if (!this.suspended) return;
     this.suspended = false;
+    this.controller.live = true;
     await this.redraw();
     await this.session.pokePoll();
   }
@@ -326,36 +173,11 @@ export class ReviewView {
     this.nsSticky = await ns("glean-review-sticky");
   }
 
-  private build(summary: readonly SummaryGroup[]): Frame | undefined {
-    const snap = this.session.current;
-    if (!snap) return undefined;
-    return render({
-      scope: this.scope,
-      cls: snap.cls,
-      collapse: this.session.collapse,
-      isSticky: (p, t) => snap.store.isSticky(p, t),
-      minSeenRun: this.opts.minSeenRun ?? 5,
-      ignoreWhitespace: this.session.ignoreWhitespace,
-      comments: this.session.commentsHook(),
-      summary,
-    });
-  }
-
-  private drawChain: Promise<unknown> = Promise.resolve();
-  /** Serialized: `lineEdit` diffs against `shown`, so overlapping draws (a poll
-   * refresh racing an action) would apply edits computed against a stale frame. */
-  redraw(): Promise<void> {
-    const next = this.drawChain.then(() => this.draw());
-    this.drawChain = next.catch(() => undefined);
-    return next;
-  }
-  private async draw() {
-    const summary = await this.session.commentSummary();
-    this.summary = summary;
-    const frame = this.build(summary);
-    if (!frame) return;
-    const gen = this.intraGuard.bump();
+  /** Called by the controller in frame order (its draw chain serializes it),
+   * so `lineEdit` always diffs against what the buffer shows. */
+  async paint(frame: Frame) {
     this.frame = frame;
+    const gen = this.intraGuard.bump();
     // Diff on text plus that row's highlights: extmarks outside the edited
     // span ride along with their unchanged lines, so only the span is repainted.
     const rowKeys = frameRowKeys(frame);
@@ -484,7 +306,6 @@ export class ReviewView {
     }
   }
 
-  private summary: readonly SummaryGroup[] = [];
   /** The window showing the review (-1 when hidden). */
   private async win(): Promise<number> {
     const w = await this.nvim.call("nvim_call_function", [
@@ -493,185 +314,61 @@ export class ReviewView {
     ]);
     return typeof w === "number" ? w : -1;
   }
-  /**
-   * Synchronous lookups the keymaps need before returning (`gleanQuery`).
-   * Must stay free of awaits (git, redraw): nvim is blocked until it replies.
-   */
-  query(q: Query): [number, number] | undefined {
-    const frame = this.frame;
-    if (!frame) return undefined;
-    if (q.kind === "hunk-range") {
-      const r = hunkRange(frame, q.row);
-      return r && [r.lo, r.hi];
-    }
-    const row = navRow(frame, q.row, q.unit, q.forward);
-    if (row === undefined) return undefined;
-    return [row, q.unit === "hunk" ? (hunkRange(frame, row)?.hi ?? row) : row];
+  async setCursor(row: number) {
+    const win = await this.win();
+    if (win > 0)
+      await this.nvim.call("nvim_win_set_cursor", [win, [row + 1, 0]]);
   }
-  /** Expand every collapse hiding `path`'s lines (file, seen section, dirs, markers). */
-  private async revealPath(path: RepoPath) {
-    const snap = this.session.current;
-    if (!snap) return;
-    const shas =
-      this.scope === "combined"
-        ? [undefined]
-        : snap.model.commits
-            .filter((c) => c.files.some((f) => f.path === path))
-            .map((c) => c.sha);
-    this.session.expand(shas.flatMap((s) => revealKeys(this.scope, path, s)));
-    await this.redraw();
-    const markers = (this.frame?.rows ?? []).flatMap((t) =>
-      t.kind === "marker" &&
-      resolveFile(snap.cls, t.file)?.file.path === path &&
-      this.session.collapse.get(keys.marker(t.key)) !== false
-        ? [keys.marker(t.key)]
-        : [],
-    );
-    if (markers.length === 0) return;
-    this.session.expand(markers);
-    await this.redraw();
+  async notify(msg: string, level: NotifyLevel) {
+    const n = level === "error" ? 4 : level === "warn" ? 3 : 2;
+    await this.nvim.call("nvim_notify", [msg, n, {}]);
   }
-  /**
-   * `:Glean jump`: park on the row showing `path`:`lnum`, expanding whatever
-   * hides it. Undefined when the file is not part of the review.
-   */
-  async gotoSource(
-    path: RepoPath,
-    lnum: PostLnum,
-  ): Promise<number | undefined> {
-    const snap = this.session.current;
-    if (!snap) return undefined;
-    const inReview =
-      snap.model.files.some((f) => f.path === path) ||
-      snap.model.commits.some((c) => c.files.some((f) => f.path === path));
-    if (!inReview) return undefined;
-    const isStale = this.staleCheck();
-    await this.revealPath(path);
-    if (isStale()) return undefined;
-    const cls = this.session.current?.cls ?? snap.cls;
-    const row = this.frame && sourceLineRow(cls, this.frame, path, lnum);
-    if (row !== undefined) await this.setCursor(row);
-    return row;
-  }
-  /** `<CR>`: summary rows navigate within the review, diff rows open the source. */
-  private async jump(row: number, col: number) {
-    const isStale = this.staleCheck();
-    const snap = this.session.current;
-    const frame = this.frame;
-    if (!snap || !frame) return;
-    const t = frame.rows[row];
-    if (t?.kind === "summary-file") {
-      const r = fileHeaderRow(snap.cls, frame, t.path);
-      if (r !== undefined) await this.setCursor(r);
-      return;
-    }
-    if (t?.kind === "summary-comment") {
-      const entry = this.summary
-        .find((g) => g.path === t.path)
-        ?.entries.find((e) => e.record.id === t.commentId);
-      // An off-diff comment has no review row: open the file at its line.
-      if (entry?.state === "file" && entry.fileLnum !== undefined) {
-        const win = await this.win();
-        if (isStale()) return;
-        await this.nvim.call("nvim_exec_lua", [
-          `return require("glean.node").open_file_at(...)`,
-          [win, join(this.session.repoRoot, t.path), entry.fileLnum, 0],
-        ]);
-        return;
-      }
-      // A comment hidden by ignore-whitespace has no row in this mode: go back
-      // to exact mode first, as the Lua `reveal_summary_comment` did.
-      if (entry?.hidden && this.session.ignoreWhitespace) {
-        const r = await this.session.setIgnoreWhitespace(false);
-        if (r.kind !== "applied" || isStale()) return;
-        await this.redraw();
-      }
-      await this.revealComment(t.path, t.commentId, isStale);
-      return;
-    }
-    const jt = jumpTarget(snap.cls, t, this.session.range);
-    if (jt)
-      await openJump(
-        this.nvim,
-        this.session.git,
-        await this.win(),
-        jt,
-        col,
-        isStale,
-      );
-  }
-  private async revealComment(
-    path: RepoPath,
-    commentId: number,
-    isStale: () => boolean,
-  ) {
-    const find = () => {
-      const cls = this.session.current?.cls;
-      const rows = this.frame?.rows ?? [];
-      return rows.findIndex(
-        (r) =>
-          r.kind === "comment" &&
-          r.commentId === commentId &&
-          cls !== undefined &&
-          resolveFile(cls, r.file)?.file.path === path,
-      );
-    };
-    let row = find();
-    if (row < 0) {
-      await this.revealPath(path);
-      row = find();
-    }
-    if (row < 0) {
-      const cls = this.session.current?.cls;
-      const header = cls && this.frame && fileHeaderRow(cls, this.frame, path);
-      if (header !== undefined) row = header;
-    }
-    if (row >= 0 && !isStale()) await this.setCursor(row);
-  }
-  private readonly prompts = new Prompts();
   /** The ephemeral split editor lives in Lua (`comment_editor`); its text comes back as `editor-submit`. */
-  private async openEditor(
-    initial: string[],
-    fn: (text: string) => Promise<void>,
-  ) {
-    const token = this.prompts.editor(fn);
+  async editor(initial: string[]) {
+    const { token, result } = this.prompts.editor();
     await this.nvim.call("nvim_exec_lua", [
       `return require("glean.node").comment_editor(...)`,
       [this.bufnr, await this.win(), initial, token],
     ]);
+    return result;
   }
-  private async dropComment(
-    path: RepoPath,
-    before: CommentRecord,
-    row: number,
-  ) {
-    await this.session.perform({
-      kind: "comment",
-      path,
-      change: { op: "delete", before: { ...before } },
-      cursor: row,
-    });
-    await this.redraw();
-  }
-  private async setCursor(row: number) {
-    const win = await this.nvim.call("nvim_call_function", [
-      "bufwinid",
-      [this.bufnr],
+  async pick(items: string[]) {
+    const { token, result } = this.prompts.pick();
+    await this.nvim.call("nvim_exec_lua", [
+      `return require("glean.node").pick_comment(...)`,
+      [this.bufnr, items, token],
     ]);
-    if (typeof win === "number" && win > 0)
-      await this.nvim.call("nvim_win_set_cursor", [win, [row + 1, 0]]);
+    return result;
   }
-  /** After marking, land on the next unseen hunk below the cursor, as Lua does. */
-  private async markAndAdvance(plan: SeenPlan, row: number) {
-    const before = this.frame;
-    const next =
-      plan.op === "mark" && before ? nextUnseenHunk(before, row) : undefined;
-    await this.session.perform({ kind: "seen", plan, cursor: row });
-    await this.redraw();
-    const frame = this.frame;
-    if (!frame || frame.rows.length === 0) return;
-    const dest = next === undefined ? undefined : rowOfHunk(frame, next);
-    await this.setCursor(dest ?? Math.min(row, frame.rows.length - 1));
+  async openJump(target: ResolvedJump, col: number, isStale: IsStale) {
+    await openJump(
+      this.nvim,
+      this.session.git,
+      await this.win(),
+      target,
+      col,
+      isStale,
+    );
+  }
+  async openDiffsplit(
+    ctx: DiffContext,
+    ignoreWhitespace: boolean,
+    isStale: IsStale,
+  ) {
+    await openDiffsplit(
+      this.nvim,
+      this.session.git,
+      await this.win(),
+      ctx,
+      ignoreWhitespace,
+      isStale,
+    );
+  }
+  async openFileAt(path: RepoPath, lnum: number) {
+    await this.nvim.call("nvim_exec_lua", [
+      `return require("glean.node").open_file_at(...)`,
+      [await this.win(), join(this.session.repoRoot, path), lnum, 0],
+    ]);
   }
   private nsCursor = 0 as NsId;
   private nsIndent = 0 as NsId;
@@ -920,258 +617,29 @@ export class ReviewView {
     ]);
     await this.closeSticky();
   }
-  /**
-   * `W`: flip the whitespace projection and put the cursor back on the same
-   * semantic line (rows are not comparable across projections).
-   */
-  private async toggleWhitespace(row: number) {
-    const snap = this.session.current;
-    const anchor = snap && cursorAnchor(snap.cls, this.frame?.rows[row]);
-    const r = await this.session.setIgnoreWhitespace(
-      !this.session.ignoreWhitespace,
-    );
-    if (r.kind !== "applied") return;
-    await this.redraw();
-    const next = this.frame;
-    const cls = this.session.current?.cls;
-    const dest = anchor && next && cls && restoreAnchor(cls, next, anchor);
-    if (dest !== undefined) await this.setCursor(dest);
-  }
   async dispatch(a: Action) {
-    if (a.kind === "visibility") {
-      if (a.visible) await this.resume();
-      else {
-        this.suspend();
-        await this.closeSticky();
-      }
-      return;
-    }
-    if (a.kind === "sticky-close") {
-      await this.decorChain;
-      await this.closeSticky();
-      return;
-    }
-    if (a.kind === "cursor") {
-      await this.decorate();
-      return;
-    }
-    const snap = this.session.current;
-    const frame = this.frame;
-    if (!snap || !frame) return;
     switch (a.kind) {
-      case "toggle-seen": {
-        const t = frame.rows[a.row];
-        const plan = t && planToggleSeen(snap.cls, this.scope, t);
-        if (plan) await this.markAndAdvance(plan, a.row);
-        return;
-      }
-      case "unmark-hunk": {
-        const t = frame.rows[a.row];
-        const plan = t && planUnmarkHunk(snap.cls, this.scope, t);
-        if (!plan) return;
-        await this.session.perform({ kind: "seen", plan, cursor: a.row });
-        await this.redraw();
-        return;
-      }
-      case "unmark-all": {
-        const plan = planUnmarkAll(snap.cls, this.scope);
-        if (!plan) return;
-        await this.session.perform({ kind: "seen", plan });
-        await this.redraw();
-        return;
-      }
-      case "toggle-whitespace":
-        await this.toggleWhitespace(a.row);
-        return;
-      case "visual-mark": {
-        const plan = planVisualMark(
-          snap.cls,
-          this.scope,
-          frame.rows,
-          a.srow,
-          a.erow,
-        );
-        if (plan) await this.markAndAdvance(plan, a.srow);
-        return;
-      }
-      case "toggle-fold": {
-        const t = frame.rows[a.row];
-        const c = t && collapseTarget(snap.cls, this.session.collapse, t);
-        if (!c) return;
-        await this.session.perform({
-          kind: "collapse",
-          key: c.key,
-          value: !c.collapsed,
-          prev: this.session.collapse.get(c.key),
-          cursor: a.row,
-        });
-        await this.redraw();
-        return;
-      }
-      case "toggle-scope": {
-        const anchor = cursorAnchor(snap.cls, frame.rows[a.row]);
-        this.scope = this.scope === "combined" ? "commits" : "combined";
-        if (anchor?.kind === "line")
-          this.session.expand(
-            revealKeys(
-              this.scope,
-              anchor.path,
-              anchor.sha ?? ownerSha(anchor.id),
-            ),
-          );
-        await this.redraw();
-        const next = this.frame;
-        const cls = this.session.current?.cls ?? snap.cls;
-        const row = anchor && next && restoreAnchor(cls, next, anchor);
-        if (row !== undefined) await this.setCursor(row);
-        return;
-      }
-      case "jump":
-        await this.jump(a.row, a.col);
-        return;
-      case "diffsplit": {
-        const isStale = this.staleCheck();
-        const ctx = diffContext(
-          snap.cls,
-          frame.rows[a.row],
-          this.session.range,
-        );
-        if (!ctx) return;
-        await openDiffsplit(
-          this.nvim,
-          this.session.git,
-          await this.win(),
-          ctx,
-          this.session.ignoreWhitespace,
-          isStale,
-        );
-        return;
-      }
-      case "delete-comments": {
-        const removed = summaryCommentsIn(
-          snap.store,
-          frame.rows,
-          a.srow,
-          a.erow,
-        );
-        if (removed.length === 0) return;
-        await this.session.perform({
-          kind: "comments",
-          removed,
-          cursor: Math.min(a.srow, a.erow),
-        });
-        await this.redraw();
-        return;
-      }
-      case "add-comment": {
-        const lo = Math.min(a.srow, a.erow);
-        const ct = commentTarget(
-          snap.cls,
-          this.scope,
-          frame.rows,
-          lo,
-          Math.max(a.srow, a.erow),
-          this.session.worktree,
-        );
-        if (!ct) {
-          await this.nvim.call("nvim_notify", [
-            "glean: cannot comment here",
-            2,
-            {},
-          ]);
-          return;
+      case "visibility":
+        if (a.visible) await this.resume();
+        else {
+          this.suspend();
+          await this.closeSticky();
         }
-        await this.openEditor([], async (text) => {
-          await this.session.perform({
-            kind: "comment",
-            path: ct.path,
-            change: {
-              op: "add",
-              after: {
-                id: (this.session.current?.store ?? snap.store).nextCommentId(),
-                lnum: ct.lnum,
-                content: ct.content,
-                text,
-                reply: undefined,
-                origin: ct.origin,
-              },
-            },
-            cursor: lo,
-          });
-        });
         return;
-      }
-      case "edit-comment": {
-        const c = commentUnder(snap.cls, snap.store, frame.rows[a.row]);
-        if (!c) return;
-        await this.openEditor(c.record.text.split("\n"), async (text) => {
-          if (text === c.record.text) return;
-          await this.session.perform({
-            kind: "comment",
-            path: c.path,
-            change: {
-              op: "edit",
-              before: { ...c.record },
-              after: { ...c.record, text },
-            },
-            cursor: a.row,
-          });
-        });
+      case "sticky-close":
+        await this.decorChain;
+        await this.closeSticky();
         return;
-      }
-      case "delete-comment": {
-        const c = commentUnder(snap.cls, snap.store, frame.rows[a.row]);
-        if (c) await this.dropComment(c.path, c.record, a.row);
+      case "cursor":
+        await this.decorate();
         return;
-      }
-      case "delete-comment-at": {
-        const at = commentsAtLine(
-          snap.cls,
-          frame.rows[a.row],
-          this.session.commentsHook(),
-        );
-        if (!at) return;
-        if (at.records.length === 0) {
-          await this.nvim.call("nvim_notify", [
-            "glean: no comment on this line",
-            2,
-            {},
-          ]);
-          return;
-        }
-        const [only, ...rest] = at.records;
-        if (only && rest.length === 0) {
-          await this.dropComment(at.path, only, a.row);
-          return;
-        }
-        const token = this.prompts.pick(async (i) => {
-          const r = at.records[i];
-          if (r) await this.dropComment(at.path, r, a.row);
-        });
-        await this.nvim.call("nvim_exec_lua", [
-          `return require("glean.node").pick_comment(...)`,
-          [this.bufnr, at.records.map((r) => r.text), token],
-        ]);
-        return;
-      }
+      // Outside any chain: the controller task awaiting this prompt resumes.
       case "editor-submit":
-      case "pick": {
-        if (!(await this.prompts.submit(a))) return;
-        await this.redraw();
+      case "pick":
+        this.prompts.submit(a);
         return;
-      }
-      case "undo":
-      case "redo": {
-        const r = await (a.kind === "undo"
-          ? this.session.undo()
-          : this.session.redo());
-        if (!r) return;
-        await this.redraw();
-        const n = this.frame?.rows.length ?? 0;
-        if (r.cursor !== undefined && n > 0)
-          await this.setCursor(Math.min(r.cursor, n - 1));
-        return;
-      }
+      default:
+        await this.controller.dispatch(a);
     }
   }
 }

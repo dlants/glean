@@ -401,8 +401,11 @@ M.comment_editor = function(target, win, initial, token)
     done = true
     local text = submit and table.concat(api.nvim_buf_get_lines(ebuf, 0, -1, false), "\n") or nil
     if api.nvim_win_is_valid(ewin) then pcall(api.nvim_win_close, ewin, true) end
+    -- A cancelled or blank editor reports back without text, so node drops the prompt.
     if text and text:match("%S") then
       reply(target, { kind = "editor-submit", token = token, text = text })
+    else
+      reply(target, { kind = "editor-submit", token = token })
     end
   end
   api.nvim_create_autocmd("BufWriteCmd", { buffer = ebuf, callback = function() finish(true) end })
@@ -422,7 +425,7 @@ end
 M.pick_comment = function(target, choices, token, prompt)
   vim.schedule(function()
     vim.ui.select(choices, { prompt = prompt or "glean: delete comment" }, function(_, idx)
-      if idx then reply(target, { kind = "pick", token = token, index = idx - 1 }) end
+      reply(target, { kind = "pick", token = token, index = idx and idx - 1 or nil })
     end)
   end)
 end

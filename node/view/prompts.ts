@@ -3,48 +3,51 @@ import type { Brand } from "../core/types.ts";
 export type PromptToken = Brand<number, "PromptToken">;
 
 /**
- * Callbacks awaiting a Lua prompt result (comment editor, picker). Each kind
- * has its own table, so a result of one kind can never run a callback of the
- * other; a token is consumed by its first result.
+ * Pending Lua prompts (comment editor, picker) awaiting their result. Each kind
+ * has its own table, so a result of one kind can never resolve a prompt of the
+ * other; a token is consumed by its first result. A dismissed prompt reports
+ * back without a value and resolves `undefined`.
  */
 export class Prompts {
   private next = 1;
   private readonly editors = new Map<
     PromptToken,
-    (text: string) => Promise<void>
+    (text: string | undefined) => void
   >();
   private readonly picks = new Map<
     PromptToken,
-    (index: number) => Promise<void>
+    (index: number | undefined) => void
   >();
-  editor(fn: (text: string) => Promise<void>): PromptToken {
-    const t = this.next++ as PromptToken;
-    this.editors.set(t, fn);
-    return t;
+  editor(): { token: PromptToken; result: Promise<string | undefined> } {
+    const token = this.next++ as PromptToken;
+    const result = new Promise<string | undefined>((r) =>
+      this.editors.set(token, r),
+    );
+    return { token, result };
   }
-  pick(fn: (index: number) => Promise<void>): PromptToken {
-    const t = this.next++ as PromptToken;
-    this.picks.set(t, fn);
-    return t;
+  pick(): { token: PromptToken; result: Promise<number | undefined> } {
+    const token = this.next++ as PromptToken;
+    const result = new Promise<number | undefined>((r) =>
+      this.picks.set(token, r),
+    );
+    return { token, result };
   }
-  /** Runs the callback for `token`; false when it is unknown or of another kind. */
-  async submit(
+  /** Resolves the prompt for `token`; false when it is unknown or of another kind. */
+  submit(
     r:
-      | { kind: "editor-submit"; token: number; text: string }
-      | { kind: "pick"; token: number; index: number },
-  ): Promise<boolean> {
+      | { kind: "editor-submit"; token: number; text: string | undefined }
+      | { kind: "pick"; token: number; index: number | undefined },
+  ): boolean {
     const token = r.token as PromptToken;
     if (r.kind === "editor-submit") {
       const fn = this.editors.get(token);
       this.editors.delete(token);
-      if (!fn) return false;
-      await fn(r.text);
-    } else {
-      const fn = this.picks.get(token);
-      this.picks.delete(token);
-      if (!fn) return false;
-      await fn(r.index);
+      fn?.(r.text);
+      return fn !== undefined;
     }
-    return true;
+    const fn = this.picks.get(token);
+    this.picks.delete(token);
+    fn?.(r.index);
+    return fn !== undefined;
   }
 }

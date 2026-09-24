@@ -33,8 +33,8 @@ export type OverlayEvent =
   | { kind: "add"; buf: number; line1: number; line2: number }
   | { kind: "jump"; buf: number; lnum: number; dir: 1 | -1 }
   | { kind: "quickfix"; buf: number }
-  | { kind: "editor-submit"; token: number; text: string }
-  | { kind: "pick"; token: number; index: number };
+  | { kind: "editor-submit"; token: number; text: string | undefined }
+  | { kind: "pick"; token: number; index: number | undefined };
 
 export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
   if (typeof v !== "object" || v === null) return undefined;
@@ -44,16 +44,18 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
   switch (o.kind) {
     case "editor-submit": {
       const token = num("token");
-      return token !== undefined && typeof o.text === "string"
-        ? { kind: o.kind, token, text: o.text }
-        : undefined;
+      return token === undefined
+        ? undefined
+        : {
+            kind: o.kind,
+            token,
+            text: typeof o.text === "string" ? o.text : undefined,
+          };
     }
     case "pick": {
       const token = num("token");
       const index = num("index");
-      return token !== undefined && index !== undefined
-        ? { kind: o.kind, token, index }
-        : undefined;
+      return token === undefined ? undefined : { kind: o.kind, token, index };
     }
   }
   if (buf === undefined) return undefined;
@@ -212,7 +214,7 @@ return out`,
         return this.quickfix(ev.buf);
       case "editor-submit":
       case "pick":
-        await this.prompts.submit(ev);
+        this.prompts.submit(ev);
         return;
     }
   }
@@ -322,7 +324,11 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     initial: string[],
     fn: (text: string) => Promise<void>,
   ) {
-    const token = this.prompts.editor(fn);
+    const { token, result } = this.prompts.editor();
+    // The answer arrives as its own event; act on it in the chain after it.
+    void result.then((t) =>
+      t === undefined ? undefined : this.enqueue(() => fn(t)),
+    );
     await this.nvim.call("nvim_exec_lua", [
       `return require("glean.node").comment_editor("overlay", 0, ...)`,
       [initial, token],
@@ -463,9 +469,10 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
       this.act(buf, r.t.path, lnum, kind, record);
     const [only, ...rest] = records;
     if (only && rest.length === 0) return act(only);
-    const token = this.prompts.pick(async (i) => {
-      const rec = records[i];
-      if (rec) await act(rec);
+    const { token, result } = this.prompts.pick();
+    void result.then((i) => {
+      const rec = i === undefined ? undefined : records[i];
+      return rec && this.enqueue(() => act(rec));
     });
     await this.nvim.call("nvim_exec_lua", [
       `return require("glean.node").pick_comment("overlay", ...)`,

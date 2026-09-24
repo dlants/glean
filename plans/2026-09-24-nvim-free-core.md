@@ -151,6 +151,13 @@ Test helper (node-only): `node/test/ui.ts` with recorder implementations of each
   - `resolveJump` (`node/view/jump.test.ts`): live when the target is HEAD or the committed line maps through the worktree to identical text, scratch otherwise.
   - Then slim `view.driver.test.ts` / `glean.driver.test.ts` to: keymaps reach the controller (one smoke per key family), buffer paint incl. intraline extmarks, hunk indent timer, sticky float, suspend/resume, responsiveness under a huge hunk.
 
+- Status: done.
+  - `node/view/review.ts`: `ReviewController` + `ReviewUi` (also owns `Action`/`Query`/parsers, re-exported from `view.ts`); `ReviewView` is the adapter and exposes `controller`.
+  - Deviations: `ReviewUi` gained `worktreeLine: LineReader` (so `resolveJump` still prefers unsaved buffer text; the recorder uses disk) and `openJump`/`openDiffsplit` take the `isStale` check (the adapter's scratch loading is async and must drop superseded windows). `ResolvedJump` is `{ kind: "live" | "scratch"; path; lnum; rev }` (`rev` is the fallback when the live file fails to open). Diffsplit resolution (live right side) stays in the adapter's `openDiffsplit`. The controller has a `live` flag the adapter clears while hidden so model changes skip repaints.
+  - `Prompts` is promise-based; the Lua editor/picker now reply without a value when dismissed (resolves `undefined`, no leak). The overlay uses it too, running the answer's continuation via its own `enqueue`.
+  - Not covered in node: `<CR>` on an off-diff comment (`openFileAt`) and the ignore-whitespace-hidden summary comment (still in `glean.driver.test.ts`).
+  - Driver tests removed: view "m lands on next unseen hunk", "toggle-scope expands a collapsed destination"; glean "W round-trips", "<CR> on a summary comment reveals a seen file", ":Glean jump reveals a line of a collapsed seen file", "visual c / dc / visual d".
+
 ## Overlay
 
 - Goal: `Overlay` takes `OverlayUi`; nvim adapter `node/overlay/nvimOverlayUi.ts`; `recordOverlayUi`.

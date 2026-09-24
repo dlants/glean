@@ -431,7 +431,7 @@ require("glean.node").show_buffer(buf)`,
     target: spec.target,
     title,
     scope: () => current?.view.scope ?? "combined",
-    frame: () => current?.view.frame,
+    frame: () => current?.view.controller.frame,
   };
   reviews.push(review);
   current = { key, bufnr, view, review, sessionOpts, viewOpts };

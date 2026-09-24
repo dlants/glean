@@ -38,28 +38,34 @@ async function liveLnum(
   return mapLnum(file.hunks, lnum);
 }
 
-/** Line `lnum` of the work-tree file, preferring a loaded buffer's unsaved text. */
-async function worktreeLine(
-  nvim: Nvim,
+/** Reads line `lnum` (1-based) of the work-tree file at `abs`. */
+export type LineReader = (
   abs: string,
   lnum: number,
-): Promise<string | undefined> {
-  const fromBuf = await nvim.call("nvim_exec_lua", [
-    `local abs, lnum = ...
-local b = vim.fn.bufnr(abs)
-if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
-  return { vim.api.nvim_buf_get_lines(b, lnum - 1, lnum, false)[1] or vim.NIL }
-end
-return vim.NIL`,
-    [abs, lnum],
-  ]);
-  if (Array.isArray(fromBuf))
-    return typeof fromBuf[0] === "string" ? fromBuf[0] : undefined;
+) => Promise<string | undefined>;
+export const diskLine: LineReader = async (abs, lnum) => {
   try {
     return splitLines(await readFile(abs, "utf8"))[lnum - 1];
   } catch {
     return undefined;
   }
+};
+/** `diskLine`, preferring a loaded buffer's unsaved text. */
+export function bufferLine(nvim: Nvim): LineReader {
+  return async (abs, lnum) => {
+    const fromBuf = await nvim.call("nvim_exec_lua", [
+      `local abs, lnum = ...
+local b = vim.fn.bufnr(abs)
+if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+  return { vim.api.nvim_buf_get_lines(b, lnum - 1, lnum, false)[1] or vim.NIL }
+end
+return vim.NIL`,
+      [abs, lnum],
+    ]);
+    if (Array.isArray(fromBuf))
+      return typeof fromBuf[0] === "string" ? fromBuf[0] : undefined;
+    return diskLine(abs, lnum);
+  };
 }
 
 async function fileLines(git: Git, rev: string, path: RepoPath) {
@@ -123,22 +129,26 @@ async function scratchBuf(
 }
 
 /**
- * Open the source line in `win`: the live file when the ref is the work tree or
- * HEAD, or when a committed line survives verbatim in the work tree; otherwise
- * a read-only `git show` buffer named by the full sha (reused on reopen).
+ * Which version of the file a jump opens: the live file when the ref is the
+ * work tree or HEAD, or when a committed line survives verbatim in the work
+ * tree; otherwise `rev`'s blob. `rev` is also the fallback when the live file
+ * cannot be opened.
  */
-export async function openJump(
-  nvim: Nvim,
+export type ResolvedJump = {
+  kind: "live" | "scratch";
+  path: RepoPath;
+  lnum: number;
+  rev: string;
+};
+export async function resolveJump(
   git: Git,
-  win: number,
   jt: JumpTarget,
-  col: number,
-  isStale: IsStale,
-): Promise<void> {
-  const abs = join(git.repoRoot, jt.path);
-  let lnum: number = jt.lnum;
-  let live = jt.kind === "post" && (await isHead(git, jt.ref));
-  if (!live && jt.kind === "post" && jt.ref.kind === "rev") {
+  readLine: LineReader = diskLine,
+): Promise<ResolvedJump> {
+  const rev = jt.ref.kind === "rev" ? jt.ref.rev : "HEAD";
+  if (jt.kind === "post" && (await isHead(git, jt.ref)))
+    return { kind: "live", path: jt.path, lnum: jt.lnum, rev };
+  if (jt.kind === "post" && jt.ref.kind === "rev") {
     const sha = await git.revParse(jt.ref.rev);
     const mapped =
       sha.kind === "ok"
@@ -146,32 +156,42 @@ export async function openJump(
         : undefined;
     if (
       mapped !== undefined &&
-      (await worktreeLine(nvim, abs, mapped)) === jt.text
-    ) {
-      lnum = mapped;
-      live = true;
-    }
+      (await readLine(join(git.repoRoot, jt.path), mapped)) === jt.text
+    )
+      return { kind: "live", path: jt.path, lnum: mapped, rev };
   }
+  return { kind: "scratch", path: jt.path, lnum: jt.lnum, rev };
+}
+
+/** Open a resolved jump in `win`; a live file that fails to open falls back to a
+ * read-only `git show` buffer named by the full sha (reused on reopen). */
+export async function openJump(
+  nvim: Nvim,
+  git: Git,
+  win: number,
+  rj: ResolvedJump,
+  col: number,
+  isStale: IsStale,
+): Promise<void> {
   if (isStale()) return;
-  if (live) {
+  if (rj.kind === "live") {
     const ok = await nvim.call("nvim_exec_lua", [
       `return require("glean.node").open_file_at(...)`,
-      [win, abs, lnum, col],
+      [win, join(git.repoRoot, rj.path), rj.lnum, col],
     ]);
     if (ok === true) return;
   }
-  const rev = jt.ref.kind === "rev" ? jt.ref.rev : "HEAD";
-  const name = `glean://${git.repoRoot}/.git//${await fullSha(git, rev)}/${jt.path}`;
-  const buf = await scratchBuf(nvim, git, rev, {
+  const name = `glean://${git.repoRoot}/.git//${await fullSha(git, rj.rev)}/${rj.path}`;
+  const buf = await scratchBuf(nvim, git, rj.rev, {
     name,
-    path: jt.path,
+    path: rj.path,
     bufhidden: "hide",
     reuse: true,
   });
   if (isStale()) return;
   await nvim.call("nvim_exec_lua", [
     `return require("glean.node").open_scratch_at(...)`,
-    [win, buf, lnum, col],
+    [win, buf, rj.lnum, col],
   ]);
 }
 
