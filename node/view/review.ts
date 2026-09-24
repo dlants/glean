@@ -51,7 +51,6 @@ import {
   type ResolvedJump,
   resolveJump,
 } from "./jump.ts";
-import { type PromptResult, toPromptToken } from "./prompts.ts";
 
 /** Everything the Lua keymaps can send. Rows are 0-based. */
 export type Action =
@@ -67,7 +66,6 @@ export type Action =
   | { kind: "delete-comment"; row: number }
   | { kind: "delete-comment-at"; row: number }
   /** A comment editor / picker opened by node returned (no value: dismissed). */
-  | PromptResult
   | { kind: "undo" }
   | { kind: "redo" }
   | { kind: "unmark-hunk"; row: number }
@@ -113,22 +111,6 @@ export function parseAction(v: unknown): Action | undefined {
       return row === undefined || col === undefined
         ? undefined
         : { kind: "jump", row, col };
-    }
-    case "editor-submit": {
-      const token = num("token");
-      return token === undefined
-        ? undefined
-        : {
-            kind: "editor-submit",
-            token: toPromptToken(token),
-            text: typeof o.text === "string" ? o.text : undefined,
-          };
-    }
-    case "pick": {
-      const token = num("token");
-      return token === undefined
-        ? undefined
-        : { kind: "pick", token: toPromptToken(token), index: num("index") };
     }
     case "reset":
       return { kind: "reset", row: num("row") };
@@ -278,7 +260,7 @@ export class ReviewController {
   }
 
   /**
-   * Synchronous lookups the keymaps need before returning (`gleanQuery`).
+   * Synchronous lookups the keymaps need before returning (`gleanReviewQuery`).
    * Must stay free of awaits (git, redraw): nvim is blocked until it replies.
    */
   query(q: Query): [number, number] | undefined {

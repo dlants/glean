@@ -37,7 +37,7 @@ import {
   openJump,
   type ResolvedJump,
 } from "./jump.ts";
-import { Prompts } from "./prompts.ts";
+import type { Prompts } from "./prompts.ts";
 import {
   type Action,
   type NotifyLevel,
@@ -124,7 +124,6 @@ export class ReviewView implements ReviewUi {
   private readonly refineCache = new RefineCache();
   /** Resolves when the latest frame's intra-line refinement finishes or goes stale. */
   intraDone: Promise<unknown> = Promise.resolve();
-  private readonly prompts = new Prompts();
   readonly worktreeLine;
 
   constructor(
@@ -132,6 +131,7 @@ export class ReviewView implements ReviewUi {
     readonly bufnr: number,
     readonly session: Session,
     private readonly opts: ViewOpts = {},
+    private readonly prompts: Prompts,
   ) {
     this.worktreeLine = bufferLine(nvim);
     this.controller = new ReviewController(session, this, opts, (e) =>
@@ -333,16 +333,16 @@ export class ReviewView implements ReviewUi {
   async editor(initial: string[]) {
     const { token, result } = this.prompts.editor();
     await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node").comment_editor(...)`,
-      [this.bufnr, await this.win(), initial, token],
+      `return require("glean.comments").comment_editor(...)`,
+      [await this.win(), initial, token],
     ]);
     return result;
   }
   async pick(items: string[]) {
     const { token, result } = this.prompts.pick();
     await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node").pick_comment(...)`,
-      [this.bufnr, items, token],
+      `return require("glean.comments").pick_comment(...)`,
+      [items, token],
     ]);
     return result;
   }
@@ -372,7 +372,7 @@ export class ReviewView implements ReviewUi {
   }
   async openFileAt(path: RepoPath, lnum: WorktreeLnum) {
     await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node").open_file_at(...)`,
+      `return require("glean.review-buffer").open_file_at(...)`,
       [await this.win(), join(this.session.repoRoot, path), lnum, 0],
     ]);
   }
@@ -415,7 +415,7 @@ export class ReviewView implements ReviewUi {
     if (this.suspended) return;
     const info = parseCursorInfo(
       await this.nvim.call("nvim_exec_lua", [
-        `return require("glean.node").cursor_info(...)`,
+        `return require("glean.review-buffer").cursor_info(...)`,
         [this.bufnr],
       ]),
     );
@@ -640,10 +640,6 @@ export class ReviewView implements ReviewUi {
         await this.decorate();
         return;
       // Outside any chain: the controller task awaiting this prompt resumes.
-      case "editor-submit":
-      case "pick":
-        this.prompts.submit(a);
-        return;
       default:
         await this.controller.dispatch(a);
     }

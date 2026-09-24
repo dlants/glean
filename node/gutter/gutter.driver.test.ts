@@ -190,13 +190,13 @@ describe("file-buffer gutter (driver)", () => {
       await openFile(
         nvim,
         `vim.g.calls = {}
-require("glean.node_gutter").setup({ suppress = {
+require("glean.gutter").setup({ suppress = {
   detach = function(b) local c = vim.g.calls; c[#c + 1] = "detach"; vim.g.calls = c end,
   attach = function(b) local c = vim.g.calls; c[#c + 1] = "attach"; vim.g.calls = c end,
 } })`,
       );
       expect(await luaEval<string[]>(nvim, "vim.g.calls")).toContain("detach");
-      await luaEval(nvim, `vim.fn.jobstop(require("glean.node").job_id)`);
+      await luaEval(nvim, `vim.fn.jobstop(require("glean.rpc-bridge").job_id)`);
       await pollUntil(async () =>
         (await luaEval<string[]>(nvim, "vim.g.calls")).at(-1) === "attach"
           ? true

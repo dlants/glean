@@ -2,7 +2,7 @@
  * The gutter in ordinary file buffers, driven by Lua events. Node owns the
  * projection, painting, marking and the mark undo stacks; Lua only forwards
  * events and hosts the foreign sign provider detach/reattach
- * (`glean.node_gutter`). Events are handled one at a time, in order. All nvim
+ * (`glean.gutter`). Events are handled one at a time, in order. All nvim
  * access goes through the `GutterUi` port (`nvimGutterUi.ts`).
  */
 import { readFile } from "node:fs/promises";

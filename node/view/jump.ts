@@ -104,7 +104,7 @@ async function scratchBuf(
   spec: ScratchSpec,
 ): Promise<number> {
   const made = (await nvim.call("nvim_exec_lua", [
-    `return require("glean.node").scratch_buf(...)`,
+    `return require("glean.review-buffer").scratch_buf(...)`,
     [spec],
   ])) as { buf: number; created: boolean };
   if (!made.created) return made.buf;
@@ -195,7 +195,7 @@ export async function openJump(
   if (rj.kind === "scratch") blob = rj;
   else {
     const ok = await nvim.call("nvim_exec_lua", [
-      `return require("glean.node").open_file_at(...)`,
+      `return require("glean.review-buffer").open_file_at(...)`,
       [win, join(git.repoRoot, rj.path), rj.lnum, col],
     ]);
     if (ok === true) return;
@@ -210,7 +210,7 @@ export async function openJump(
   });
   if (isStale()) return;
   await nvim.call("nvim_exec_lua", [
-    `return require("glean.node").open_scratch_at(...)`,
+    `return require("glean.review-buffer").open_scratch_at(...)`,
     [win, buf, blob.lnum, col],
   ]);
 }
@@ -260,7 +260,7 @@ export async function openDiffsplit(
   }
   // nvim boundary: absent line numbers travel as nil.
   await nvim.call("nvim_exec_lua", [
-    `return require("glean.node").diffsplit(...)`,
+    `return require("glean.review-buffer").diffsplit(...)`,
     [
       win,
       right,

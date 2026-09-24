@@ -66,7 +66,7 @@ export class NvimGutterUi implements GutterUi {
     const args = bufs === undefined ? [null, withSeq] : [bufs, withSeq];
     return parseInfos(
       await this.nvim.call("nvim_exec_lua", [
-        `return require("glean.node_gutter").info(...)`,
+        `return require("glean.gutter").info(...)`,
         args,
       ]),
     );
@@ -86,7 +86,7 @@ export class NvimGutterUi implements GutterUi {
       if (p.member)
         calls.push([
           "nvim_exec_lua",
-          [`require("glean.node_gutter").${p.member}(...)`, [p.buf]],
+          [`require("glean.gutter").${p.member}(...)`, [p.buf]],
         ]);
       calls.push(["nvim_buf_clear_namespace", [p.buf, this.ns, 0, -1]]);
       const st = p.state;

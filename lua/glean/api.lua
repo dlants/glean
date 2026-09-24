@@ -9,16 +9,9 @@ local function arg(v)
 end
 
 local function call(name, ...)
-  local chan = require("glean.node").channel_id
-  if not chan then
-    error("glean: the backend is not running", 0)
-  end
   local args = {}
   for i = 1, select("#", ...) do args[i] = arg(select(i, ...)) end
-  local ok, res = pcall(vim.rpcrequest, chan, "gleanApi", name, args)
-  if not ok then error(tostring(res), 0) end
-  if res == vim.NIL then return nil end
-  return res
+  return require("glean.rpc-bridge").request("gleanApi", name, args)
 end
 
 function M.sessions() return call("sessions") end

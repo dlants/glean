@@ -97,7 +97,7 @@ beforeAll(async () => {
   shared = await startNvim();
   await luaEval(
     shared.nvim,
-    `(function() vim.o.autoread = true; vim.o.hidden = true; require("glean.node_overlay").setup() end)()`,
+    `(function() vim.o.autoread = true; vim.o.hidden = true; require("glean.overlay").setup() end)()`,
   );
   await startBackend(shared.nvim);
 });

@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOverlayEvent } from "../overlay/overlay.ts";
-import { Prompts, toPromptToken } from "./prompts.ts";
-import { parseAction } from "./review.ts";
+import { Prompts, parsePromptResult, toPromptToken } from "./prompts.ts";
 
 describe("Prompts", () => {
   it("resolves a prompt once, only for a result of its own kind", async () => {
@@ -32,30 +30,34 @@ describe("Prompts", () => {
     expect(await e.result).toBeUndefined();
   });
 });
-describe("prompt action parsing", () => {
+describe("parsePromptResult", () => {
   it("maps a missing or mistyped text/index to undefined but needs a token", () => {
-    expect(parseAction({ kind: "editor-submit", token: 1 })).toEqual({
+    expect(parsePromptResult({ kind: "editor-submit", token: 1 })).toEqual({
       kind: "editor-submit",
       token: 1,
       text: undefined,
     });
-    expect(parseAction({ kind: "editor-submit", token: 1, text: 3 })).toEqual({
+    expect(
+      parsePromptResult({ kind: "editor-submit", token: 1, text: 3 }),
+    ).toEqual({
       kind: "editor-submit",
       token: 1,
       text: undefined,
     });
-    expect(parseAction({ kind: "pick", token: 2, index: "x" })).toEqual({
+    expect(parsePromptResult({ kind: "pick", token: 2, index: "x" })).toEqual({
       kind: "pick",
       token: 2,
       index: undefined,
     });
-    expect(parseAction({ kind: "editor-submit", text: "hi" })).toBeUndefined();
-    expect(parseAction({ kind: "pick", index: 1 })).toBeUndefined();
-    expect(parseOverlayEvent({ kind: "pick", token: 2 })).toEqual({
+    expect(
+      parsePromptResult({ kind: "editor-submit", text: "hi" }),
+    ).toBeUndefined();
+    expect(parsePromptResult({ kind: "pick", index: 1 })).toBeUndefined();
+    expect(parsePromptResult({ kind: "pick", token: 2 })).toEqual({
       kind: "pick",
       token: 2,
       index: undefined,
     });
-    expect(parseOverlayEvent({ kind: "editor-submit" })).toBeUndefined();
+    expect(parsePromptResult({ kind: "editor-submit" })).toBeUndefined();
   });
 });

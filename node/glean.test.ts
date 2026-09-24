@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseListEvent, storePaths } from "./app.ts";
-import { parseCommand } from "./glean.ts";
+import { parseCommand } from "./command.ts";
 
 describe("parseCommand", () => {
   it("recognizes ping and rejects non-string args", () => {

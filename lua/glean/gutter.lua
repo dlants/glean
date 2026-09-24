@@ -8,8 +8,8 @@ local M = {}
 M.config = { suppress = "auto", keymaps = true, toggle_key = "gt", focus = true }
 
 local function notify(ev)
-  local node = require("glean.node")
-  return node.safe_rpcnotify(node.channel_id, "gleanGutter", ev)
+  local node = require("glean.rpc-bridge")
+  return node.notify("gleanGutter", ev)
 end
 
 -- ── Foreign sign provider suppression ──────────────────────────────────────
@@ -66,8 +66,8 @@ local function maps(buf)
     { "n", "]c", function() notify({ kind = "goto-hunk", buf = buf, row = row(), dir = 1 }) end, "glean: next hunk" },
     { "n", "[c", function() notify({ kind = "goto-hunk", buf = buf, row = row(), dir = -1 }) end, "glean: previous hunk" },
     { "n", "gj", "<Cmd>Glean jump<CR>", "glean: jump to the review" },
-    { "n", "gm", "<Cmd>set operatorfunc=v:lua.require'glean.node_gutter'.op<CR>g@", "glean: toggle mark over a motion" },
-    { "n", "gmm", "<Cmd>set operatorfunc=v:lua.require'glean.node_gutter'.op<CR>g@_", "glean: toggle mark on this line" },
+    { "n", "gm", "<Cmd>set operatorfunc=v:lua.require'glean.gutter'.op<CR>g@", "glean: toggle mark over a motion" },
+    { "n", "gmm", "<Cmd>set operatorfunc=v:lua.require'glean.gutter'.op<CR>g@_", "glean: toggle mark on this line" },
     { "n", "gmc", function() notify({ kind = "toggle-mark", buf = buf, line1 = row() }) end, "glean: toggle mark on this hunk" },
     { "x", "gm", function()
       local a, b = vim.fn.line("v"), vim.fn.line(".")

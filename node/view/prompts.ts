@@ -6,9 +6,29 @@ export type PromptResult =
   | { kind: "pick"; token: PromptToken; index: number | undefined };
 /** Brands a token read off the wire (the action parsers are the only boundary). */
 export const toPromptToken = (n: number) => n as PromptToken;
+export function parsePromptResult(v: unknown): PromptResult | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
+  const token = num("token");
+  if (token === undefined) return undefined;
+  switch (o.kind) {
+    case "editor-submit":
+      return {
+        kind: "editor-submit",
+        token: toPromptToken(token),
+        text: typeof o.text === "string" ? o.text : undefined,
+      };
+    case "pick":
+      return { kind: "pick", token: toPromptToken(token), index: num("index") };
+  }
+  return undefined;
+}
 
 /**
- * Pending Lua prompts (comment editor, picker) awaiting their result. Each kind
+ * Pending Lua prompts (comment editor, picker) awaiting their result, shared by
+ * the review buffers and the overlay so every result arrives on `gleanPrompt`.
+ * Each kind
  * has its own table, so a result of one kind can never resolve a prompt of the
  * other; a token is consumed by its first result. A dismissed prompt reports
  * back without a value and resolves `undefined`.

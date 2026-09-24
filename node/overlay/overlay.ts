@@ -1,6 +1,6 @@
 /**
  * The comment overlay in ordinary file buffers (port of `overlay.lua`), driven
- * by `gleanOverlay` notifies from `lua/glean/node_overlay.lua`. Records live in
+ * by `gleanOverlay` notifies from `lua/glean/overlay.lua`. Records live in
  * the repo's store (shared with repo-mode api calls and any live review), which
  * is re-read per event. Comment changes ride the file buffer's glean undo
  * stack held by the gutter, so `u`/`<C-r>` spend marks and comments alike.
@@ -20,7 +20,6 @@ import {
 import type { Git } from "../git/git.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
 import { splitLines } from "../session/model.ts";
-import { type PromptResult, toPromptToken } from "../view/prompts.ts";
 import type { NotifyLevel } from "../view/review.ts";
 import {
   type BodyLine,
@@ -44,33 +43,12 @@ export type OverlayEvent =
     }
   | { kind: "add"; buf: BufNr; line1: WorktreeLnum; line2: WorktreeLnum }
   | { kind: "jump"; buf: BufNr; lnum: number; dir: 1 | -1 }
-  | { kind: "quickfix"; buf: BufNr }
-  | PromptResult;
-
+  | { kind: "quickfix"; buf: BufNr };
 export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
   const buf = num("buf") as BufNr | undefined;
-  switch (o.kind) {
-    case "editor-submit": {
-      const token = num("token");
-      return token === undefined
-        ? undefined
-        : {
-            kind: o.kind,
-            token: toPromptToken(token),
-            text: typeof o.text === "string" ? o.text : undefined,
-          };
-    }
-    case "pick": {
-      const token = num("token");
-      const index = num("index");
-      return token === undefined
-        ? undefined
-        : { kind: o.kind, token: toPromptToken(token), index };
-    }
-  }
   if (buf === undefined) return undefined;
   switch (o.kind) {
     case "refresh":
@@ -191,7 +169,7 @@ export class Overlay {
     return this.chain;
   }
 
-  handle(ev: Exclude<OverlayEvent, PromptResult>): Promise<void> {
+  handle(ev: OverlayEvent): Promise<void> {
     return this.enqueue(() => this.run(ev));
   }
 
@@ -208,7 +186,7 @@ export class Overlay {
     });
   }
 
-  private async run(ev: Exclude<OverlayEvent, PromptResult>): Promise<void> {
+  private async run(ev: OverlayEvent): Promise<void> {
     switch (ev.kind) {
       case "refresh":
         return this.refresh(ev.buf);

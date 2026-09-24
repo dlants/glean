@@ -25,7 +25,7 @@ describe("node bridge", () => {
       await startBackend(nvim);
       const pid = await luaEval<number>(
         nvim,
-        `vim.fn.jobpid(require("glean.node").job_id)`,
+        `vim.fn.jobpid(require("glean.rpc-bridge").job_id)`,
       );
       process.kill(pid, "SIGKILL");
       await pollUntil(async () =>
@@ -39,7 +39,7 @@ describe("node bridge", () => {
       expect(
         await luaEval<boolean>(
           nvim,
-          `require("glean.node").safe_rpcnotify(999, "gleanCommand", {})`,
+          `require("glean.rpc-bridge").notify("gleanCommand", {})`,
         ),
       ).toBe(false);
     });

@@ -1,23 +1,20 @@
 /** The nvim adapter for the comment overlay's `OverlayUi` port. */
 import type { BufNr, WorktreeLnum } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
-import { type PromptResult, Prompts } from "../view/prompts.ts";
+import type { Prompts } from "../view/prompts.ts";
 import type { NotifyLevel } from "../view/review.ts";
 import { MAX_BATCH_CALLS } from "../view/view.ts";
 import type { BufFacts, OverlayUi } from "./overlay.ts";
 
 export class NvimOverlayUi implements OverlayUi {
   private ns = 0;
-  private readonly prompts = new Prompts();
-  constructor(private readonly nvim: Nvim) {}
+  constructor(
+    private readonly nvim: Nvim,
+    private readonly prompts: Prompts,
+  ) {}
 
   async init() {
     this.ns = await this.nvim.call("nvim_create_namespace", ["glean_overlay"]);
-  }
-
-  /** Editor/picker answers arrive as their own events, outside the overlay's chain. */
-  submit(r: PromptResult) {
-    this.prompts.submit(r);
   }
 
   logError(err: unknown) {
@@ -89,7 +86,7 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
 
   async activateUndo(buf: BufNr) {
     await this.nvim.call("nvim_exec_lua", [
-      `require("glean.node_gutter").activate_undo(..., "overlay")`,
+      `require("glean.gutter").activate_undo(..., "overlay")`,
       [buf],
     ]);
   }
@@ -105,7 +102,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
 
   async float(lines: Parameters<OverlayUi["float"]>[0]) {
     await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node_overlay").float(...)`,
+      `return require("glean.overlay").float(...)`,
       [lines.map((l) => l.text), lines.map((l) => l.hl)],
     ]);
   }
@@ -126,7 +123,7 @@ vim.cmd("copen")`,
   async editor(initial: string[]) {
     const { token, result } = this.prompts.editor();
     await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node").comment_editor("overlay", 0, ...)`,
+      `return require("glean.comments").comment_editor(0, ...)`,
       [initial, token],
     ]);
     return result;
@@ -135,7 +132,7 @@ vim.cmd("copen")`,
   async pick(items: string[], title: string) {
     const { token, result } = this.prompts.pick();
     await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node").pick_comment("overlay", ...)`,
+      `return require("glean.comments").pick_comment(...)`,
       [items, token, title],
     ]);
     return result;

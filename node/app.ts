@@ -193,6 +193,8 @@ type Current = {
   sessionOpts: SessionOpts;
   viewOpts: ViewOpts;
   pollMs: number;
+  /** Detaches the live session's model listener; set by `startView`. */
+  unsubscribe: () => void;
 };
 type LogState = {
   kind: "log";
@@ -215,8 +217,10 @@ export class App {
   private current: Current | undefined;
   readonly reviews: LiveReview[] = [];
   private nextReviewId = 1;
-  /** The live review the file-buffer gutter follows. */
-  liveSession: Session | undefined;
+  /** The session the file-buffer gutter follows. */
+  get liveSession(): Session | undefined {
+    return this.current?.view.session;
+  }
   private readonly lists = new Map<number, LogState | PrsState>();
   /** The list buffer per (kind, repo root): reopening reuses it. */
   private readonly listBuffers = new Map<string, number>();
@@ -316,9 +320,8 @@ export class App {
     if (!slot) return;
     this.current = undefined;
     this.reviews.length = 0;
-    slot.view.session.stop();
+    this.stopView(slot);
     await slot.view.detach();
-    if (this.liveSession === slot.view.session) this.liveSession = undefined;
     this.deps.onModel({ gutter: true, overlay: false });
     if (!opts.keepBuf) await this.ui.wipeBuffer(slot.bufnr);
   }
@@ -390,8 +393,15 @@ export class App {
       sessionOpts,
       viewOpts,
       pollMs: ctx.pollMs,
+      unsubscribe: () => {},
     };
     await this.startView(this.current);
+  }
+
+  /** Stop a slot's session so it can no longer drive the followers. */
+  private stopView(slot: Current) {
+    slot.unsubscribe();
+    slot.view.session.stop();
   }
 
   /** Wire a slot's session and view up and paint the first model. */
@@ -400,12 +410,8 @@ export class App {
     const session = view.session;
     await view.init();
     review.session = session;
-    this.liveSession = session;
-    session.subscribe(() =>
-      this.deps.onModel({
-        gutter: this.liveSession === session,
-        overlay: true,
-      }),
+    slot.unsubscribe = session.subscribe(() =>
+      this.deps.onModel({ gutter: true, overlay: true }),
     );
     await session.refresh();
     session.startLive(slot.pollMs);
@@ -419,7 +425,7 @@ export class App {
   private async reset(bufnr: number, row: number | undefined) {
     const slot = this.current;
     if (!slot || slot.bufnr !== bufnr) return;
-    slot.view.session.stop();
+    this.stopView(slot);
     await slot.view.detach();
     await this.ui.blankBuffer(bufnr);
     const view = this.ui.review(

@@ -85,12 +85,15 @@ algebra; `plans/2026-08-28-reviewed-baseline.md` holds the original reasoning an
 
 - `lua/glean/` — the thin side.
   - `init.lua`: `setup` (config into `vim.g.glean_*`, highlights, starts node).
-  - `node.lua`: `start` (bundle `dist/glean.mjs`, or source with `GLEAN_DEV=1`), `bridge`/`teardown_bridge`, `safe_rpcnotify`, `:Glean`, and the review buffer keymaps.
-  - `node_gutter.lua`: file-buffer autocmds/maps, buffer info queries, gitsigns detach/attach.
+  - `rpc-bridge.lua`: `start` (bundle `dist/glean.mjs`, or source with `GLEAN_DEV=1`), `bridge`/`teardown_bridge`, `:Glean`, and `notify`/`request`, the single pathway to node.
+  - `review-buffer.lua`: review buffer keymaps/autocmds and the jump/diffsplit/cursor helpers node drives.
+  - `list-buffer.lua`: log/PR list buffer. `comments.lua`: comment editor and picker. `buffer-util.lua`: shared listed-buffer helpers.
+  - `gutter.lua`: file-buffer autocmds/maps, buffer info queries, gitsigns detach/attach.
   - `api.lua`: the agent api shim (one `rpcrequest` per call), documented by `skills/glean-review/skill.md`.
-  - `node_overlay.lua`: file-buffer comment overlay autocmds, `<Plug>(glean-comment*)` maps, float helper.
+  - `overlay.lua`: file-buffer comment overlay autocmds, `<Plug>(glean-comment*)` maps, float helper.
 - `node/` — the backend.
-  - `index.ts`/`glean.ts`: attach, RPC registration and command/action/gutter/api dispatch, `nvimAppUi` adapter.
+  - `index.ts`/`glean.ts`: attach, then build the cores and register every RPC handler (method names in `rpc.ts`).
+  - `command.ts` (`:Glean` parse/dispatch), `config.ts` (nvim config reads), `repo.ts` (repo-mode store access), `nvimAppUi.ts` (the `AppUi` adapter).
   - `app.ts`: nvim-free `App` core behind `AppUi` — review registry (one review at a time, default review for `:Glean jump`), log/PR list state and paging, store location (`<data>/glean/<sha256(git common dir)[:16]>`, worktree shard `WORKTREE/<branch>`).
   - `targets.ts`: review targets (dirty/branch/PR/range resolution, titles), LogView and PrView rendering/paging, the injectable `gh` runner.
   - `core/`: pure modules — `diff`, `linediff` (Myers), `intraline` (capped), `baseline`, `lineage`, `ranges`, `state` (sharded JSON store), `ignore`, `comments`, `dirtree`, `types` (brands, `LineId`).

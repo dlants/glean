@@ -44,20 +44,20 @@ local function setup_highlights()
   end
   vim.api.nvim_set_hl(0, "GleanAddText", fg_only("DiffAdd"))
   vim.api.nvim_set_hl(0, "GleanDelText", fg_only("DiffDelete"))
-  require("glean.node_gutter").setup_highlights()
+  require("glean.gutter").setup_highlights()
 end
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
   vim.g.glean_min_seen_run = M.config.min_seen_run
   vim.g.glean_ignore_whitespace = M.config.ignore_whitespace
-  require("glean.node_gutter").setup(M.config.gutter)
-  require("glean.node_overlay").setup(M.config.overlay)
+  require("glean.gutter").setup(M.config.gutter)
+  require("glean.overlay").setup(M.config.overlay)
   setup_highlights()
   vim.api.nvim_create_autocmd("ColorScheme", {
     group = vim.api.nvim_create_augroup("GleanHighlights", { clear = true }),
     callback = setup_highlights,
   })
-  local node = require("glean.node")
+  local node = require("glean.rpc-bridge")
   if not node.job_id then node.start() end
 end
 return M

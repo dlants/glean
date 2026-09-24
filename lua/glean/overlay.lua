@@ -5,8 +5,8 @@ local api = vim.api
 local M = {}
 M.config = {}
 local function notify(ev)
-  local node = require("glean.node")
-  return node.safe_rpcnotify(node.channel_id, "gleanOverlay", ev)
+  local node = require("glean.rpc-bridge")
+  return node.notify("gleanOverlay", ev)
 end
 M.notify = notify
 local function cur() return api.nvim_get_current_buf(), api.nvim_win_get_cursor(0)[1] end

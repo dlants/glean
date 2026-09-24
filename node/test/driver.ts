@@ -12,7 +12,7 @@ const repoRoot = path.resolve(
 
 /** Spawn a headless nvim with glean on the runtimepath, attach a test
  * client over its socket, and tear both down afterwards. The glean node
- * backend is not started; tests call `require("glean.node").start()`. */
+ * backend is not started; tests call `require("glean.rpc-bridge").start()`. */
 export async function withNvim<T>(fn: (nvim: Nvim) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), "glean-test-"));
   const sock = path.join(dir, "nvim.sock");
@@ -102,7 +102,7 @@ export async function luaEval<T>(nvim: Nvim, expr: string): Promise<T> {
 
 /** Start the glean backend and wait for it to bridge back. */
 export async function startBackend(nvim: Nvim): Promise<number> {
-  await luaEval(nvim, `require("glean.node").start()`);
+  await luaEval(nvim, `require("glean.rpc-bridge").start()`);
   return pollUntil(() =>
     luaEval<number | null>(nvim, "vim.g.glean_node_channel").then(
       (c) => c ?? undefined,
