@@ -7,6 +7,7 @@ import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
+import { NvimOverlayUi } from "./overlay/nvimOverlayUi.ts";
 import { Overlay, parseOverlayEvent } from "./overlay/overlay.ts";
 import { Session, type SessionOpts } from "./session/session.ts";
 import {
@@ -804,17 +805,20 @@ export async function startGlean(nvim: Nvim): Promise<void> {
     const ev = parseGutterEvent(args[0]);
     if (ev) await g.handle(ev);
   });
-  const o = new Overlay(nvim, {
+  const overlayUi = new NvimOverlayUi(nvim);
+  await overlayUi.init();
+  const o = new Overlay(overlayUi, {
     repoContext: (dir) => repoContext(nvim, dir),
     repoRelative,
     pushUndo: (buf, seq, a) => g.push(buf, seq, a),
     afterWrite: afterRepoWrite,
   });
-  await o.init();
   overlay = o;
   nvim.onNotification(GLEAN_OVERLAY, async (args: unknown[]) => {
     const ev = parseOverlayEvent(args[0]);
-    if (ev) await o.handle(ev);
+    if (!ev) return;
+    if (ev.kind === "editor-submit" || ev.kind === "pick") overlayUi.submit(ev);
+    else await o.handle(ev);
   });
   nvim.onNotification(GLEAN_ACTION, async (args: unknown[]) => {
     try {

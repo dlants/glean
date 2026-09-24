@@ -12,11 +12,11 @@ import type { CommentRecord, NewComment, Store } from "../core/state.ts";
 import { type RepoPath, type Sha, toSha, WORKTREE } from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
-import type { Nvim } from "../nvim/nvim-node/index.ts";
 import { splitLines } from "../session/model.ts";
-import { type PromptResult, Prompts, toPromptToken } from "../view/prompts.ts";
-import { MAX_BATCH_CALLS } from "../view/view.ts";
+import { type PromptResult, toPromptToken } from "../view/prompts.ts";
+import type { NotifyLevel } from "../view/review.ts";
 import {
+  type BodyLine,
   firstLine,
   floatLines,
   jumpLnum,
@@ -24,6 +24,7 @@ import {
   quickfixItems,
   recordsAt,
   resolveOverlay,
+  type Stamp,
   stamps,
 } from "./project.ts";
 
@@ -110,11 +111,33 @@ export type OverlayHost = {
   afterWrite(root: string): void;
 };
 
-type BufFacts = {
+export type BufFacts = {
   name: string;
   buftype: string;
   modified: boolean;
   seq: number;
+};
+/** What the overlay needs from the editor, in glean's own terms. */
+export type OverlayUi = {
+  /** Loaded, named, ordinary file buffers. */
+  fileBuffers(): Promise<number[]>;
+  facts(buf: number): Promise<BufFacts | undefined>;
+  /** Lines `[lo, hi)` (0-based; `hi` -1 is the end). */
+  lines(buf: number, lo?: number, hi?: number): Promise<string[]>;
+  cwd(): Promise<string>;
+  /** Replace `buf`'s stamps. */
+  stamp(buf: number, stamps: Stamp[]): Promise<void>;
+  /** Hand the buffer's `u`/`<C-r>` to the glean undo stack. */
+  activateUndo(buf: number): Promise<void>;
+  /** Move the cursor to `lnum` if `buf` is current. */
+  park(buf: number, lnum: number): Promise<void>;
+  float(lines: BodyLine[]): Promise<void>;
+  quickfix(items: QuickfixItem[]): Promise<void>;
+  notify(msg: string, level: NotifyLevel): Promise<void>;
+  /** Resolves with the submitted text, `undefined` when dismissed. */
+  editor(initial: string[]): Promise<string | undefined>;
+  pick(items: string[], title: string): Promise<number | undefined>;
+  logError(err: unknown): void;
 };
 type Target = { repo: OverlayRepo; path: RepoPath };
 type CommentOp =
@@ -135,31 +158,25 @@ type FileOrigin =
 const NOT_A_REPO = "glean: not inside a git repository";
 
 export class Overlay {
-  private ns = 0;
   private readonly inline = new Set<number>();
   /** Buffers whose `u`/`<C-r>` have been handed to the glean stack. */
   private readonly active = new Set<number>();
-  private readonly prompts = new Prompts();
   private chain: Promise<void> = Promise.resolve();
   private allGen = 0;
 
   constructor(
-    private readonly nvim: Nvim,
+    private readonly ui: OverlayUi,
     private readonly host: OverlayHost,
   ) {}
 
-  async init() {
-    this.ns = await this.nvim.call("nvim_create_namespace", ["glean_overlay"]);
-  }
-
   private enqueue(fn: () => Promise<void>): Promise<void> {
     this.chain = this.chain.then(fn).catch((err: unknown) => {
-      this.nvim.logger.error(err instanceof Error ? err : String(err));
+      this.ui.logError(err);
     });
     return this.chain;
   }
 
-  handle(ev: OverlayEvent): Promise<void> {
+  handle(ev: Exclude<OverlayEvent, PromptResult>): Promise<void> {
     return this.enqueue(() => this.run(ev));
   }
 
@@ -168,16 +185,7 @@ export class Overlay {
     const gen = ++this.allGen;
     return this.enqueue(async () => {
       if (gen !== this.allGen) return;
-      const bufs = (await this.nvim.call("nvim_exec_lua", [
-        `local out = {}
-for _, b in ipairs(vim.api.nvim_list_bufs()) do
-  if vim.api.nvim_buf_is_loaded(b) and vim.bo[b].buftype == "" and vim.api.nvim_buf_get_name(b) ~= "" then
-    out[#out + 1] = b
-  end
-end
-return out`,
-        [],
-      ])) as number[];
+      const bufs = await this.ui.fileBuffers();
       for (const b of bufs) {
         if (gen !== this.allGen) return;
         await this.refresh(b);
@@ -185,7 +193,7 @@ return out`,
     });
   }
 
-  private async run(ev: OverlayEvent): Promise<void> {
+  private async run(ev: Exclude<OverlayEvent, PromptResult>): Promise<void> {
     switch (ev.kind) {
       case "refresh":
         return this.refresh(ev.buf);
@@ -202,7 +210,7 @@ return out`,
       case "jump": {
         const r = await this.resolve(ev.buf);
         const lnum = r && jumpLnum(r.groups, ev.lnum, ev.dir);
-        if (lnum !== undefined) await this.park(ev.buf, lnum);
+        if (lnum !== undefined) await this.ui.park(ev.buf, lnum);
         return;
       }
       case "add":
@@ -213,29 +221,7 @@ return out`,
         return this.withRecord(ev.buf, ev.lnum, ev.kind);
       case "quickfix":
         return this.quickfix(ev.buf);
-      case "editor-submit":
-      case "pick":
-        this.prompts.submit(ev);
-        return;
     }
-  }
-
-  private async facts(buf: number): Promise<BufFacts | undefined> {
-    const r = (await this.nvim.call("nvim_exec_lua", [
-      `local b = ...
-if not vim.api.nvim_buf_is_loaded(b) then return vim.NIL end
-return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
-  vim.api.nvim_buf_call(b, function() return vim.fn.undotree().seq_last end) }`,
-      [buf],
-    ])) as unknown;
-    if (!Array.isArray(r)) return undefined;
-    const [name, buftype, modified, seq] = r as unknown[];
-    return typeof name === "string" &&
-      typeof buftype === "string" &&
-      typeof modified === "boolean" &&
-      typeof seq === "number"
-      ? { name, buftype, modified, seq }
-      : undefined;
   }
 
   /** The repo and repo-relative path of a file buffer, if it is one. */
@@ -252,19 +238,14 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
     return path === undefined ? undefined : { repo, path };
   }
 
-  private async lines(buf: number): Promise<string[]> {
-    const l = await this.nvim.call("nvim_buf_get_lines", [buf, 0, -1, false]);
-    return Array.isArray(l) ? (l as string[]) : [];
-  }
-
   /** Resolve `buf`'s records against its lines, persisting any that moved. */
   private async resolve(buf: number) {
-    const f = await this.facts(buf);
+    const f = await this.ui.facts(buf);
     const t = f && (await this.target(f));
     if (!f || !t) return undefined;
     const records = t.repo.store.commentsFor(t.path);
     if (records.length === 0) return { f, t, groups: [], lines: [] };
-    const lines = await this.lines(buf);
+    const lines = await this.ui.lines(buf);
     const { groups, moved } = resolveOverlay(records, lines);
     if (moved) {
       await t.repo.store.save(t.repo.store.wtShard);
@@ -277,63 +258,33 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
   private async refresh(buf: number) {
     const r = await this.resolve(buf);
     if (!r) return;
-    const calls: unknown[] = [
-      ["nvim_buf_clear_namespace", [buf, this.ns, 0, -1]],
-    ];
-    if (r.groups.length > 0) {
-      if (!this.active.has(buf)) {
-        this.active.add(buf);
-        calls.push([
-          "nvim_exec_lua",
-          [`require("glean.node_gutter").activate_undo(..., "overlay")`, [buf]],
-        ]);
-      }
-      for (const s of stamps(r.groups, this.inline.has(buf), r.lines.length))
-        calls.push(["nvim_buf_set_extmark", [buf, this.ns, s.row, 0, s.opts]]);
+    const marks =
+      r.groups.length > 0
+        ? stamps(r.groups, this.inline.has(buf), r.lines.length)
+        : [];
+    if (r.groups.length > 0 && !this.active.has(buf)) {
+      this.active.add(buf);
+      await this.ui.activateUndo(buf);
     }
-    for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS)
-      await this.nvim.call("nvim_call_atomic", [
-        calls.slice(i, i + MAX_BATCH_CALLS),
-      ]);
+    await this.ui.stamp(buf, marks);
   }
 
   private async show(buf: number, lnum: number) {
     const r = await this.resolve(buf);
     const records = r ? recordsAt(r.groups, lnum) : [];
     if (records.length === 0) return;
-    const lines = floatLines(records);
-    await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node_overlay").float(...)`,
-      [lines.map((l) => l.text), lines.map((l) => l.hl)],
-    ]);
-  }
-
-  private notify(msg: string, level: number) {
-    return this.nvim.call("nvim_notify", [msg, level, {}]);
-  }
-
-  private park(buf: number, lnum: number) {
-    return this.nvim.call("nvim_exec_lua", [
-      `local buf, row = ...
-if vim.api.nvim_get_current_buf() ~= buf then return end
-vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf)), 0 })`,
-      [buf, lnum],
-    ]);
+    await this.ui.float(floatLines(records));
   }
 
   private async openEditor(
     initial: string[],
     fn: (text: string) => Promise<void>,
   ) {
-    const { token, result } = this.prompts.editor();
     // The answer arrives as its own event; act on it in the chain after it.
-    void result.then((t) =>
-      t === undefined ? undefined : this.enqueue(() => fn(t)),
-    );
-    await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node").comment_editor("overlay", 0, ...)`,
-      [initial, token],
-    ]);
+    void this.ui
+      .editor(initial)
+      .then((t) => (t === undefined ? undefined : this.enqueue(() => fn(t))))
+      .catch((err: unknown) => this.ui.logError(err));
   }
 
   /**
@@ -357,22 +308,15 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
 
   /** A file view never sees a deletion: the run is captured as post-image lines. */
   private async add(buf: number, line1: number, line2: number) {
-    const f = await this.facts(buf);
+    const f = await this.ui.facts(buf);
     const t = f && (await this.target(f));
-    if (!f || !t) return void (await this.notify(NOT_A_REPO, 3));
-    const got = await this.nvim.call("nvim_buf_get_lines", [
-      buf,
-      line1 - 1,
-      line2,
-      false,
-    ]);
-    if (!Array.isArray(got) || got.length === 0) return;
-    const content = got
-      .filter((text): text is string => typeof text === "string")
-      .map((text) => ({
-        kind: "add" as const,
-        text,
-      }));
+    if (!f || !t) return void (await this.ui.notify(NOT_A_REPO, "warn"));
+    const got = await this.ui.lines(buf, line1 - 1, line2);
+    if (got.length === 0) return;
+    const content = got.map((text) => ({
+      kind: "add" as const,
+      text,
+    }));
     const origin = await this.origin(t.repo.git, t.path, f.modified);
     await this.openEditor([], async (text) => {
       const record: NewComment = {
@@ -395,7 +339,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
   ) {
     const applied = await this.apply(buf, path, op, false);
     if (!applied) return;
-    const f = await this.facts(buf);
+    const f = await this.ui.facts(buf);
     if (!f) return;
     await this.host.pushUndo(buf, f.seq, {
       kind: "comment",
@@ -418,7 +362,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     op: CommentOp,
     reverse: boolean,
   ): Promise<CommentOp | undefined> {
-    const f = await this.facts(buf);
+    const f = await this.ui.facts(buf);
     const t = f && (await this.target(f));
     if (!t) return undefined;
     const { store } = t.repo;
@@ -465,20 +409,24 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     if (!r) return;
     const records = recordsAt(r.groups, lnum);
     if (records.length === 0)
-      return void (await this.notify("glean: no comment on this line", 2));
+      return void (await this.ui.notify(
+        "glean: no comment on this line",
+        "info",
+      ));
     const act = (record: CommentRecord) =>
       this.act(buf, r.t.path, lnum, kind, record);
     const [only, ...rest] = records;
     if (only && rest.length === 0) return act(only);
-    const { token, result } = this.prompts.pick();
-    void result.then((i) => {
-      const rec = i === undefined ? undefined : records[i];
-      return rec && this.enqueue(() => act(rec));
-    });
-    await this.nvim.call("nvim_exec_lua", [
-      `return require("glean.node").pick_comment("overlay", ...)`,
-      [records.map((x) => firstLine(x.text)), token, `glean: ${kind} comment`],
-    ]);
+    void this.ui
+      .pick(
+        records.map((x) => firstLine(x.text)),
+        `glean: ${kind} comment`,
+      )
+      .then((i) => {
+        const rec = i === undefined ? undefined : records[i];
+        return rec && this.enqueue(() => act(rec));
+      })
+      .catch((err: unknown) => this.ui.logError(err));
   }
 
   private async act(
@@ -514,11 +462,8 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
 
   /** `:Glean comments`: every comment in the repo as a quickfix list. */
   private async quickfix(buf: number) {
-    const f = await this.facts(buf);
-    const cwd = (await this.nvim.call("nvim_exec_lua", [
-      `return vim.fn.getcwd()`,
-      [],
-    ])) as string;
+    const f = await this.ui.facts(buf);
+    const cwd = await this.ui.cwd();
     const dir =
       f && f.buftype === "" && f.name !== "" && !/^\w+:\/\//.test(f.name)
         ? dirname(f.name)
@@ -527,7 +472,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     try {
       repo = await this.host.repoContext(dir);
     } catch {
-      return void (await this.notify(NOT_A_REPO, 3));
+      return void (await this.ui.notify(NOT_A_REPO, "warn"));
     }
     const files = await Promise.all(
       repo.store.commentPaths().map(async (path) => ({
@@ -545,10 +490,6 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
       // Yield between files so a large comment set never blocks the loop.
       await new Promise((r) => setImmediate(r));
     }
-    await this.nvim.call("nvim_exec_lua", [
-      `vim.fn.setqflist({}, " ", { title = "glean comments", items = ... })
-vim.cmd("copen")`,
-      [items],
-    ]);
+    await this.ui.quickfix(items);
   }
 }

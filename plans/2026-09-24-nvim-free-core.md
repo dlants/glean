@@ -170,6 +170,11 @@ Test helper (node-only): `node/test/ui.ts` with recorder implementations of each
   - outside a repo, add only notifies.
   - Then slim `overlay.driver.test.ts` to: stamps render as extmarks/virt_lines, inline toggle, float window, `u`/`<C-r>` wiring on the file buffer, editor split + picker round-trip, quiet-file has no maps.
 
+- Status: done.
+  - `OverlayUi` lives in `overlay.ts`; the adapter is `NvimOverlayUi` (`nvimOverlayUi.ts`, owns the namespace, batching, Lua and `Prompts`). `recordOverlayUi(buffers, cwd)` in `node/test/ui.ts`; tests in `overlay.test.ts`.
+  - Deviations: the port also has `cwd()` (quickfix outside a file buffer), `logError`, and `pick(items, title)`; `float` takes `BodyLine[]` (no buf); `editor` takes no buf. Editor/pick answers are routed by `glean.ts` straight to `NvimOverlayUi.submit` (outside the overlay chain); `Overlay.handle` no longer accepts `PromptResult`. The core calls `ui.editor`/`ui.pick` without awaiting and enqueues the continuation on answer, so the chain is never blocked by an open prompt.
+  - Driver tests removed (now node-only): outdated/api re-stamp/quickfix, authoring line/range, edit undo/unchanged edit, reply, add undo/redo id, outside-repo.
+
 ## Gutter
 
 - Goal: `FileGutter` takes `GutterUi`; nvim adapter; `recordGutterUi`.

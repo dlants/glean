@@ -3,6 +3,8 @@
  * They implement glean's own narrow interfaces, not a fake nvim.
  */
 import type { RepoPath, WorktreeLnum } from "../core/types.ts";
+import type { BufFacts, OverlayUi } from "../overlay/overlay.ts";
+import type { BodyLine, QuickfixItem, Stamp } from "../overlay/project.ts";
 import type { DiffContext } from "../render/nav.ts";
 import type { Frame } from "../render/render.ts";
 import { diskLine, type ResolvedJump } from "../view/jump.ts";
@@ -65,6 +67,88 @@ export function recordReviewUi() {
     },
     async openFileAt(path, lnum) {
       rec.opened.push({ path, lnum });
+    },
+  };
+  return { ui, rec };
+}
+
+/** A file buffer the test edits directly (bump `seq` on each edit, as nvim would). */
+export type RecBuffer = Omit<BufFacts, "buftype"> & {
+  buftype?: string;
+  lines: string[];
+};
+export function recordOverlayUi(buffers: Map<number, RecBuffer>, cwd: string) {
+  const answers: Answer[] = [];
+  const next = (): Answer => {
+    if (answers.length === 0) throw new Error("recorder: no scripted answer");
+    return answers.shift();
+  };
+  const rec = {
+    stamps: new Map<number, Stamp[]>(),
+    activated: [] as number[],
+    parked: [] as { buf: number; lnum: number }[],
+    floats: [] as BodyLine[][],
+    quickfix: undefined as QuickfixItem[] | undefined,
+    notes: [] as { msg: string; level: NotifyLevel }[],
+    editors: [] as string[][],
+    picks: [] as { items: string[]; title: string }[],
+    errors: [] as unknown[],
+    answer(a: Answer) {
+      answers.push(a);
+    },
+  };
+  const ui: OverlayUi = {
+    async fileBuffers() {
+      return [...buffers.keys()];
+    },
+    async facts(buf) {
+      const b = buffers.get(buf);
+      return (
+        b && {
+          name: b.name,
+          buftype: b.buftype ?? "",
+          modified: b.modified,
+          seq: b.seq,
+        }
+      );
+    },
+    async lines(buf, lo = 0, hi = -1) {
+      const l = buffers.get(buf)?.lines ?? [];
+      return l.slice(lo, hi < 0 ? l.length + 1 + hi : hi);
+    },
+    async cwd() {
+      return cwd;
+    },
+    async stamp(buf, stamps) {
+      rec.stamps.set(buf, stamps);
+    },
+    async activateUndo(buf) {
+      rec.activated.push(buf);
+    },
+    async park(buf, lnum) {
+      rec.parked.push({ buf, lnum });
+    },
+    async float(lines) {
+      rec.floats.push(lines);
+    },
+    async quickfix(items) {
+      rec.quickfix = items;
+    },
+    async notify(msg, level) {
+      rec.notes.push({ msg, level });
+    },
+    async editor(initial) {
+      rec.editors.push(initial);
+      const a = next();
+      return typeof a === "string" ? a : undefined;
+    },
+    async pick(items, title) {
+      rec.picks.push({ items, title });
+      const a = next();
+      return typeof a === "number" ? a : undefined;
+    },
+    logError(err) {
+      rec.errors.push(err);
     },
   };
   return { ui, rec };
