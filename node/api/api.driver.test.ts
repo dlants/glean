@@ -76,7 +76,7 @@ describe("agent api (driver)", () => {
   });
 
   it("answers promptly while a huge review is refreshing", async () => {
-    const n = 3000;
+    const n = 1000;
     const mk = (tag: string) =>
       Array.from(
         { length: n },

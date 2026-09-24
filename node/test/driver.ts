@@ -42,6 +42,31 @@ export async function withNvim<T>(fn: (nvim: Nvim) => Promise<T>): Promise<T> {
   }
 }
 
+/** Like `withNvim`, but for sharing one nvim across a describe's tests
+ * (beforeAll/afterAll); call `close` to tear it down. */
+export async function startNvim(): Promise<{
+  nvim: Nvim;
+  close: () => Promise<void>;
+}> {
+  let release!: () => void;
+  const done = new Promise<void>((r) => {
+    release = r;
+  });
+  let finished!: Promise<void>;
+  const nvim = await new Promise<Nvim>((resolve, reject) => {
+    finished = withNvim(async (n) => {
+      resolve(n);
+      await done;
+    }).catch(reject);
+  });
+  return {
+    nvim,
+    close: async () => {
+      release();
+      await finished;
+    },
+  };
+}
 async function attachWhenReady(sock: string): Promise<Nvim> {
   const deadline = Date.now() + 5000;
   for (;;) {

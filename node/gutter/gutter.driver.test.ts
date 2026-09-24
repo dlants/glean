@@ -1,9 +1,16 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
-import { luaEval, pollUntil, startBackend, withNvim } from "../test/driver.ts";
+import {
+  luaEval,
+  pollUntil,
+  sleep,
+  startBackend,
+  startNvim,
+  withNvim,
+} from "../test/driver.ts";
 import { makeRepo } from "../test/repo.ts";
 
 const UNSEEN =
@@ -11,14 +18,18 @@ const UNSEEN =
 const ROW4_SEEN =
   "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd";
 
+let template: ReturnType<typeof makeRepo> | undefined;
+/** Tests edit the work tree, so each gets a copy of one template repo. */
 function repo() {
-  const r = makeRepo([
+  template ??= makeRepo([
     { files: { "f.txt": "one\ntwo\nthree\n", "d.txt": "a\nb\nc\nd\ne\n" } },
     { msg: "c1", files: { "f.txt": "one\ntwo\nthree\nfour\n" } },
   ]);
-  writeFileSync(join(r.root, "f.txt"), "one\ntwo more\nthree\nfour\nfive\n");
-  writeFileSync(join(r.root, "d.txt"), "a\nd\ne\n");
-  return r;
+  const root = mkdtempSync(join(tmpdir(), "glean-gutter-repo-"));
+  cpSync(template.root, root, { recursive: true });
+  writeFileSync(join(root, "f.txt"), "one\ntwo more\nthree\nfour\nfive\n");
+  writeFileSync(join(root, "d.txt"), "a\nd\ne\n");
+  return { root, shas: template.shas };
 }
 
 /** Sorted "lnum:hl" of the gutter namespace in the current buffer. */
@@ -45,9 +56,10 @@ async function openFile(nvim: Nvim, preamble = "") {
   const stateDir = mkdtempSync(join(tmpdir(), "glean-gutter-"));
   await luaEval(
     nvim,
-    `(function() vim.cmd.cd(${JSON.stringify(r.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)}; ${preamble} end)()`,
+    `(function() vim.cmd.cd(${JSON.stringify(r.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)}; vim.g.glean_poll_ms = 30; ${preamble} end)()`,
   );
-  await startBackend(nvim);
+  if ((await luaEval(nvim, "vim.g.glean_node_channel")) === null)
+    await startBackend(nvim);
   await nvim.call("nvim_command", [`Glean open ${r.shas[0]}`]);
   await pollUntil(async () =>
     (
@@ -70,8 +82,23 @@ const cursor = (nvim: Nvim, row: number) =>
   nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
 
 describe("file-buffer gutter (driver)", () => {
+  // One nvim and backend for the tests that leave both running; each wipes
+  // the previous test's buffers (closing its review) and opens a fresh repo.
+  let shared: Awaited<ReturnType<typeof startNvim>>;
+  beforeAll(async () => {
+    shared = await startNvim();
+    await startBackend(shared.nvim);
+    // A first open pays for the template repo and the backend's cold module
+    // loads; do it here so no test carries that cost.
+    await openFile(shared.nvim);
+  });
+  afterAll(() => shared.close());
+  const withShared = async (fn: (nvim: Nvim) => Promise<void>) => {
+    await shared.nvim.call("nvim_command", ["silent! %bwipe!"]);
+    await fn(shared.nvim);
+  };
   it("paints, goes stale on edit, and repaints on revert", async () => {
-    await withNvim(async (nvim) => {
+    await withShared(async (nvim) => {
       await openFile(nvim);
       await nvim.call("nvim_buf_set_lines", [0, 0, 1, false, ["ONE"]]);
       await nvim.call("nvim_exec_autocmds", ["TextChanged", { buffer: 0 }]);
@@ -84,7 +111,7 @@ describe("file-buffer gutter (driver)", () => {
     });
   });
   it("marks with gmm/gm2j, and u/<C-r> ride the mark stack", async () => {
-    await withNvim(async (nvim) => {
+    await withShared(async (nvim) => {
       await openFile(nvim);
       await cursor(nvim, 4);
       await input(nvim, "gmm");
@@ -121,13 +148,21 @@ describe("file-buffer gutter (driver)", () => {
     });
   });
   it("a write reconciles the model, and a novel edit wipes the mark stack", async () => {
-    await withNvim(async (nvim) => {
+    await withShared(async (nvim) => {
       await openFile(nvim);
       await nvim.call("nvim_buf_set_lines", [0, 4, 5, false, ["five edited"]]);
       await nvim.call("nvim_command", ["silent write"]);
       await cursor(nvim, 5);
-      // Past one poll tick, so the write is in the model.
-      await new Promise((r) => setTimeout(r, 1500));
+      await pollUntil(async () =>
+        (
+          await luaEval<string>(
+            nvim,
+            `vim.inspect(require("glean.api").hunks(require("glean.api").sessions()[1].id))`,
+          )
+        ).includes("five edited")
+          ? true
+          : undefined,
+      );
       await input(nvim, "gmm");
       await waitSigns(
         nvim,
@@ -139,12 +174,14 @@ describe("file-buffer gutter (driver)", () => {
         (await luaEval<boolean>(nvim, "vim.bo.modified")) ? undefined : true,
       );
       await nvim.call("nvim_exec_autocmds", ["BufWritePost", { buffer: 0 }]);
-      await new Promise((r) => setTimeout(r, 300));
+      // Nothing to wait on for "the mark survived": give the backend a few
+      // poll ticks (glean_poll_ms = 30) to wrongly wipe it.
+      await sleep(150);
       expect(await signs(nvim)).toContain("5:GleanGutterAddSeen");
     });
   });
   it("gmc marks the hunk and the focus overlay covers it", async () => {
-    await withNvim(async (nvim) => {
+    await withShared(async (nvim) => {
       await openFile(nvim);
       await cursor(nvim, 4);
       await waitSigns(
@@ -164,7 +201,7 @@ describe("file-buffer gutter (driver)", () => {
     });
   });
   it("uncommitted deletions, ]c, and per-buffer/global toggles", async () => {
-    await withNvim(async (nvim) => {
+    await withShared(async (nvim) => {
       await openFile(nvim);
       await cursor(nvim, 1);
       await input(nvim, "]c");

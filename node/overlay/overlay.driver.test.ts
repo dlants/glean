@@ -1,15 +1,9 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
-import {
-  luaEval,
-  pollUntil,
-  sleep,
-  startBackend,
-  withNvim,
-} from "../test/driver.ts";
+import { luaEval, pollUntil, startBackend, startNvim } from "../test/driver.ts";
 import { makeRepo } from "../test/repo.ts";
 
 type Mark = {
@@ -54,6 +48,15 @@ const mapped = (nvim: Nvim, lhs: string) =>
     nvim,
     `(function() for _, m in ipairs(vim.api.nvim_buf_get_keymap(0, "n")) do if m.lhs == ${JSON.stringify(lhs)} then return true end end return false end)()`,
   );
+/** Waits for the file buffer's glean undo stack to reach `depth`. */
+const undoDepth = (nvim: Nvim, undo: number, redo = 0) =>
+  waitFor(async () => {
+    const d = await luaEval<{ undo: number; redo: number } | null>(
+      nvim,
+      "vim.b.glean_undo",
+    );
+    return d?.undo === undo && d.redo === redo;
+  });
 async function author(nvim: Nvim, text: string) {
   await waitFor(async () =>
     (await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)")).includes(
@@ -69,32 +72,63 @@ async function author(nvim: Nvim, text: string) {
         "glean-comment://",
       ),
   );
-  // The record is saved before its undo entry is pushed.
-  await sleep(300);
+}
+
+const FILES = {
+  "f.txt": "alpha\nbeta\ngamma\n",
+  "quiet.txt": "nothing here\n",
+  "author.txt": "one\ntwo\nthree\nfour\n",
+};
+type Ctx = {
+  nvim: Nvim;
+  root: string;
+  head: string;
+  recs: () => ReturnType<typeof records>;
+  has: (t: string) => Promise<boolean>;
+  find: (
+    t: string,
+  ) => Promise<Awaited<ReturnType<typeof records>>[number] | undefined>;
+  api: (lua: string) => Promise<unknown>;
+};
+// One nvim + backend for the whole file (startup is ~250 ms); each test gets
+// its own repo, state dir and tab.
+let shared: Awaited<ReturnType<typeof startNvim>>;
+beforeAll(async () => {
+  shared = await startNvim();
+  await luaEval(
+    shared.nvim,
+    `(function() vim.o.autoread = true; vim.o.hidden = true; require("glean.node_overlay").setup() end)()`,
+  );
+  await startBackend(shared.nvim);
+});
+afterAll(() => shared.close());
+async function withOverlay(fn: (c: Ctx) => Promise<void>) {
+  const repo = makeRepo([{ files: FILES }]);
+  const { nvim } = shared;
+  const stateDir = mkdtempSync(join(tmpdir(), "glean-ov-"));
+  await luaEval(
+    nvim,
+    `(function() vim.cmd.tabnew(); vim.cmd.tcd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)} end)()`,
+  );
+  const root = JSON.stringify(repo.root);
+  const recs = () => records(nvim, repo.root);
+  await fn({
+    nvim,
+    root: repo.root,
+    head: repo.shas[0] ?? "",
+    recs,
+    has: async (t) => (await recs()).some((r) => r.text === t),
+    find: async (t) => (await recs()).find((r) => r.text === t),
+    api: (call) =>
+      luaEval(nvim, `require("glean.api").${call.replace("$REPO", root)}`),
+  });
 }
 
 describe("file-buffer comment overlay (driver, overlay_test)", () => {
-  it("renders, re-resolves, floats, toggles, lists, authors and undoes", async () => {
-    const repo = makeRepo([
-      {
-        files: {
-          "f.txt": "alpha\nbeta\ngamma\n",
-          "quiet.txt": "nothing here\n",
-          "author.txt": "one\ntwo\nthree\nfour\n",
-        },
-      },
-    ]);
-    await withNvim(async (nvim) => {
-      const stateDir = mkdtempSync(join(tmpdir(), "glean-ov-"));
-      await luaEval(
-        nvim,
-        `(function() vim.cmd.cd(${JSON.stringify(repo.root)}); vim.g.glean_state_dir = ${JSON.stringify(stateDir)}; vim.o.autoread = true; require("glean.node_overlay").setup() end)()`,
-      );
-      await startBackend(nvim);
-      const root = JSON.stringify(repo.root);
-      await luaEval(
-        nvim,
-        `require("glean.api").add_comment({ repo = ${root}, path = "f.txt", lnum = 2, text = "why beta?\\nsecond line" })`,
+  it("renders and re-resolves on reload and on write", async () => {
+    await withOverlay(async ({ nvim, root, recs, api }) => {
+      await api(
+        `add_comment({ repo = $REPO, path = "f.txt", lnum = 2, text = "why beta?\\nsecond line" })`,
       );
       // Open: one sign on the resolved line, eol text is the first line only.
       await nvim.call("nvim_command", ["edit f.txt"]);
@@ -108,24 +142,29 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
 
       // An external rewrite: the reload re-resolves and persists the move.
       writeFileSync(
-        join(repo.root, "f.txt"),
+        join(root, "f.txt"),
         "prefix\nprefix2\nalpha\nbeta\ngamma\n",
       );
       await nvim.call("nvim_command", ["checktime"]);
       await waitFor(async () => (await signs(nvim))[0]?.row === 3);
-      await waitFor(
-        async () => (await records(nvim, repo.root))[0]?.lnum === 4,
-      );
+      await waitFor(async () => (await recs())[0]?.lnum === 4);
 
       // A user edit + write moves it the same way.
       await nvim.call("nvim_buf_set_lines", [0, 0, 0, false, ["extra"]]);
       await nvim.call("nvim_command", ["write"]);
-      await waitFor(
-        async () => (await records(nvim, repo.root))[0]?.lnum === 5,
-      );
+      await waitFor(async () => (await recs())[0]?.lnum === 5);
+    });
+  });
 
-      // Float: whole body; none on an uncommented line.
-      await nvim.call("nvim_win_set_cursor", [0, [5, 0]]);
+  it("floats the body, toggles inline bodies and jumps to the next", async () => {
+    await withOverlay(async ({ nvim, api }) => {
+      await api(
+        `add_comment({ repo = $REPO, path = "f.txt", lnum = 2, text = "why beta?\\nsecond line" })`,
+      );
+      await nvim.call("nvim_command", ["edit f.txt"]);
+      await waitFor(async () => (await signs(nvim)).length === 1);
+      // Float: whole body.
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
       await nvim.call("nvim_input", ["<Plug>(glean-comment-show)"]);
       const float = await waitFor(() =>
         luaEval<string | null>(
@@ -148,157 +187,31 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       await nvim.call("nvim_input", ["<Plug>(glean-comment-next)"]);
       await waitFor(
         async () =>
-          ((await nvim.call("nvim_win_get_cursor", [0])) as number[])[0] === 5,
+          ((await nvim.call("nvim_win_get_cursor", [0])) as number[])[0] === 2,
       );
+    });
+  });
+
+  it("outdates a deleted line, re-stamps on api writes and lists in quickfix", async () => {
+    await withOverlay(async ({ nvim, api }) => {
+      await api(
+        `add_comment({ repo = $REPO, path = "f.txt", lnum = 2, text = "why beta?\\nsecond line" })`,
+      );
+      await nvim.call("nvim_command", ["edit f.txt"]);
+      await waitFor(async () => (await signs(nvim)).length === 1);
 
       // Deleting the text renders it outdated.
-      await nvim.call("nvim_buf_set_lines", [0, 4, 5, false, ["rewritten"]]);
+      await nvim.call("nvim_buf_set_lines", [0, 1, 2, false, ["rewritten"]]);
       await nvim.call("nvim_command", ["write"]);
       await waitFor(
         async () => (await signs(nvim))[0]?.hl === "GleanCommentOutdated",
       );
       expect((await signs(nvim))[0]!.text).toContain("(outdated)");
 
-      // A file with no comments is untouched, `u` included.
-      await nvim.call("nvim_command", ["edit quiet.txt"]);
-      await nvim.call("nvim_exec_autocmds", ["BufReadPost", { buffer: 0 }]);
-      await new Promise((r) => setTimeout(r, 200));
-      expect(await marks(nvim)).toEqual([]);
-      expect(await mapped(nvim, "u")).toBe(false);
-      expect(await mapped(nvim, "<C-R>")).toBe(false);
-
-      // Authoring: `:Glean comment` on the cursor line and a range.
-      const head = repo.run(["rev-parse", "HEAD"]).trim();
-      await nvim.call("nvim_command", ["edit author.txt"]);
-      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
-      await nvim.call("nvim_command", ["Glean comment"]);
-      await author(nvim, "about two");
-      const two = await waitFor(async () =>
-        (await records(nvim, repo.root)).find((r) => r.text === "about two"),
-      );
-      expect(two.lnum).toBe(2);
-      expect(two.origin).toEqual({ sha: head, dirty: false });
-      await waitFor(() => mapped(nvim, "u"));
-      await nvim.call("nvim_command", ["3,4Glean comment"]);
-      await author(nvim, "about the tail");
-      const tail = await waitFor(async () =>
-        (await records(nvim, repo.root)).find(
-          (r) => r.text === "about the tail",
-        ),
-      );
-      expect(tail.lnum).toBe(3);
-      const content = await luaEval<string[]>(
-        nvim,
-        `(function() for _, c in ipairs(require("glean.api").comments({ repo = ${root} })) do if c.text == "about the tail" then return c.content end end end)()`,
-      );
-      expect(content).toEqual(["three", "four"]);
-      await waitFor(
-        async () => (await marks(nvim)).filter((m) => m.lineHl).length === 2,
-      );
-
-      // Delete with several on one line: pick exactly the chosen one.
-      await nvim.call("nvim_command", ["Glean comment"]);
-      await author(nvim, "second on two");
-      await waitFor(async () =>
-        (await records(nvim, repo.root)).some(
-          (r) => r.text === "second on two",
-        ),
-      );
-      await luaEval(
-        nvim,
-        `(function() vim.ui.select = function(choices, _, cb)
-  vim.g.picked_n = #choices
-  for i, c in ipairs(choices) do if c == "second on two" then return cb(c, i) end end
-  cb(nil, nil) end end)()`,
-      );
-      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
-      await nvim.call("nvim_input", ["<Plug>(glean-comment-delete)"]);
-      await waitFor(
-        async () =>
-          !(await records(nvim, repo.root)).some(
-            (r) => r.text === "second on two",
-          ),
-      );
-      expect(await luaEval<number>(nvim, "vim.g.picked_n")).toBe(2);
-      expect(
-        (await records(nvim, repo.root)).some((r) => r.text === "about two"),
-      ).toBe(true);
-
-      // u restores it without touching text; <C-r> removes it again.
-      const text = await nvim.call("nvim_buf_get_lines", [0, 0, -1, false]);
-      await nvim.call("nvim_input", ["u"]);
-      await waitFor(async () =>
-        (await records(nvim, repo.root)).some(
-          (r) => r.text === "second on two",
-        ),
-      );
-      expect(await nvim.call("nvim_buf_get_lines", [0, 0, -1, false])).toEqual(
-        text,
-      );
-      await nvim.call("nvim_input", ["<C-r>"]);
-      await waitFor(
-        async () =>
-          !(await records(nvim, repo.root)).some(
-            (r) => r.text === "second on two",
-          ),
-      );
-
-      const has = async (t: string) =>
-        (await records(nvim, repo.root)).some((r) => r.text === t);
-      const find = async (t: string) =>
-        (await records(nvim, repo.root)).find((r) => r.text === t);
-      const replyOf = async (id: number) =>
-        (
-          await luaEval<{ id: number; reply?: string }[]>(
-            nvim,
-            `require("glean.api").comments({ repo = ${root} })`,
-          )
-        ).find((r) => r.id === id)?.reply;
-      // Edit swaps the text; u restores the original.
-      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
-      await nvim.call("nvim_input", ["<Plug>(glean-comment-edit)"]);
-      await author(nvim, "edited two");
-      await waitFor(() => has("edited two"));
-      expect(await has("about two")).toBe(false);
-      await nvim.call("nvim_input", ["u"]);
-      await waitFor(() => has("about two"));
-      await sleep(300);
-      expect(await has("edited two")).toBe(false);
-      // An unchanged edit does nothing (nothing new to undo).
-      await nvim.call("nvim_input", ["<Plug>(glean-comment-edit)"]);
-      await author(nvim, "about two");
-      // Reply fills the slot, replying again replaces it; u restores each before.
-      const twoId = (await find("about two"))!.id;
-      await nvim.call("nvim_input", ["<Plug>(glean-comment-reply)"]);
-      await author(nvim, "r1");
-      await waitFor(async () => (await replyOf(twoId)) === "r1");
-      await nvim.call("nvim_input", ["<Plug>(glean-comment-reply)"]);
-      await author(nvim, "r2");
-      await waitFor(async () => (await replyOf(twoId)) === "r2");
-      await nvim.call("nvim_input", ["u"]);
-      await waitFor(async () => (await replyOf(twoId)) === "r1");
-      await sleep(300);
-      await nvim.call("nvim_input", ["u"]);
-      await waitFor(async () => (await replyOf(twoId)) === undefined);
-      expect(await has("about two")).toBe(true);
-      // Add: u removes it, <C-r> brings it back under the same id, u removes it again.
-      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
-      await nvim.call("nvim_command", ["Glean comment"]);
-      await author(nvim, "added one");
-      const added = await waitFor(() => find("added one"));
-      await nvim.call("nvim_input", ["u"]);
-      await waitFor(async () => !(await has("added one")));
-      await sleep(300);
-      await nvim.call("nvim_input", ["<C-r>"]);
-      const redone = await waitFor(() => find("added one"));
-      expect(redone.id).toBe(added.id);
-      await sleep(300);
-      await nvim.call("nvim_input", ["u"]);
-      await waitFor(async () => !(await has("added one")));
       // An agent api write re-stamps the open file buffer.
-      await luaEval(
-        nvim,
-        `require("glean.api").add_comment({ repo = ${root}, path = "author.txt", lnum = 1, text = "from agent" })`,
+      await nvim.call("nvim_command", ["edit author.txt"]);
+      await api(
+        `add_comment({ repo = $REPO, path = "author.txt", lnum = 1, text = "from agent" })`,
       );
       await waitFor(async () =>
         (await marks(nvim)).some((m) => m.text?.includes("from agent")),
@@ -310,15 +223,175 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
           nvim,
           "vim.fn.getqflist()",
         );
-        return items.length === 4 && items;
+        return items.length === 2 && items;
       });
       expect(qf.map((i) => i.text).join("\n")).toContain("(outdated)");
     });
   });
 
+  it("leaves a file with no comments untouched, `u` included", async () => {
+    await withOverlay(async ({ nvim, api }) => {
+      await api(
+        `add_comment({ repo = $REPO, path = "f.txt", lnum = 1, text = "c" })`,
+      );
+      await nvim.call("nvim_command", ["edit quiet.txt"]);
+      await nvim.call("nvim_exec_autocmds", ["BufReadPost", { buffer: 0 }]);
+      // Overlay events are handled in order: once f.txt is stamped, quiet.txt's were handled.
+      await nvim.call("nvim_command", ["edit f.txt"]);
+      await waitFor(async () => (await signs(nvim)).length === 1);
+      await nvim.call("nvim_command", ["buffer quiet.txt"]);
+      expect(await marks(nvim)).toEqual([]);
+      expect(await mapped(nvim, "u")).toBe(false);
+      expect(await mapped(nvim, "<C-R>")).toBe(false);
+    });
+  });
+
+  it("authors on the cursor line and on a range", async () => {
+    await withOverlay(async ({ nvim, head, find, root }) => {
+      await nvim.call("nvim_command", ["edit author.txt"]);
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_command", ["Glean comment"]);
+      await author(nvim, "about two");
+      const two = await waitFor(() => find("about two"));
+      expect(two.lnum).toBe(2);
+      expect(two.origin).toEqual({ sha: head, dirty: false });
+      await waitFor(() => mapped(nvim, "u"));
+      await undoDepth(nvim, 1);
+      await nvim.call("nvim_command", ["3,4Glean comment"]);
+      await author(nvim, "about the tail");
+      const tail = await waitFor(() => find("about the tail"));
+      expect(tail.lnum).toBe(3);
+      const content = await luaEval<string[]>(
+        nvim,
+        `(function() for _, c in ipairs(require("glean.api").comments({ repo = ${JSON.stringify(root)} })) do if c.text == "about the tail" then return c.content end end end)()`,
+      );
+      expect(content).toEqual(["three", "four"]);
+      await waitFor(
+        async () => (await marks(nvim)).filter((m) => m.lineHl).length === 2,
+      );
+      await undoDepth(nvim, 2);
+    });
+  });
+
+  it("deletes the picked one of several, u restores and <C-r> re-deletes", async () => {
+    await withOverlay(async ({ nvim, recs, has, api }) => {
+      for (const text of ["about two", "second on two"])
+        await api(
+          `add_comment({ repo = $REPO, path = "author.txt", lnum = 2, text = "${text}" })`,
+        );
+      await nvim.call("nvim_command", ["edit author.txt"]);
+      await waitFor(() => mapped(nvim, "u"));
+      await luaEval(
+        nvim,
+        `(function() vim.ui.select = function(choices, _, cb)
+  vim.g.picked_n = #choices
+  for i, c in ipairs(choices) do if c == "second on two" then return cb(c, i) end end
+  cb(nil, nil) end end)()`,
+      );
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-delete)"]);
+      await waitFor(async () => !(await has("second on two")));
+      expect(await luaEval<number>(nvim, "vim.g.picked_n")).toBe(2);
+      expect(await has("about two")).toBe(true);
+      await undoDepth(nvim, 1);
+
+      // u restores it without touching text; <C-r> removes it again.
+      const text = await nvim.call("nvim_buf_get_lines", [0, 0, -1, false]);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(() => has("second on two"));
+      expect(await nvim.call("nvim_buf_get_lines", [0, 0, -1, false])).toEqual(
+        text,
+      );
+      await undoDepth(nvim, 0, 1);
+      await nvim.call("nvim_input", ["<C-r>"]);
+      await waitFor(async () => !(await has("second on two")));
+      expect((await recs()).length).toBe(1);
+    });
+  });
+
+  it("undoes an edit; an unchanged edit pushes nothing", async () => {
+    await withOverlay(async ({ nvim, has, api }) => {
+      await api(
+        `add_comment({ repo = $REPO, path = "author.txt", lnum = 2, text = "about two" })`,
+      );
+      await nvim.call("nvim_command", ["edit author.txt"]);
+      await waitFor(async () => (await signs(nvim)).length === 1);
+      // Edit swaps the text; u restores the original.
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-edit)"]);
+      await author(nvim, "edited two");
+      await waitFor(() => has("edited two"));
+      expect(await has("about two")).toBe(false);
+      await undoDepth(nvim, 1);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(() => has("about two"));
+      expect(await has("edited two")).toBe(false);
+      await undoDepth(nvim, 0, 1);
+      // An unchanged edit does nothing (nothing new to undo: redo survives).
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-edit)"]);
+      await author(nvim, "about two");
+      await undoDepth(nvim, 0, 1);
+    });
+  });
+
+  it("reply fills the slot, replaces it, and u restores each before", async () => {
+    await withOverlay(async ({ nvim, root, has, find, api }) => {
+      await api(
+        `add_comment({ repo = $REPO, path = "author.txt", lnum = 2, text = "about two" })`,
+      );
+      await nvim.call("nvim_command", ["edit author.txt"]);
+      await waitFor(async () => (await signs(nvim)).length === 1);
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      const replyOf = async (id: number) =>
+        (
+          await luaEval<{ id: number; reply?: string }[]>(
+            nvim,
+            `require("glean.api").comments({ repo = ${JSON.stringify(root)} })`,
+          )
+        ).find((r) => r.id === id)?.reply;
+      // Reply fills the slot, replying again replaces it; u restores each before.
+      const twoId = (await find("about two"))!.id;
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-reply)"]);
+      await author(nvim, "r1");
+      await waitFor(async () => (await replyOf(twoId)) === "r1");
+      await undoDepth(nvim, 1);
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-reply)"]);
+      await author(nvim, "r2");
+      await waitFor(async () => (await replyOf(twoId)) === "r2");
+      await undoDepth(nvim, 2);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => (await replyOf(twoId)) === "r1");
+      await undoDepth(nvim, 1, 1);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => (await replyOf(twoId)) === undefined);
+      expect(await has("about two")).toBe(true);
+    });
+  });
+
+  it("undoes an add and redoes it under the same id", async () => {
+    await withOverlay(async ({ nvim, has, find }) => {
+      await nvim.call("nvim_command", ["edit author.txt"]);
+      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_command", ["Glean comment"]);
+      await author(nvim, "added one");
+      const added = await waitFor(() => find("added one"));
+      await undoDepth(nvim, 1);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => !(await has("added one")));
+      await undoDepth(nvim, 0, 1);
+      await nvim.call("nvim_input", ["<C-r>"]);
+      const redone = await waitFor(() => find("added one"));
+      expect(redone.id).toBe(added.id);
+      await undoDepth(nvim, 1);
+      await nvim.call("nvim_input", ["u"]);
+      await waitFor(async () => !(await has("added one")));
+    });
+  });
+
   it("outside a git repo authoring only notifies", async () => {
-    await withNvim(async (nvim) => {
-      await startBackend(nvim);
+    const { nvim } = shared;
+    {
+      await luaEval(nvim, "vim.cmd.tabnew()");
       const dir = mkdtempSync(join(tmpdir(), "glean-loose-"));
       writeFileSync(join(dir, "loose.txt"), "hello\n");
       await luaEval(
@@ -334,6 +407,6 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       expect(msg).toContain("git repo");
       expect(await luaEval<string>(nvim, "vim.bo.buftype")).toBe("");
       expect(await marks(nvim)).toEqual([]);
-    });
+    }
   });
 });

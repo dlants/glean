@@ -435,11 +435,11 @@ require("glean.node").show_buffer(buf)`,
   };
   reviews.push(review);
   current = { key, bufnr, view, review, sessionOpts, viewOpts };
-  await startView(current);
+  await startView(nvim, current);
 }
 
 /** Wire a slot's session and view up and paint the first model. */
-async function startView(slot: Current) {
+async function startView(nvim: Nvim, slot: Current) {
   const { view, review } = slot;
   const session = view.session;
   await view.init();
@@ -451,7 +451,7 @@ async function startView(slot: Current) {
     void overlay?.refreshAll();
   });
   await session.refresh();
-  session.startLive(1000);
+  session.startLive(await pollIntervalMs(nvim));
 }
 
 /**
@@ -485,7 +485,7 @@ vim.bo[buf].modifiable = false`,
     slot.viewOpts,
   );
   slot.view = view;
-  await startView(slot);
+  await startView(nvim, slot);
   await view.redraw();
   if (row !== undefined)
     await nvim.call("nvim_exec_lua", [
@@ -630,6 +630,14 @@ async function fetchLog(root: string, want: number) {
   return { commits: hasMore ? r.value.slice(0, want) : r.value, hasMore };
 }
 
+/** `vim.g.glean_poll_ms` exists so tests need not wait out the live poll. */
+async function pollIntervalMs(nvim: Nvim): Promise<number> {
+  const v = await nvim.call("nvim_exec_lua", [
+    "return vim.g.glean_poll_ms",
+    [],
+  ]);
+  return typeof v === "number" && v > 0 ? v : 1000;
+}
 /** `vim.g.glean_log_page_size` exists so tests can page a small fixture. */
 async function logPageSize(nvim: Nvim): Promise<number> {
   const v = await nvim.call("nvim_exec_lua", [

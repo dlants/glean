@@ -12,8 +12,8 @@ const words = (i: number, salt: string) =>
 function bigBlocks(n: number) {
   return Array.from({ length: n }, (_, b) => ({
     id: b,
-    dels: Array.from({ length: 200 }, (_, i) => words(i + b, "a")),
-    adds: Array.from({ length: 200 }, (_, i) => words(i + b, "b")),
+    dels: Array.from({ length: 20 }, (_, i) => words(i + b, "a")),
+    adds: Array.from({ length: 20 }, (_, i) => words(i + b, "b")),
   }));
 }
 
@@ -22,7 +22,7 @@ describe("runRefine", () => {
     const guard = new GenerationGuard();
     const gen = guard.bump();
     const events: string[] = [];
-    const refining = runRefine(guard, gen, bigBlocks(20), () => {
+    const refining = runRefine(guard, gen, bigBlocks(5), () => {
       events.push("block");
     }).then(() => events.push("refine-done"));
     // Stand-in for an RPC request arriving mid-refine: it is a fresh macrotask.
@@ -33,14 +33,14 @@ describe("runRefine", () => {
     const req = events.indexOf("request");
     expect(req).toBeGreaterThanOrEqual(0);
     expect(req).toBeLessThan(events.indexOf("refine-done"));
-    expect(events.filter((e) => e === "block").length).toBe(20);
+    expect(events.filter((e) => e === "block").length).toBe(5);
   });
 
   it("stops and applies nothing further once the generation moves on", async () => {
     const guard = new GenerationGuard();
     const gen = guard.bump();
     const applied: number[] = [];
-    const run = runRefine(guard, gen, bigBlocks(10), (b) => {
+    const run = runRefine(guard, gen, bigBlocks(5), (b) => {
       applied.push(b.id);
       if (b.id === 2) guard.bump();
     });

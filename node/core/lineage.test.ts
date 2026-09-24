@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { makeRepo, type TestRepo } from "../test/repo.ts";
 import { type DiffLine, type FileEntry, parse } from "./diff.ts";
@@ -309,12 +310,56 @@ function logPatches(repo: TestRepo, base: string, target: string): Patch[] {
     });
 }
 
-function blobLine(repo: TestRepo, rev: string, path: string, lnum: number) {
-  try {
-    return repo.run(["show", `${rev}:${path}`]).split("\n")[lnum - 1];
-  } catch {
-    return undefined;
+const blobs = new WeakMap<TestRepo, Map<string, string[] | undefined>>();
+
+/** One `git cat-file --batch` for every blob `check` will read, instead of a
+ * `git show` spawn per line. */
+function prefetchBlobs(repo: TestRepo, specs: Iterable<string>) {
+  let cache = blobs.get(repo);
+  if (!cache) blobs.set(repo, (cache = new Map()));
+  const want = [...new Set(specs)].filter((s) => !cache.has(s));
+  if (want.length === 0) return;
+  const out = execFileSync("git", ["cat-file", "--batch"], {
+    cwd: repo.root,
+    env: repo.env,
+    input: `${want.join("\n")}\n`,
+  });
+  let at = 0;
+  for (const spec of want) {
+    const nl = out.indexOf(10, at);
+    const header = out.subarray(at, nl).toString("utf8");
+    at = nl + 1;
+    const m = /^[0-9a-f]+ blob (\d+)$/.exec(header);
+    if (!m) {
+      cache.set(spec, undefined);
+      continue;
+    }
+    const size = Number(m[1]);
+    cache.set(
+      spec,
+      out
+        .subarray(at, at + size)
+        .toString("utf8")
+        .split("\n"),
+    );
+    at += size + 1;
   }
+}
+
+function blobLine(repo: TestRepo, rev: string, path: string, lnum: number) {
+  let cache = blobs.get(repo);
+  if (!cache) blobs.set(repo, (cache = new Map()));
+  const spec = `${rev}:${path}`;
+  if (!cache.has(spec)) {
+    let lines: string[] | undefined;
+    try {
+      lines = repo.run(["show", spec]).split("\n");
+    } catch {
+      lines = undefined;
+    }
+    cache.set(spec, lines);
+  }
+  return cache.get(spec)?.[lnum - 1];
 }
 
 const empty: PathLineage = {
@@ -327,6 +372,25 @@ const empty: PathLineage = {
 function check(repo: TestRepo, base: string, target: string) {
   const composed = compose(logPatches(repo, base, target));
   const net = parse(repo.run(["diff", "-M", "--no-color", base, target]));
+  const specs: string[] = [];
+  for (const file of net) {
+    const maps = composed.get(file.path) ?? empty;
+    for (const hunk of file.hunks) {
+      for (const dl of hunk.lines) {
+        if (dl.kind === "add") {
+          const o = maps.prov.get(dl.newLnum);
+          if (o)
+            specs.push(`${o.sha}:${file.path}`, `${o.sha}:${file.oldPath}`);
+        } else if (dl.kind === "del") {
+          const o = maps.delAttr.get(dl.oldLnum);
+          if (o)
+            specs.push(`${o.sha}^:${file.oldPath}`, `${o.sha}^:${file.path}`);
+          specs.push(`${base}:${file.oldPath}`);
+        }
+      }
+    }
+  }
+  prefetchBlobs(repo, specs);
   const bad: string[] = [];
   for (const file of net) {
     const maps = composed.get(file.path) ?? empty;
