@@ -109,3 +109,7 @@ algebra; `plans/2026-08-28-reviewed-baseline.md` holds the original reasoning an
 - `npx vitest run` — all tests (unit tests colocated as `*.test.ts`, driver tests as `*.driver.test.ts` against a real headless nvim)
 - `npx biome check .` — lint/format
 - `npm run build` (or `npm run bundle` without `npm ci`) — builds `dist/glean.mjs`, which is gitignored and built on install like magenta
+
+## Semantic search (pkb)
+
+`./pkb search "<query>"` searches a semantic index of this repo (checked in under `.pkb/index`, config in `.pkb/config.toml`, `plans/` excluded). Prefer it over grep for orientation questions; see `.magenta/skills/pkb-search/skill.md`. `hooks/pre-commit` reindexes staged content into each commit; enable it with `git config core.hooksPath hooks`.

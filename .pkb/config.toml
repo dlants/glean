@@ -1,0 +1,8 @@
+maxReindexCost = 5.0
+chunking = "auto"
+exclude = ["node_modules", "dist", "plans", "pkb"]
+[embedding]
+provider = "voyage"
+model = "voyage-context-4"
+dimensions = 256
+apikeyenv = "VOYAGE_API_KEY"
