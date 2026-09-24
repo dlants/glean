@@ -90,17 +90,18 @@ algebra; `plans/2026-08-28-reviewed-baseline.md` holds the original reasoning an
   - `api.lua`: the agent api shim (one `rpcrequest` per call), documented by `skills/glean-review/skill.md`.
   - `node_overlay.lua`: file-buffer comment overlay autocmds, `<Plug>(glean-comment*)` maps, float helper.
 - `node/` — the backend.
-  - `index.ts`/`glean.ts`: attach, command/action/gutter/api dispatch, review registry, store location (`<data>/glean/<sha256(git common dir)[:16]>`, worktree shard `WORKTREE/<branch>`).
+  - `index.ts`/`glean.ts`: attach, RPC registration and command/action/gutter/api dispatch, `nvimAppUi` adapter.
+  - `app.ts`: nvim-free `App` core behind `AppUi` — review registry (one review at a time, default review for `:Glean jump`), log/PR list state and paging, store location (`<data>/glean/<sha256(git common dir)[:16]>`, worktree shard `WORKTREE/<branch>`).
   - `targets.ts`: review targets (dirty/branch/PR/range resolution, titles), LogView and PrView rendering/paging, the injectable `gh` runner.
   - `core/`: pure modules — `diff`, `linediff` (Myers), `intraline` (capped), `baseline`, `lineage`, `ranges`, `state` (sharded JSON store), `ignore`, `comments`, `dirtree`, `types` (brands, `LineId`).
   - `git/`: `git.ts` (injectable `GitRunner`, `Outcome` results, `Poller`), `scheduler.ts` (`GenerationGuard`, `runRefine`, `RefineCache`).
   - `session/`: `model.ts` (`buildModel`, `Classifier`), `session.ts` (refresh/poll, seen writes, undo/redo, collapse).
   - `render/`: pure `render` → `Frame` with a `RowTarget` per row, markers, actions planners, scope anchor, comment placement, `nav` (hunk/file nav, jump/diffsplit targets), `sticky` (float ancestry), `commentActions` (comment editor targets).
-  - `view/view.ts`: applies frames to the scratch buffer (row-diffed, batched), intraline highlighting, active-hunk decor and sticky float, suspend/resume; `jump.ts` (jump/diffsplit windows), `prompts.ts` (editor/picker callbacks by token).
-  - `overlay/`: file-buffer comment overlay (pure `project.ts`, `overlay.ts` event handler, `:Glean comment(s)`).
-  - `gutter/`: pure projection and marking, `FileGutter`, per-buffer mark undo.
+  - `view/`: `review.ts` (nvim-free `ReviewController` behind `ReviewUi`: action dispatch, planners + `Session`, cursor, comments, jump resolution); `view.ts` (`ReviewView`, the nvim adapter: row-diffed batched painting, intraline, active-hunk decor, sticky float, suspend/resume); `jump.ts` (`resolveJump` + window ops), `prompts.ts` (promise-based editor/picker by token).
+  - `overlay/`: file-buffer comment overlay (pure `project.ts`, `overlay.ts` core behind `OverlayUi`, `nvimOverlayUi.ts` adapter, `:Glean comment(s)`).
+  - `gutter/`: pure projection and marking, `FileGutter` core behind `GutterUi`, `nvimGutterUi.ts` adapter, per-buffer mark undo.
   - `api/api.ts`: the agent api, served from memory with a pending fallback.
-  - `nvim/`: RPC client copied from magenta; `test/`: embedded-nvim driver and fixture repos.
+  - `nvim/`: RPC client copied from magenta; `test/`: embedded-nvim driver, fixture repos, and `ui.ts` port recorders for node-only controller tests (see `.magenta/skills/testing/skill.md`).
 
 ## Commands
 

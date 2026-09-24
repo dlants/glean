@@ -20,6 +20,20 @@ For models, git operations, state/store, seen classification, baseline algebra, 
 - Pure modules in `node/core/` (diff, linediff, ranges, baseline, …) need no repo at all — just call them.
 - To test a display concern without nvim, assert on the `Frame` returned by `render` (row text and `RowTarget`s) rather than on buffer contents.
 
+### Controllers: ports and recorders
+
+Every nvim-facing controller is split into an nvim-free core and an nvim adapter implementing a narrow **UI port** in glean's own vocabulary (frames, rows, stamps, signs, cursor rows — never nvim API names, namespaces or Lua):
+
+- `ReviewController` + `ReviewUi` (`node/view/review.ts`); adapter `ReviewView` (`view.ts`).
+- `Overlay` + `OverlayUi` (`node/overlay/overlay.ts`); adapter `NvimOverlayUi`.
+- `FileGutter` + `GutterUi` (`node/gutter/fileGutter.ts`); adapter `NvimGutterUi`.
+- `App` + `AppUi` (`node/app.ts`: review registry, lists); adapter `nvimAppUi` in `glean.ts`.
+- `resolveJump` (`node/view/jump.ts`) is git + fs only.
+
+Test a core by constructing it with a recorder from `node/test/ui.ts` (`recordReviewUi()`, `recordOverlayUi(buffers, cwd)`, `recordGutterUi(buffers)`; `app.test.ts` builds its `AppUi` inline around these). Recorders keep the last painted frame/stamps/signs, cursor, notifications, and queue scripted editor/picker answers (`answer(text | index | undefined)`, `undefined` = dismissed). Recorder buffers are plain records the test mutates to simulate edits and writes. Assert on what the core asked the port to do; how that lands in nvim belongs to the adapter and its driver smoke test.
+
+When adding a behaviour: put the decision in the core, add a port method only if the core needs a new effect or read (plain data in/out, promises for editor/pick), and implement it in both the adapter and the recorder.
+
 ```typescript
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -87,6 +101,7 @@ If a helper is reused across driver tests (open a review in a repo, read buffer 
 
 - Is the thing under test a value computed in node (model, seen set, counts, frame rows, action plan, nav target, api payload)? → tier 1.
 - Does it only exist once nvim applies it (keymap wiring, buffer text after row-diffed writes, extmarks/highlights, window layout, float, autocmds on file buffers)? → tier 2.
+- Is it a decision a controller makes (what gets marked, where the cursor lands, which comment is deleted, which review opens)? → tier 1 via the core and a recorder.
 - A feature spanning both usually gets many tier-1 tests for the logic plus one tier-2 smoke test that the binding reaches it.
 
 ## Practices

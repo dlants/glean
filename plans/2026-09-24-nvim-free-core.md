@@ -213,3 +213,8 @@ Test helper (node-only): `node/test/ui.ts` with recorder implementations of each
 
 - Goal: update `.magenta/skills/testing/skill.md` (port/recorder pattern, where each kind of test goes) and the Layout section of `context.md`.
 - Tests: full suite green; `npx tsc -p .`, `npx biome check .`; every test < 1s in the parallel suite, driver test count roughly halved.
+
+- Status: done.
+  - Testing skill gained a "Controllers: ports and recorders" section and a tier-choice rule for controller decisions; `context.md` Layout lists `app.ts`, `review.ts`, the adapters and `test/ui.ts`.
+  - Suite: 366 tests green, tsc and biome clean.
+  - Deviations: driver `it`s went from 47 (48c55fb) to 30, about a third fewer rather than half. The remaining ones are the nvim-facing smoke tests the stages chose to keep. The < 1s target isn't met: per-test times in the parallel suite depend on load (two runs took 25s and 49s wall-clock). Under load, many node tests that hit git (real-history, blame oracle, gutter, App) and the heavier driver tests run for 1–3s. Not addressed here, since it's outside this refactor.
