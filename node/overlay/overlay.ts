@@ -9,7 +9,14 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CommentRecord, NewComment, Store } from "../core/state.ts";
-import { type RepoPath, type Sha, toSha, WORKTREE } from "../core/types.ts";
+import {
+  type BufNr,
+  type RepoPath,
+  type Sha,
+  toSha,
+  WORKTREE,
+  type WorktreeLnum,
+} from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
 import { splitLines } from "../session/model.ts";
@@ -29,18 +36,18 @@ import {
 } from "./project.ts";
 
 export type OverlayEvent =
-  | { kind: "refresh" | "toggle" | "wipe"; buf: number }
-  | { kind: "show" | "edit" | "delete" | "reply"; buf: number; lnum: number }
-  | { kind: "add"; buf: number; line1: number; line2: number }
-  | { kind: "jump"; buf: number; lnum: number; dir: 1 | -1 }
-  | { kind: "quickfix"; buf: number }
+  | { kind: "refresh" | "toggle" | "wipe"; buf: BufNr }
+  | { kind: "show" | "edit" | "delete" | "reply"; buf: BufNr; lnum: number }
+  | { kind: "add"; buf: BufNr; line1: number; line2: number }
+  | { kind: "jump"; buf: BufNr; lnum: number; dir: 1 | -1 }
+  | { kind: "quickfix"; buf: BufNr }
   | PromptResult;
 
 export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
-  const buf = num("buf");
+  const buf = num("buf") as BufNr | undefined;
   switch (o.kind) {
     case "editor-submit": {
       const token = num("token");
@@ -106,7 +113,7 @@ export type OverlayHost = {
   repoContext(dir: string): Promise<OverlayRepo>;
   repoRelative(root: string, name: string): Promise<RepoPath | undefined>;
   /** Push onto the file buffer's glean undo stack. */
-  pushUndo(buf: number, seq: number, a: FileUndo): Promise<void>;
+  pushUndo(buf: BufNr, seq: number, a: FileUndo): Promise<void>;
   /** Another surface (a live review) must re-read the store. */
   afterWrite(root: string): void;
 };
@@ -120,17 +127,21 @@ export type BufFacts = {
 /** What the overlay needs from the editor, in glean's own terms. */
 export type OverlayUi = {
   /** Loaded, named, ordinary file buffers. */
-  fileBuffers(): Promise<number[]>;
-  facts(buf: number): Promise<BufFacts | undefined>;
-  /** Lines `[lo, hi)` (0-based; `hi` -1 is the end). */
-  lines(buf: number, lo?: number, hi?: number): Promise<string[]>;
+  fileBuffers(): Promise<BufNr[]>;
+  facts(buf: BufNr): Promise<BufFacts | undefined>;
+  allLines(buf: BufNr): Promise<string[]>;
+  /** Lines `from..to`, inclusive. */
+  range(
+    buf: BufNr,
+    r: { from: WorktreeLnum; to: WorktreeLnum },
+  ): Promise<string[]>;
   cwd(): Promise<string>;
   /** Replace `buf`'s stamps. */
-  stamp(buf: number, stamps: Stamp[]): Promise<void>;
+  stamp(buf: BufNr, stamps: Stamp[]): Promise<void>;
   /** Hand the buffer's `u`/`<C-r>` to the glean undo stack. */
-  activateUndo(buf: number): Promise<void>;
+  activateUndo(buf: BufNr): Promise<void>;
   /** Move the cursor to `lnum` if `buf` is current. */
-  park(buf: number, lnum: number): Promise<void>;
+  park(buf: BufNr, lnum: WorktreeLnum): Promise<void>;
   float(lines: BodyLine[]): Promise<void>;
   quickfix(items: QuickfixItem[]): Promise<void>;
   notify(msg: string, level: NotifyLevel): Promise<void>;
@@ -210,7 +221,8 @@ export class Overlay {
       case "jump": {
         const r = await this.resolve(ev.buf);
         const lnum = r && jumpLnum(r.groups, ev.lnum, ev.dir);
-        if (lnum !== undefined) await this.ui.park(ev.buf, lnum);
+        if (lnum !== undefined)
+          await this.ui.park(ev.buf, lnum as WorktreeLnum);
         return;
       }
       case "add":
@@ -239,13 +251,13 @@ export class Overlay {
   }
 
   /** Resolve `buf`'s records against its lines, persisting any that moved. */
-  private async resolve(buf: number) {
+  private async resolve(buf: BufNr) {
     const f = await this.ui.facts(buf);
     const t = f && (await this.target(f));
     if (!f || !t) return undefined;
     const records = t.repo.store.commentsFor(t.path);
     if (records.length === 0) return { f, t, groups: [], lines: [] };
-    const lines = await this.ui.lines(buf);
+    const lines = await this.ui.allLines(buf);
     const { groups, moved } = resolveOverlay(records, lines);
     if (moved) {
       await t.repo.store.save(t.repo.store.wtShard);
@@ -255,7 +267,7 @@ export class Overlay {
   }
 
   /** Cheap no-op for a buffer with no comments: no marks, state or maps. */
-  private async refresh(buf: number) {
+  private async refresh(buf: BufNr) {
     const r = await this.resolve(buf);
     if (!r) return;
     const marks =
@@ -269,7 +281,7 @@ export class Overlay {
     await this.ui.stamp(buf, marks);
   }
 
-  private async show(buf: number, lnum: number) {
+  private async show(buf: BufNr, lnum: number) {
     const r = await this.resolve(buf);
     const records = r ? recordsAt(r.groups, lnum) : [];
     if (records.length === 0) return;
@@ -307,11 +319,14 @@ export class Overlay {
   }
 
   /** A file view never sees a deletion: the run is captured as post-image lines. */
-  private async add(buf: number, line1: number, line2: number) {
+  private async add(buf: BufNr, line1: number, line2: number) {
     const f = await this.ui.facts(buf);
     const t = f && (await this.target(f));
     if (!f || !t) return void (await this.ui.notify(NOT_A_REPO, "warn"));
-    const got = await this.ui.lines(buf, line1 - 1, line2);
+    const got = await this.ui.range(buf, {
+      from: line1 as WorktreeLnum,
+      to: line2 as WorktreeLnum,
+    });
     if (got.length === 0) return;
     const content = got.map((text) => ({
       kind: "add" as const,
@@ -332,7 +347,7 @@ export class Overlay {
 
   /** Run a comment op now, and push it onto `buf`'s glean undo stack. */
   private async perform(
-    buf: number,
+    buf: BufNr,
     path: RepoPath,
     op: CommentOp,
     cursor: number,
@@ -357,7 +372,7 @@ export class Overlay {
    * redo name the same record.
    */
   private async apply(
-    buf: number,
+    buf: BufNr,
     path: RepoPath,
     op: CommentOp,
     reverse: boolean,
@@ -401,7 +416,7 @@ export class Overlay {
 
   /** Run `kind` on the line's comment, asking which one when several resolve there. */
   private async withRecord(
-    buf: number,
+    buf: BufNr,
     lnum: number,
     kind: "delete" | "edit" | "reply",
   ) {
@@ -430,7 +445,7 @@ export class Overlay {
   }
 
   private async act(
-    buf: number,
+    buf: BufNr,
     path: RepoPath,
     lnum: number,
     kind: "delete" | "edit" | "reply",
@@ -461,7 +476,7 @@ export class Overlay {
   }
 
   /** `:Glean comments`: every comment in the repo as a quickfix list. */
-  private async quickfix(buf: number) {
+  private async quickfix(buf: BufNr) {
     const f = await this.ui.facts(buf);
     const cwd = await this.ui.cwd();
     const dir =

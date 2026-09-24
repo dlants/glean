@@ -1,4 +1,5 @@
 /** The nvim adapter for the comment overlay's `OverlayUi` port. */
+import type { BufNr, WorktreeLnum } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import { type PromptResult, Prompts } from "../view/prompts.ts";
 import type { NotifyLevel } from "../view/review.ts";
@@ -33,10 +34,10 @@ for _, b in ipairs(vim.api.nvim_list_bufs()) do
 end
 return out`,
       [],
-    ])) as number[];
+    ])) as BufNr[];
   }
 
-  async facts(buf: number): Promise<BufFacts | undefined> {
+  async facts(buf: BufNr): Promise<BufFacts | undefined> {
     const r = (await this.nvim.call("nvim_exec_lua", [
       `local b = ...
 if not vim.api.nvim_buf_is_loaded(b) then return vim.NIL end
@@ -54,7 +55,13 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
       : undefined;
   }
 
-  async lines(buf: number, lo = 0, hi = -1) {
+  allLines(buf: BufNr) {
+    return this.getLines(buf, 0, -1);
+  }
+  range(buf: BufNr, r: { from: WorktreeLnum; to: WorktreeLnum }) {
+    return this.getLines(buf, r.from - 1, r.to);
+  }
+  private async getLines(buf: BufNr, lo: number, hi: number) {
     const l = await this.nvim.call("nvim_buf_get_lines", [buf, lo, hi, false]);
     return Array.isArray(l)
       ? l.filter((t): t is string => typeof t === "string")
@@ -68,7 +75,7 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
     ])) as string;
   }
 
-  async stamp(buf: number, stamps: Parameters<OverlayUi["stamp"]>[1]) {
+  async stamp(buf: BufNr, stamps: Parameters<OverlayUi["stamp"]>[1]) {
     const calls: unknown[] = [
       ["nvim_buf_clear_namespace", [buf, this.ns, 0, -1]],
     ];
@@ -80,14 +87,14 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
       ]);
   }
 
-  async activateUndo(buf: number) {
+  async activateUndo(buf: BufNr) {
     await this.nvim.call("nvim_exec_lua", [
       `require("glean.node_gutter").activate_undo(..., "overlay")`,
       [buf],
     ]);
   }
 
-  async park(buf: number, lnum: number) {
+  async park(buf: BufNr, lnum: WorktreeLnum) {
     await this.nvim.call("nvim_exec_lua", [
       `local buf, row = ...
 if vim.api.nvim_get_current_buf() ~= buf then return end

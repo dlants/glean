@@ -3,13 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { Store } from "../core/state.ts";
-import type { RepoPath } from "../core/types.ts";
+import type { BufNr, RepoPath } from "../core/types.ts";
 import { Git, spawnRunner } from "../git/git.ts";
 import { repoRelative } from "../glean.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
 import { makeRepo } from "../test/repo.ts";
 import { type RecBuffer, recordOverlayUi } from "../test/ui.ts";
 import { Overlay } from "./overlay.ts";
+
+const B = 1 as BufNr;
 
 const F = "f.txt" as RepoPath;
 const FILES = { "f.txt": "alpha\nbeta\ngamma\n", "q.txt": "quiet\n" };
@@ -63,7 +65,7 @@ function setup(opts: { noRepo?: boolean } = {}) {
   /** Let a scripted editor/pick answer run its continuation. */
   const settle = async () => {
     await new Promise((r) => setImmediate(r));
-    await ov.handle({ kind: "refresh", buf: 1 });
+    await ov.handle({ kind: "refresh", buf: B });
   };
   const recs = async () => (await store()).commentsFor(F);
   const run = async (u: FileUndo | undefined, reverse: boolean) => {
@@ -72,7 +74,7 @@ function setup(opts: { noRepo?: boolean } = {}) {
   };
   const add = async (text: string, line1 = 2, line2 = line1) => {
     rec.answer(text);
-    await ov.handle({ kind: "add", buf: 1, line1, line2 });
+    await ov.handle({ kind: "add", buf: B, line1, line2 });
     await settle();
   };
   return { ov, rec, buf, undos, settle, recs, run, add, root, store };
@@ -88,11 +90,11 @@ it("stamps resolved comments, follows edits, and outdates deleted lines", async 
   expect(signRows()).toEqual([1]);
   expect(t.rec.activated).toEqual([1]);
   t.buf(1).lines = ["new", "alpha", "beta", "gamma"];
-  await t.ov.handle({ kind: "refresh", buf: 1 });
+  await t.ov.handle({ kind: "refresh", buf: B });
   expect(signRows()).toEqual([2]);
   expect((await t.recs())[0]?.lnum).toBe(3);
   t.buf(1).lines = ["new", "alpha", "gamma"];
-  await t.ov.handle({ kind: "refresh", buf: 1 });
+  await t.ov.handle({ kind: "refresh", buf: B });
   expect(
     t.rec.stamps
       .get(1)
@@ -102,7 +104,7 @@ it("stamps resolved comments, follows edits, and outdates deleted lines", async 
 
 it("re-stamps after an api write via refreshAll", async () => {
   const t = setup();
-  await t.ov.handle({ kind: "refresh", buf: 1 });
+  await t.ov.handle({ kind: "refresh", buf: B });
   expect(t.rec.stamps.get(1)).toEqual([]);
   const s = await t.store();
   s.addCommentRecord(F, {
@@ -119,7 +121,7 @@ it("re-stamps after an api write via refreshAll", async () => {
 
 it("a buffer with no comments gets no stamps and no undo takeover", async () => {
   const t = setup();
-  await t.ov.handle({ kind: "refresh", buf: 2 });
+  await t.ov.handle({ kind: "refresh", buf: 2 as BufNr });
   expect(t.rec.stamps.get(2)).toEqual([]);
   expect(t.rec.activated).toEqual([]);
 });
@@ -140,7 +142,7 @@ it("adds on a line and a range with HEAD / dirty origin", async () => {
 it("undo/redo of an add keeps the same id; a dismissed editor adds nothing", async () => {
   const t = setup();
   t.rec.answer(undefined);
-  await t.ov.handle({ kind: "add", buf: 1, line1: 2, line2: 2 });
+  await t.ov.handle({ kind: "add", buf: B, line1: 2, line2: 2 });
   await t.settle();
   expect(await t.recs()).toEqual([]);
   await t.add("x");
@@ -155,11 +157,11 @@ it("edit round-trips through undo; unchanged edit pushes nothing", async () => {
   const t = setup();
   await t.add("before");
   t.rec.answer("before");
-  await t.ov.handle({ kind: "edit", buf: 1, lnum: 2 });
+  await t.ov.handle({ kind: "edit", buf: B, lnum: 2 });
   await t.settle();
   expect(t.undos).toHaveLength(1);
   t.rec.answer("after");
-  await t.ov.handle({ kind: "edit", buf: 1, lnum: 2 });
+  await t.ov.handle({ kind: "edit", buf: B, lnum: 2 });
   await t.settle();
   expect(t.rec.editors.at(-1)).toEqual(["before"]);
   expect((await t.recs())[0]?.text).toBe("after");
@@ -171,10 +173,10 @@ it("reply fills then replaces the slot, each undoable", async () => {
   const t = setup();
   await t.add("c");
   t.rec.answer("r1");
-  await t.ov.handle({ kind: "reply", buf: 1, lnum: 2 });
+  await t.ov.handle({ kind: "reply", buf: B, lnum: 2 });
   await t.settle();
   t.rec.answer("r2");
-  await t.ov.handle({ kind: "reply", buf: 1, lnum: 2 });
+  await t.ov.handle({ kind: "reply", buf: B, lnum: 2 });
   await t.settle();
   expect(t.rec.editors.at(-1)).toEqual(["r1"]);
   expect((await t.recs())[0]?.reply).toBe("r2");
@@ -189,11 +191,11 @@ it("delete asks which of several; a dismissed pick deletes nothing", async () =>
   await t.add("first");
   await t.add("second");
   t.rec.answer(undefined);
-  await t.ov.handle({ kind: "delete", buf: 1, lnum: 2 });
+  await t.ov.handle({ kind: "delete", buf: B, lnum: 2 });
   await t.settle();
   expect(await t.recs()).toHaveLength(2);
   t.rec.answer(1);
-  await t.ov.handle({ kind: "delete", buf: 1, lnum: 2 });
+  await t.ov.handle({ kind: "delete", buf: B, lnum: 2 });
   await t.settle();
   expect(t.rec.picks.at(-1)).toEqual({
     items: ["first", "second"],
@@ -202,25 +204,25 @@ it("delete asks which of several; a dismissed pick deletes nothing", async () =>
   expect((await t.recs()).map((r) => r.text)).toEqual(["first"]);
   await t.run(t.undos.at(-1), true);
   expect(await t.recs()).toHaveLength(2);
-  await t.ov.handle({ kind: "delete", buf: 1, lnum: 3 });
+  await t.ov.handle({ kind: "delete", buf: B, lnum: 3 });
   expect(t.rec.notes.at(-1)?.msg).toBe("glean: no comment on this line");
 });
 
 it("show floats bodies, jump parks, quickfix lists", async () => {
   const t = setup();
   await t.add("hello");
-  await t.ov.handle({ kind: "show", buf: 1, lnum: 2 });
+  await t.ov.handle({ kind: "show", buf: B, lnum: 2 });
   expect(t.rec.floats[0]?.some((l) => l.text.includes("hello"))).toBe(true);
-  await t.ov.handle({ kind: "jump", buf: 1, lnum: 1, dir: 1 });
-  expect(t.rec.parked).toEqual([{ buf: 1, lnum: 2 }]);
-  await t.ov.handle({ kind: "quickfix", buf: 1 });
+  await t.ov.handle({ kind: "jump", buf: B, lnum: 1, dir: 1 });
+  expect(t.rec.parked).toEqual([{ buf: B, lnum: 2 }]);
+  await t.ov.handle({ kind: "quickfix", buf: B });
   expect(t.rec.quickfix).toHaveLength(1);
   expect(t.rec.quickfix?.[0]).toMatchObject({ lnum: 2 });
 });
 
 it("outside a repo, add only notifies", async () => {
   const t = setup({ noRepo: true });
-  await t.ov.handle({ kind: "add", buf: 1, line1: 1, line2: 1 });
+  await t.ov.handle({ kind: "add", buf: B, line1: 1, line2: 1 });
   expect(t.rec.editors).toEqual([]);
   expect(t.rec.notes[0]?.level).toBe("warn");
 });

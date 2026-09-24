@@ -2,7 +2,7 @@
  * In-memory recorders for the UI ports, so controller cores run in node tests.
  * They implement glean's own narrow interfaces, not a fake nvim.
  */
-import type { RepoPath, WorktreeLnum } from "../core/types.ts";
+import type { BufNr, RepoPath, WorktreeLnum } from "../core/types.ts";
 import type { BufFacts, OverlayUi } from "../overlay/overlay.ts";
 import type { BodyLine, QuickfixItem, Stamp } from "../overlay/project.ts";
 import type { DiffContext } from "../render/nav.ts";
@@ -99,7 +99,7 @@ export function recordOverlayUi(buffers: Map<number, RecBuffer>, cwd: string) {
   };
   const ui: OverlayUi = {
     async fileBuffers() {
-      return [...buffers.keys()];
+      return [...buffers.keys()] as BufNr[];
     },
     async facts(buf) {
       const b = buffers.get(buf);
@@ -112,9 +112,11 @@ export function recordOverlayUi(buffers: Map<number, RecBuffer>, cwd: string) {
         }
       );
     },
-    async lines(buf, lo = 0, hi = -1) {
-      const l = buffers.get(buf)?.lines ?? [];
-      return l.slice(lo, hi < 0 ? l.length + 1 + hi : hi);
+    async allLines(buf) {
+      return buffers.get(buf)?.lines ?? [];
+    },
+    async range(buf, r) {
+      return (buffers.get(buf)?.lines ?? []).slice(r.from - 1, r.to);
     },
     async cwd() {
       return cwd;
