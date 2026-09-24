@@ -3,5 +3,7 @@
 # area, not HEAD) and include the per-file index artifacts in the same commit.
 set -e
 cd "$(git rev-parse --show-toplevel)"
+# typecheck + biome first, so the index sees the formatted content
+node hooks/checks.mjs
 ./pkb reindex --staged
 git add .pkb/index .pkb/state.toml
