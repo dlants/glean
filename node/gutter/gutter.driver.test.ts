@@ -6,7 +6,6 @@ import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
   luaEval,
   pollUntil,
-  sleep,
   startBackend,
   startNvim,
   withNvim,
@@ -110,7 +109,7 @@ describe("file-buffer gutter (driver)", () => {
       await waitSigns(nvim, UNSEEN);
     });
   });
-  it("marks with gmm/gm2j, and u/<C-r> ride the mark stack", async () => {
+  it("marks with gmm, and u/<C-r> ride the mark stack", async () => {
     await withShared(async (nvim) => {
       await openFile(nvim);
       await cursor(nvim, 4);
@@ -139,45 +138,6 @@ describe("file-buffer gutter (driver)", () => {
       );
       await input(nvim, "<C-r>");
       await waitSigns(nvim, ROW4_SEEN);
-      await cursor(nvim, 2);
-      await input(nvim, "gm2j");
-      await waitSigns(
-        nvim,
-        "2:GleanGutterChangeSeen 3:GleanGutterContextSeen 4:GleanGutterAddSeen 5:GleanGutterAdd",
-      );
-    });
-  });
-  it("a write reconciles the model, and a novel edit wipes the mark stack", async () => {
-    await withShared(async (nvim) => {
-      await openFile(nvim);
-      await nvim.call("nvim_buf_set_lines", [0, 4, 5, false, ["five edited"]]);
-      await nvim.call("nvim_command", ["silent write"]);
-      await cursor(nvim, 5);
-      await pollUntil(async () =>
-        (
-          await luaEval<string>(
-            nvim,
-            `vim.inspect(require("glean.api").hunks(require("glean.api").sessions()[1].id))`,
-          )
-        ).includes("five edited")
-          ? true
-          : undefined,
-      );
-      await input(nvim, "gmm");
-      await waitSigns(
-        nvim,
-        "2:GleanGutterChange 3:GleanGutterContextSeen 4:GleanGutterAdd 5:GleanGutterAddSeen",
-      );
-      await input(nvim, "A x<Esc>");
-      await input(nvim, "u");
-      await pollUntil(async () =>
-        (await luaEval<boolean>(nvim, "vim.bo.modified")) ? undefined : true,
-      );
-      await nvim.call("nvim_exec_autocmds", ["BufWritePost", { buffer: 0 }]);
-      // Nothing to wait on for "the mark survived": give the backend a few
-      // poll ticks (glean_poll_ms = 30) to wrongly wipe it.
-      await sleep(150);
-      expect(await signs(nvim)).toContain("5:GleanGutterAddSeen");
     });
   });
   it("gmc marks the hunk and the focus overlay covers it", async () => {
@@ -200,7 +160,7 @@ describe("file-buffer gutter (driver)", () => {
       );
     });
   });
-  it("uncommitted deletions, ]c, and per-buffer/global toggles", async () => {
+  it("]c and gt reach the gutter", async () => {
     await withShared(async (nvim) => {
       await openFile(nvim);
       await cursor(nvim, 1);
@@ -215,14 +175,6 @@ describe("file-buffer gutter (driver)", () => {
       await waitSigns(nvim, "");
       await input(nvim, "gt");
       await waitSigns(nvim, UNSEEN);
-      await nvim.call("nvim_command", ["Glean toggle-gutter"]);
-      await waitSigns(nvim, "");
-      await nvim.call("nvim_command", ["Glean toggle-gutter"]);
-      await waitSigns(nvim, UNSEEN);
-      await nvim.call("nvim_command", ["edit d.txt"]);
-      await waitSigns(nvim, "1:GleanGutterDelete");
-      await nvim.call("nvim_command", ["1Glean toggle-mark"]);
-      await waitSigns(nvim, "1:GleanGutterDeleteSeen");
     });
   });
   it("suppresses the foreign provider and reattaches on backend exit", async () => {

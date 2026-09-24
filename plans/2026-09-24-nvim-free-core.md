@@ -187,6 +187,11 @@ Test helper (node-only): `node/test/ui.ts` with recorder implementations of each
   - focus reports the hunk range under the cursor.
   - Then slim `gutter.driver.test.ts` to: signs appear as extmarks, focus glyph, keymaps reach the core, foreign provider detach/reattach on backend exit.
 
+- Status: done.
+  - `GutterUi` + `GutterPaint`/`GutterSign` live in `fileGutter.ts`; the adapter is `NvimGutterUi` (`nvimGutterUi.ts`: namespaces, glyphs/highlight groups, batching, Lua `info`/`attach`/`detach`, park). `recordGutterUi(buffers)` in `node/test/ui.ts`; tests in `fileGutter.test.ts`.
+  - Deviations: instead of separate `paint`/`provider` per buffer, `paint(paints[])` takes one batch of `{ buf, member: "attach"|"detach"|undefined, signs, stale, focus }` (the adapter keeps it one atomic write); `focus(buf, signs)` takes the computed focus signs (pure `focusSigns` in the core). The port also has `logError`. `setUndoDepth` is only called with a defined depth (as before).
+  - Driver tests removed (now node-only): gm2j range, write-reconcile/novel-edit stack wipe, `:Glean toggle-gutter`, uncommitted deletion marking.
+
 ## App registry and lists
 
 - Goal: `App` core in `node/app.ts` with `AppUi`; `glean.ts` keeps RPC wiring/lifecycle and implements `AppUi`.

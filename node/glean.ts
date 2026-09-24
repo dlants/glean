@@ -6,6 +6,7 @@ import { COMMENTS_ID, Store } from "./core/state.ts";
 import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
 import { Git, type LogCommit, type Outcome, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
+import { NvimGutterUi } from "./gutter/nvimGutterUi.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
 import { NvimOverlayUi } from "./overlay/nvimOverlayUi.ts";
 import { Overlay, parseOverlayEvent } from "./overlay/overlay.ts";
@@ -798,8 +799,9 @@ export async function startGlean(nvim: Nvim): Promise<void> {
     const ev = parseListEvent(args[0]);
     if (ev) await reported(nvim, () => handleList(nvim, ev));
   });
-  const g = new FileGutter(nvim, () => liveSession);
-  await g.init();
+  const gutterUi = new NvimGutterUi(nvim);
+  await gutterUi.init();
+  const g = new FileGutter(gutterUi, () => liveSession);
   gutter = g;
   nvim.onNotification(GLEAN_GUTTER, async (args: unknown[]) => {
     const ev = parseGutterEvent(args[0]);

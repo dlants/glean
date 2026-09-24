@@ -3,6 +3,8 @@
  * They implement glean's own narrow interfaces, not a fake nvim.
  */
 import type { BufNr, RepoPath, WorktreeLnum } from "../core/types.ts";
+import type { UndoDepth } from "../gutter/bufUndo.ts";
+import type { GutterSign, GutterUi } from "../gutter/fileGutter.ts";
 import type { BufFacts, OverlayUi } from "../overlay/overlay.ts";
 import type { BodyLine, QuickfixItem, Stamp } from "../overlay/project.ts";
 import type { DiffContext } from "../render/nav.ts";
@@ -148,6 +150,78 @@ export function recordOverlayUi(buffers: Map<number, RecBuffer>, cwd: string) {
       rec.picks.push({ items, title });
       const a = next();
       return typeof a === "number" ? a : undefined;
+    },
+    logError(err) {
+      rec.errors.push(err);
+    },
+  };
+  return { ui, rec };
+}
+
+export type GutterBuffer = {
+  name: string;
+  lines: string[];
+  modified: boolean;
+  seq: number;
+  cursor?: number;
+  focus?: boolean;
+};
+export function recordGutterUi(buffers: Map<number, GutterBuffer>) {
+  const rec = {
+    /** Current signs per buffer as "lnum:kind[+seen]" (stale: "lnum:stale"). */
+    signs: new Map<number, string>(),
+    focus: new Map<number, string>(),
+    attached: new Set<number>(),
+    depth: new Map<number, UndoDepth>(),
+    parked: [] as { buf: number; row: number }[],
+    notes: [] as { msg: string; level: NotifyLevel }[],
+    errors: [] as unknown[],
+  };
+  const fmt = (signs: GutterSign[], stale = false) =>
+    [...signs]
+      .sort((a, b) => a.lnum - b.lnum)
+      .map((s) =>
+        stale ? `${s.lnum}:stale` : `${s.lnum}:${s.kind}${s.seen ? "+" : ""}`,
+      )
+      .join(" ");
+  const ui: GutterUi = {
+    async infos(bufs, withSeq) {
+      return [...buffers]
+        .filter(([n]) => bufs === undefined || bufs.includes(n))
+        .map(([buf, b]) => ({
+          buf,
+          name: b.name,
+          modified: b.modified,
+          lines: b.lines.length,
+          cursor: b.cursor as WorktreeLnum | undefined,
+          seq: withSeq ? b.seq : undefined,
+          focus: b.focus ?? true,
+        }));
+    },
+    async lines(buf) {
+      return buffers.get(buf)?.lines ?? [];
+    },
+    async paint(paints) {
+      for (const p of paints) {
+        if (p.member === "attach") rec.attached.add(p.buf);
+        if (p.member === "detach") rec.attached.delete(p.buf);
+        rec.signs.set(p.buf, fmt(p.signs, p.stale));
+        rec.focus.set(p.buf, fmt(p.focus));
+      }
+    },
+    async focus(buf, signs) {
+      rec.focus.set(buf, fmt(signs));
+    },
+    async setUndoDepth(buf, depth) {
+      rec.depth.set(buf, depth);
+    },
+    async park(buf, row) {
+      rec.parked.push({ buf, row });
+      const b = buffers.get(buf);
+      if (b) b.cursor = Math.min(row, b.lines.length);
+    },
+    async notify(msg, level) {
+      rec.notes.push({ msg, level });
     },
     logError(err) {
       rec.errors.push(err);

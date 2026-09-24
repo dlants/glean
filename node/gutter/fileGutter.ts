@@ -2,17 +2,17 @@
  * The gutter in ordinary file buffers, driven by Lua events. Node owns the
  * projection, painting, marking and the mark undo stacks; Lua only forwards
  * events and hosts the foreign sign provider detach/reattach
- * (`glean.node_gutter`). Events are handled one at a time, in order.
+ * (`glean.node_gutter`). Events are handled one at a time, in order. All nvim
+ * access goes through the `GutterUi` port (`nvimGutterUi.ts`).
  */
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { RepoPath, WorktreeLnum } from "../core/types.ts";
-import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { SeenPlan } from "../render/actions.ts";
 import { splitLines } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
-import { MAX_BATCH_CALLS } from "../view/view.ts";
-import { BufUndo } from "./bufUndo.ts";
+import type { NotifyLevel } from "../view/review.ts";
+import { BufUndo, type UndoDepth } from "./bufUndo.ts";
 import { fileStatus, planFileMarks } from "./marking.ts";
 import {
   type GutterKind,
@@ -79,7 +79,7 @@ export function parseGutterEvent(v: unknown): GutterEvent | undefined {
   }
 }
 
-type BufInfo = {
+export type BufInfo = {
   buf: number;
   name: string;
   modified: boolean;
@@ -89,7 +89,7 @@ type BufInfo = {
   seq: number | undefined;
   focus: boolean;
 };
-function parseInfos(v: unknown): BufInfo[] {
+export function parseInfos(v: unknown): BufInfo[] {
   if (!Array.isArray(v)) return [];
   return v.flatMap((x: Record<string, unknown>) =>
     typeof x.buf === "number" &&
@@ -113,31 +113,32 @@ function parseInfos(v: unknown): BufInfo[] {
   );
 }
 
-// Shape is the kind, colour the seen status. The focused hunk (what `gmc`
-// acts on) is drawn heavier in the same colour. A modified buffer holds the
-// column open with a placeholder so its text does not reflow mid-edit.
-const GLYPH: Record<GutterKind, string> = {
-  add: "▎",
-  change: "▎",
-  del: "▁",
-  context: "▏",
+export type GutterSign = {
+  lnum: WorktreeLnum;
+  kind: GutterKind;
+  seen: boolean;
 };
-const FOCUS_GLYPH: Record<GutterKind, string> = {
-  add: "█",
-  change: "█",
-  del: "▄",
-  context: "▎",
+/** One buffer's new gutter state. `member` flips the maps/sign column (and
+ * the foreign provider); `signs` replace the previous ones. */
+export type GutterPaint = {
+  buf: number;
+  member: "attach" | "detach" | undefined;
+  signs: GutterSign[];
+  stale: boolean;
+  focus: GutterSign[];
 };
-const GROUP: Record<GutterKind, string> = {
-  add: "GleanGutterAdd",
-  change: "GleanGutterChange",
-  del: "GleanGutterDelete",
-  context: "GleanGutterContext",
+export type GutterUi = {
+  infos(bufs: number[] | undefined, withSeq: boolean): Promise<BufInfo[]>;
+  lines(buf: number): Promise<string[]>;
+  /** Applied as one batch, in order. */
+  paint(paints: GutterPaint[]): Promise<void>;
+  focus(buf: number, signs: GutterSign[]): Promise<void>;
+  setUndoDepth(buf: number, depth: UndoDepth): Promise<void>;
+  /** Move the cursor (with a jumplist entry) if `buf` is still current. */
+  park(buf: number, row: number): Promise<void>;
+  notify(msg: string, level: NotifyLevel): Promise<void>;
+  logError(err: unknown): void;
 };
-const STALE_GLYPH = "╎";
-// Above the base sign's default priority: with a one-wide sign column only
-// the top sign on a row is drawn.
-const FOCUS_PRIORITY = 4097;
 
 type Painted = { path: RepoPath; marks: GutterMarks; stale: boolean };
 /** One entry of a file buffer's glean stack: a seen-mark, or a comment
@@ -160,25 +161,16 @@ export class FileGutter {
   private readonly pendingRefresh = new Set<number>();
   /** Bumped per `refreshAll`; a superseded full repaint is skipped. */
   private allGen = 0;
-  private ns = 0;
-  private nsFocus = 0;
 
   constructor(
-    private readonly nvim: Nvim,
+    private readonly ui: GutterUi,
     private readonly session: () => Session | undefined,
   ) {}
-
-  async init() {
-    this.ns = await this.nvim.call("nvim_create_namespace", ["glean_gutter"]);
-    this.nsFocus = await this.nvim.call("nvim_create_namespace", [
-      "glean_gutter_focus",
-    ]);
-  }
 
   /** Serialized: a repaint never interleaves with another. */
   private enqueue(fn: () => Promise<void>): Promise<void> {
     this.chain = this.chain.then(fn).catch((err: unknown) => {
-      this.nvim.logger.error(err instanceof Error ? err : String(err));
+      this.ui.logError(err);
     });
     return this.chain;
   }
@@ -215,9 +207,9 @@ export class FileGutter {
         return this.repaint([ev.buf]);
       case "focus": {
         const p = this.painted.get(ev.buf);
-        const [info] = await this.infos([ev.buf]);
+        const [info] = await this.ui.infos([ev.buf], false);
         if (!info) return;
-        await this.atomic(this.focusCalls(info, p));
+        await this.ui.focus(ev.buf, focusSigns(info, p));
         return;
       }
       case "toggle":
@@ -233,7 +225,7 @@ export class FileGutter {
         return;
       case "goto-hunk": {
         const p = this.painted.get(ev.buf);
-        const [info] = await this.infos([ev.buf]);
+        const [info] = await this.ui.infos([ev.buf], false);
         if (!p || !info) return;
         const row = nextHunkRow(hunkStarts(p.marks, true), ev.row, ev.dir);
         if (row === undefined || row > info.lines) return;
@@ -246,20 +238,6 @@ export class FileGutter {
       case "redo":
         return this.step(ev.kind, ev.buf, ev.seq);
     }
-  }
-
-  private async infos(
-    bufs: number[] | undefined,
-    withSeq = false,
-  ): Promise<BufInfo[]> {
-    // Lua reads an absent list as "every buffer"; msgpack needs nil here.
-    const args = bufs === undefined ? [null, withSeq] : [bufs, withSeq];
-    return parseInfos(
-      await this.nvim.call("nvim_exec_lua", [
-        `return require("glean.node_gutter").info(...)`,
-        args,
-      ]),
-    );
   }
 
   private relPath(name: string): RepoPath | undefined {
@@ -280,8 +258,8 @@ export class FileGutter {
   }
 
   private async repaint(bufs: number[] | undefined, gen?: number) {
-    const calls: unknown[] = [];
-    for (const info of await this.infos(bufs)) {
+    const paints: GutterPaint[] = [];
+    for (const info of await this.ui.infos(bufs, false)) {
       // Projection is per buffer; yield between them, and abandon a full
       // repaint once a newer one is queued.
       if (gen !== undefined) {
@@ -292,97 +270,39 @@ export class FileGutter {
       const st = this.statusFor(buf, info.name);
       // Membership (not paintedness) owns the maps and the sign column, so a
       // momentarily modified file keeps both.
+      let member: GutterPaint["member"];
       if (st) {
         this.members.add(buf);
-        calls.push(lua(`require("glean.node_gutter").attach(...)`, [buf]));
-      } else if (this.members.delete(buf)) {
-        calls.push(lua(`require("glean.node_gutter").detach(...)`, [buf]));
-      }
+        member = "attach";
+      } else if (this.members.delete(buf)) member = "detach";
       const had = this.painted.delete(buf);
-      if (had || st)
-        calls.push(
-          ["nvim_buf_clear_namespace", [buf, this.ns, 0, -1]],
-          ["nvim_buf_clear_namespace", [buf, this.nsFocus, 0, -1]],
-        );
+      if (!(had || st || member)) continue;
+      const paint: GutterPaint = {
+        buf,
+        member,
+        signs: [],
+        stale: false,
+        focus: [],
+      };
+      paints.push(paint);
       if (!st || st.marks.size === 0) continue;
       const p = { ...st, stale: info.modified };
       this.painted.set(buf, p);
-      for (const [lnum, m] of st.marks) {
-        if (lnum < 1 || lnum > info.lines) continue;
-        calls.push([
-          "nvim_buf_set_extmark",
-          [
-            buf,
-            this.ns,
-            lnum - 1,
-            0,
-            p.stale
-              ? { sign_text: STALE_GLYPH, sign_hl_group: "GleanGutterStale" }
-              : {
-                  sign_text: GLYPH[m.kind],
-                  sign_hl_group: GROUP[m.kind] + (m.seen ? "Seen" : ""),
-                },
-          ],
-        ]);
-      }
-      calls.push(...this.focusCalls(info, p));
+      paint.stale = p.stale;
+      for (const [lnum, m] of st.marks)
+        if (lnum >= 1 && lnum <= info.lines)
+          paint.signs.push({ lnum, kind: m.kind, seen: m.seen });
+      paint.focus = focusSigns(info, p);
     }
-    await this.atomic(calls);
-  }
-
-  private focusCalls(info: BufInfo, p: Painted | undefined): unknown[] {
-    const calls: unknown[] = [
-      ["nvim_buf_clear_namespace", [info.buf, this.nsFocus, 0, -1]],
-    ];
-    if (!p || p.stale || !info.focus || info.cursor === undefined) return calls;
-    const range = hunkRange(p.marks, info.cursor);
-    if (!range) return calls;
-    // The model can lag the buffer, so rows are clamped to what it has.
-    for (
-      let l = Math.max(range.lo, 1);
-      l <= Math.min(range.hi, info.lines);
-      l++
-    ) {
-      const m = p.marks.get(l as WorktreeLnum);
-      if (!m) continue;
-      calls.push([
-        "nvim_buf_set_extmark",
-        [
-          info.buf,
-          this.nsFocus,
-          l - 1,
-          0,
-          {
-            sign_text: FOCUS_GLYPH[m.kind],
-            sign_hl_group: GROUP[m.kind] + (m.seen ? "Seen" : ""),
-            priority: FOCUS_PRIORITY,
-          },
-        ],
-      ]);
-    }
-    return calls;
-  }
-
-  private async atomic(calls: unknown[]) {
-    for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS)
-      await this.nvim.call("nvim_call_atomic", [
-        calls.slice(i, i + MAX_BATCH_CALLS),
-      ]);
+    await this.ui.paint(paints);
   }
 
   private warn(msg: string) {
-    return this.nvim.call("nvim_notify", [`glean: ${msg}`, 3, {}]);
+    return this.ui.notify(`glean: ${msg}`, "warn");
   }
 
-  /** Move the cursor (with a jumplist entry) if `buf` is still current. */
   private park(buf: number, row: number) {
-    return this.nvim.call("nvim_exec_lua", [
-      `local buf, row = ...
-if vim.api.nvim_get_current_buf() ~= buf then return end
-vim.cmd("normal! m'")
-vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf)), 0 })`,
-      [buf, row],
-    ]);
+    return this.ui.park(buf, row);
   }
 
   /** Record an already-applied action on `buf`'s stack (seq: its `seq_last`). */
@@ -393,7 +313,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
 
   private async syncUndoVar(buf: number) {
     const d = this.undo.depth(buf);
-    if (d) await this.nvim.call("nvim_buf_set_var", [buf, "glean_undo", d]);
+    if (d) await this.ui.setUndoDepth(buf, d);
   }
 
   /**
@@ -408,7 +328,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
   ) {
     const s = this.session();
     if (!s?.worktree) return void (await this.warn("no live work-tree review"));
-    const [info] = await this.infos([buf], true);
+    const [info] = await this.ui.infos([buf], true);
     if (!info || info.seq === undefined) return;
     if (info.modified)
       return void (await this.warn("buffer is modified; write it first"));
@@ -420,16 +340,10 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
     // One immediate poll first, so a write the timer hasn't seen yet lands
     // in the model before rows are resolved against it.
     await s.pokePoll();
-    const [bufLines, disk] = await Promise.all([
-      this.nvim.call("nvim_buf_get_lines", [buf, 0, -1, false]),
+    const [lines, disk] = await Promise.all([
+      this.ui.lines(buf),
       readFile(resolve(s.repoRoot, path), "utf8").then(splitLines, () => []),
     ]);
-    if (
-      !Array.isArray(bufLines) ||
-      !bufLines.every((l) => typeof l === "string")
-    )
-      return;
-    const lines: readonly string[] = bufLines;
     if (lines.length !== disk.length || lines.some((l, i) => l !== disk[i]))
       return void (await this.warn(
         "review is out of date for this file; refreshing, try again",
@@ -472,6 +386,20 @@ vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf))
   }
 }
 
-function lua(code: string, args: unknown[]): unknown {
-  return ["nvim_exec_lua", [code, args]];
+function focusSigns(info: BufInfo, p: Painted | undefined): GutterSign[] {
+  if (!p || p.stale || !info.focus || info.cursor === undefined) return [];
+  const range = hunkRange(p.marks, info.cursor);
+  if (!range) return [];
+  const out: GutterSign[] = [];
+  // The model can lag the buffer, so rows are clamped to what it has.
+  for (
+    let l = Math.max(range.lo, 1);
+    l <= Math.min(range.hi, info.lines);
+    l++
+  ) {
+    const lnum = l as WorktreeLnum;
+    const m = p.marks.get(lnum);
+    if (m) out.push({ lnum, kind: m.kind, seen: m.seen });
+  }
+  return out;
 }
