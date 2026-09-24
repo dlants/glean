@@ -203,6 +203,11 @@ Test helper (node-only): `node/test/ui.ts` with recorder implementations of each
   - range reviews get the expected title.
   - Then slim `glean.driver.test.ts` to: bridge ping/teardown, list buffer paint + `]p`/`<CR>` wiring.
 
+- Status: done.
+  - `node/app.ts`: `App` (current review, `reviews`, `liveSession`, list states), `AppUi`, `ReviewHost` (what `AppUi.review(buf, session, opts)` returns; `ReviewView` satisfies it), plus `parseListEvent`, `storeLocation`/`storePaths`, `repoRelative` moved from `glean.ts`. `glean.ts` keeps `parseCommand` (ping/toggle-gutter/unknown stay there), `repoContext`, RPC registration and `nvimAppUi(nvim)`.
+  - Deviations: `AppUi.config()` returns all the open context incl. `bufName`, `pollMs`, `logPageSize` (repo-root discovery runs in the core); extra port methods `cursorFile`, `bufValid`, `renameBuffer`, `blankBuffer` (`:e` reset), `setCursor(buf,row)` (0-based, all windows of the buffer), `openListBuffer`. No `reviewUi(buf)`: `review(buf, session, opts)` builds the whole host. `App` takes `AppDeps { runner, gh, onModel({gutter, overlay}) }` so tests use the repo's git env and gutter/overlay refreshes stay in `glean.ts`. The reset/`gone` actions are handled by `App.action`.
+  - Tests in `node/app.test.ts` (recorder `AppUi` built inline around `ReviewController` + `recordReviewUi`). Driver tests removed: range title, log visual `<CR>`, log paging, wiped log buffer, `:Glean jump` default review. Kept: ping, teardown, log `<CR>` (list paint + `<CR>` wiring).
+
 ## Docs
 
 - Goal: update `.magenta/skills/testing/skill.md` (port/recorder pattern, where each kind of test goes) and the Layout section of `context.md`.

@@ -7,8 +7,8 @@ import type { BufNr, RepoPath, WorktreeLnum } from "../core/types.ts";
 
 const L = (n: number) => n as WorktreeLnum;
 
+import { repoRelative } from "../app.ts";
 import { Git, spawnRunner } from "../git/git.ts";
-import { repoRelative } from "../glean.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
 import { makeRepo } from "../test/repo.ts";
 import { type RecBuffer, recordOverlayUi } from "../test/ui.ts";

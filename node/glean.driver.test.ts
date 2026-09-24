@@ -59,31 +59,6 @@ describe("review targets (driver)", () => {
   const lines = (nvim: Nvim) =>
     luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
 
-  it(":Glean <base> <target> reviews the commit range under the old title", async () => {
-    const repo = makeRepo([
-      { files: { "a.txt": "1\n" } },
-      { msg: "one", files: { "a.txt": "ONE\n" } },
-      { msg: "two", files: { "b.txt": "B\n" } },
-    ]);
-    await withNvim(async (nvim) => {
-      await setup(nvim, repo.root);
-      const [b, t] = [repo.shas[0] ?? "", repo.shas[1] ?? ""];
-      await nvim.call("nvim_command", [`Glean ${b} ${t}`]);
-      const name = await pollUntil(async () => {
-        const n = await luaEval<string>(nvim, bufName());
-        return n.startsWith("Glean:g") ? n : undefined;
-      });
-      expect(name).toBe(
-        `Glean:g1 ${basename(repo.root)} ${b.slice(0, 8)}..${t.slice(0, 8)}`,
-      );
-      const body = await pollUntil(async () => {
-        const l = await lines(nvim);
-        return l.some((s) => s.includes("ONE")) ? l : undefined;
-      });
-      expect(body.join("\n")).not.toContain("b.txt");
-    });
-  });
-
   it(":Glean log → <CR> opens the selected commit, one review at a time", async () => {
     const repo = makeRepo([
       { files: { "a.txt": "1\n" } },
@@ -112,117 +87,6 @@ describe("review targets (driver)", () => {
       expect(body.join("\n")).not.toContain("b.txt");
       const short = repo.shas[1]?.slice(0, 8);
       expect(await luaEval<string>(nvim, bufName())).toContain(`${short} [`);
-    });
-  });
-
-  it(":Glean log visual <CR> replaces the open review", async () => {
-    const repo = makeRepo([
-      { files: { "a.txt": "1\n" } },
-      { msg: "c1: one", files: { "a.txt": "ONE\n" } },
-      { msg: "c2: two", files: { "b.txt": "B\n" } },
-    ]);
-    await withNvim(async (nvim) => {
-      await setup(nvim, repo.root);
-      await nvim.call("nvim_command", [
-        `Glean ${repo.shas[0]} ${repo.shas[1]}`,
-      ]);
-      await pollUntil(async () =>
-        (await lines(nvim)).some((s) => s.includes("ONE")) ? true : undefined,
-      );
-      await nvim.call("nvim_command", ["Glean log"]);
-      await pollUntil(async () =>
-        (await lines(nvim))[0]?.startsWith("Glean log") ? true : undefined,
-      );
-      await nvim.call("nvim_win_set_cursor", [0, [3, 0]]);
-      await nvim.call("nvim_input", ["Vj<CR>"]);
-      await pollUntil(async () => {
-        const l = await lines(nvim);
-        return l.some((s) => s.includes("b.txt")) &&
-          l.some((s) => s.includes("a.txt"))
-          ? l
-          : undefined;
-      });
-      const sessions = await luaEval<unknown[]>(
-        nvim,
-        `require("glean.api").sessions()`,
-      );
-      expect(sessions).toHaveLength(1);
-    });
-  });
-  it(":Glean log pages forward and stops at the end", async () => {
-    const repo = makeRepo([
-      { files: { "a.txt": "0\n" } },
-      ...[1, 2, 3, 4].map((i) => ({
-        msg: `c${i}`,
-        files: { "a.txt": `${i}\n` },
-      })),
-    ]);
-    await withNvim(async (nvim) => {
-      await setup(nvim, repo.root);
-      await luaEval(nvim, "(function() vim.g.glean_log_page_size = 2 end)()");
-      await nvim.call("nvim_command", ["Glean log"]);
-      const commitRows = (l: string[]) =>
-        l.filter((s) => /^[0-9a-f]{7,} /.test(s));
-      const first = await pollUntil(async () => {
-        const l = await lines(nvim);
-        return l[0]?.startsWith("Glean log") ? l : undefined;
-      });
-      expect(commitRows(first).map((s) => s.split("  ")[1])).toEqual([
-        "c4",
-        "c3",
-      ]);
-      expect(first.at(-1)).toContain("]p to load more");
-      await nvim.call("nvim_input", ["]p"]);
-      const second = await pollUntil(async () => {
-        const l = await lines(nvim);
-        return commitRows(l).length === 4 ? l : undefined;
-      });
-      expect(commitRows(second).map((s) => s.split("  ")[1])).toEqual([
-        "c4",
-        "c3",
-        "c2",
-        "c1",
-      ]);
-      expect(second.at(-1)).toContain("]p to load more");
-      await nvim.call("nvim_input", ["]p"]);
-      const last = await pollUntil(async () => {
-        const l = await lines(nvim);
-        return commitRows(l).length === 5 ? l : undefined;
-      });
-      expect(last.at(-1)).not.toContain("]p to load more");
-      await nvim.call("nvim_input", ["]p"]);
-      await new Promise((r) => setTimeout(r, 100));
-      expect(commitRows(await lines(nvim))).toHaveLength(5);
-    });
-  });
-
-  it("a wiped :Glean log buffer is forgotten; the next :Glean log is fresh", async () => {
-    const repo = makeRepo([
-      { files: { "a.txt": "0\n" } },
-      ...[1, 2, 3].map((i) => ({ msg: `c${i}`, files: { "a.txt": `${i}\n` } })),
-    ]);
-    await withNvim(async (nvim) => {
-      await setup(nvim, repo.root);
-      await luaEval(nvim, "(function() vim.g.glean_log_page_size = 2 end)()");
-      await nvim.call("nvim_command", ["Glean log"]);
-      const commitRows = (l: string[]) =>
-        l.filter((s) => /^[0-9a-f]{7,} /.test(s));
-      await pollUntil(async () =>
-        (await lines(nvim))[0]?.startsWith("Glean log") ? true : undefined,
-      );
-      // A wiped list buffer is forgotten: the next :Glean log makes a fresh one.
-      const oldBuf = await luaEval<number>(
-        nvim,
-        "vim.api.nvim_get_current_buf()",
-      );
-      await nvim.call("nvim_command", [`bwipeout! ${oldBuf}`]);
-      await nvim.call("nvim_command", ["Glean log"]);
-      const fresh = await pollUntil(async () => {
-        const b = await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()");
-        const l = await lines(nvim);
-        return b !== oldBuf && l[0]?.startsWith("Glean log") ? l : undefined;
-      });
-      expect(commitRows(fresh)).toHaveLength(2);
     });
   });
 });
@@ -354,41 +218,6 @@ describe("navigation and jump (driver)", () => {
         `glean://${repo.shas[0]?.slice(0, 8)}:j.txt`,
       );
       expect(diffs[1]?.name.endsWith("/j.txt")).toBe(true);
-    });
-  });
-  it(":Glean jump with no review opens the default one; files outside it warn", async () => {
-    const repo = makeRepo([
-      {
-        files: { "j.txt": "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n", "o.txt": "o\n" },
-      },
-      { msg: "c1", files: { "j.txt": "a\nB\nc\nd\ne\nf\ng\nh\ni\nJ\nk\n" } },
-    ]);
-    await withNvim(async (nvim) => {
-      await setup(nvim, repo.root);
-      await luaEval(
-        nvim,
-        `(function()
-          require("glean").config.default_base = ${JSON.stringify(repo.shas[0])}
-          _G.notes = {}
-          vim.notify = function(m) table.insert(_G.notes, m) end
-        end)()`,
-      );
-      await luaEval(
-        nvim,
-        `require("glean.api").add_comment({ repo = ${JSON.stringify(repo.root)}, path = "j.txt", lnum = 10, text = "note J" })`,
-      );
-      // No review yet: :Glean jump opens the default one, then warns about o.txt.
-      await nvim.call("nvim_command", ["edit o.txt"]);
-      await nvim.call("nvim_command", ["Glean jump"]);
-      const note = await pollUntil(async () => {
-        const n = await luaEval<string[]>(nvim, "_G.notes");
-        return n.find((m) => m.includes("not part of the review"));
-      });
-      expect(note).toContain("o.txt");
-      await pollUntil(async () => {
-        const l = await lines(nvim);
-        return l.includes("J") ? true : undefined;
-      });
     });
   });
 });

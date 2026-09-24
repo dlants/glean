@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { repoRelative } from "./glean.ts";
+import { repoRelative } from "./app.ts";
 
 describe("repoRelative", () => {
   const root = mkdtempSync(join(tmpdir(), "glean-rel-"));
