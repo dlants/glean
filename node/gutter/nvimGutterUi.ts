@@ -1,4 +1,5 @@
 /** The nvim adapter for the file-buffer gutter's `GutterUi` port. */
+import type { BufNr, WorktreeLnum } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { NotifyLevel } from "../view/review.ts";
 import { MAX_BATCH_CALLS } from "../view/view.ts";
@@ -9,6 +10,7 @@ import {
   type GutterSign,
   type GutterUi,
   parseInfos,
+  type SeqInfo,
 } from "./fileGutter.ts";
 import type { GutterKind } from "./project.ts";
 
@@ -52,10 +54,14 @@ export class NvimGutterUi implements GutterUi {
   logError(err: unknown) {
     this.nvim.logger.error(err instanceof Error ? err : String(err));
   }
-  async infos(
-    bufs: number[] | undefined,
-    withSeq: boolean,
-  ): Promise<BufInfo[]> {
+  infos(bufs: BufNr[] | undefined): Promise<BufInfo[]> {
+    return this.fetch(bufs, false);
+  }
+  async seqInfo(buf: BufNr): Promise<SeqInfo | undefined> {
+    const [info] = await this.fetch([buf], true);
+    return info?.seq === undefined ? undefined : { ...info, seq: info.seq };
+  }
+  private async fetch(bufs: BufNr[] | undefined, withSeq: boolean) {
     // Lua reads an absent list as "every buffer"; msgpack needs nil here.
     const args = bufs === undefined ? [null, withSeq] : [bufs, withSeq];
     return parseInfos(
@@ -65,7 +71,7 @@ export class NvimGutterUi implements GutterUi {
       ]),
     );
   }
-  async lines(buf: number): Promise<string[]> {
+  async lines(buf: BufNr): Promise<string[]> {
     const l = (await this.nvim.call("nvim_buf_get_lines", [
       buf,
       0,
@@ -83,27 +89,29 @@ export class NvimGutterUi implements GutterUi {
           [`require("glean.node_gutter").${p.member}(...)`, [p.buf]],
         ]);
       calls.push(["nvim_buf_clear_namespace", [p.buf, this.ns, 0, -1]]);
-      for (const s of p.signs)
+      const st = p.state;
+      const mark = (lnum: WorktreeLnum, opts: object) =>
         calls.push([
           "nvim_buf_set_extmark",
-          [
-            p.buf,
-            this.ns,
-            s.lnum - 1,
-            0,
-            p.stale
-              ? { sign_text: STALE_GLYPH, sign_hl_group: "GleanGutterStale" }
-              : { sign_text: GLYPH[s.kind], sign_hl_group: group(s) },
-          ],
+          [p.buf, this.ns, lnum - 1, 0, opts],
         ]);
-      calls.push(...this.focusCalls(p.buf, p.focus));
+      if (st.kind === "stale")
+        for (const lnum of st.lnums)
+          mark(lnum, {
+            sign_text: STALE_GLYPH,
+            sign_hl_group: "GleanGutterStale",
+          });
+      if (st.kind === "live")
+        for (const s of st.signs)
+          mark(s.lnum, { sign_text: GLYPH[s.kind], sign_hl_group: group(s) });
+      calls.push(...this.focusCalls(p.buf, st.kind === "live" ? st.focus : []));
     }
     await this.atomic(calls);
   }
-  focus(buf: number, signs: GutterSign[]) {
+  focus(buf: BufNr, signs: GutterSign[]) {
     return this.atomic(this.focusCalls(buf, signs));
   }
-  private focusCalls(buf: number, signs: GutterSign[]): unknown[] {
+  private focusCalls(buf: BufNr, signs: GutterSign[]): unknown[] {
     return [
       ["nvim_buf_clear_namespace", [buf, this.nsFocus, 0, -1]],
       ...signs.map((s) => [
@@ -128,10 +136,10 @@ export class NvimGutterUi implements GutterUi {
         calls.slice(i, i + MAX_BATCH_CALLS),
       ]);
   }
-  async setUndoDepth(buf: number, depth: UndoDepth) {
+  async setUndoDepth(buf: BufNr, depth: UndoDepth) {
     await this.nvim.call("nvim_buf_set_var", [buf, "glean_undo", depth]);
   }
-  async park(buf: number, row: number) {
+  async park(buf: BufNr, row: WorktreeLnum) {
     await this.nvim.call("nvim_exec_lua", [
       `local buf, row = ...
 if vim.api.nvim_get_current_buf() ~= buf then return end

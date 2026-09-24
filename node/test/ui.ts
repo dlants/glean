@@ -163,40 +163,42 @@ export type GutterBuffer = {
   lines: string[];
   modified: boolean;
   seq: number;
-  cursor?: number;
+  cursor?: WorktreeLnum;
   focus?: boolean;
 };
-export function recordGutterUi(buffers: Map<number, GutterBuffer>) {
+export function recordGutterUi(buffers: Map<BufNr, GutterBuffer>) {
   const rec = {
     /** Current signs per buffer as "lnum:kind[+seen]" (stale: "lnum:stale"). */
-    signs: new Map<number, string>(),
-    focus: new Map<number, string>(),
-    attached: new Set<number>(),
-    depth: new Map<number, UndoDepth>(),
-    parked: [] as { buf: number; row: number }[],
+    signs: new Map<BufNr, string>(),
+    focus: new Map<BufNr, string>(),
+    attached: new Set<BufNr>(),
+    depth: new Map<BufNr, UndoDepth>(),
+    parked: [] as { buf: BufNr; row: WorktreeLnum }[],
     notes: [] as { msg: string; level: NotifyLevel }[],
     errors: [] as unknown[],
   };
-  const fmt = (signs: GutterSign[], stale = false) =>
+  const fmt = (signs: GutterSign[]) =>
     [...signs]
       .sort((a, b) => a.lnum - b.lnum)
-      .map((s) =>
-        stale ? `${s.lnum}:stale` : `${s.lnum}:${s.kind}${s.seen ? "+" : ""}`,
-      )
+      .map((s) => `${s.lnum}:${s.kind}${s.seen ? "+" : ""}`)
       .join(" ");
+  const info = (buf: BufNr, b: GutterBuffer) => ({
+    buf,
+    name: b.name,
+    modified: b.modified,
+    lines: b.lines.length,
+    cursor: b.cursor,
+    focus: b.focus ?? true,
+  });
   const ui: GutterUi = {
-    async infos(bufs, withSeq) {
+    async infos(bufs) {
       return [...buffers]
         .filter(([n]) => bufs === undefined || bufs.includes(n))
-        .map(([buf, b]) => ({
-          buf,
-          name: b.name,
-          modified: b.modified,
-          lines: b.lines.length,
-          cursor: b.cursor as WorktreeLnum | undefined,
-          seq: withSeq ? b.seq : undefined,
-          focus: b.focus ?? true,
-        }));
+        .map(([buf, b]) => info(buf, b));
+    },
+    async seqInfo(buf) {
+      const b = buffers.get(buf);
+      return b && { ...info(buf, b), seq: b.seq };
     },
     async lines(buf) {
       return buffers.get(buf)?.lines ?? [];
@@ -205,8 +207,19 @@ export function recordGutterUi(buffers: Map<number, GutterBuffer>) {
       for (const p of paints) {
         if (p.member === "attach") rec.attached.add(p.buf);
         if (p.member === "detach") rec.attached.delete(p.buf);
-        rec.signs.set(p.buf, fmt(p.signs, p.stale));
-        rec.focus.set(p.buf, fmt(p.focus));
+        const st = p.state;
+        rec.signs.set(
+          p.buf,
+          st.kind === "stale"
+            ? [...st.lnums]
+                .sort((a, b) => a - b)
+                .map((l) => `${l}:stale`)
+                .join(" ")
+            : st.kind === "live"
+              ? fmt(st.signs)
+              : "",
+        );
+        rec.focus.set(p.buf, st.kind === "live" ? fmt(st.focus) : "");
       }
     },
     async focus(buf, signs) {
@@ -218,7 +231,7 @@ export function recordGutterUi(buffers: Map<number, GutterBuffer>) {
     async park(buf, row) {
       rec.parked.push({ buf, row });
       const b = buffers.get(buf);
-      if (b) b.cursor = Math.min(row, b.lines.length);
+      if (b) b.cursor = Math.min(row, b.lines.length) as WorktreeLnum;
     },
     async notify(msg, level) {
       rec.notes.push({ msg, level });

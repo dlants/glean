@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import type { WorktreeLnum } from "../core/types.ts";
+import type { BufNr, WorktreeLnum } from "../core/types.ts";
 import { Git, spawnRunner } from "../git/git.ts";
 import { Session } from "../session/session.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -11,8 +11,8 @@ import { FileGutter } from "./fileGutter.ts";
 
 const UNSEEN = "2:change 3:context+ 4:add 5:add";
 const ROW4_SEEN = "2:change 3:context+ 4:add+ 5:add";
-const F = 1;
-const D = 2;
+const F = 1 as BufNr;
+const D = 2 as BufNr;
 const L = (n: number) => n as WorktreeLnum;
 
 async function setup() {
@@ -32,13 +32,13 @@ async function setup() {
     stateDir: mkdtempSync(join(tmpdir(), "glean-gutter-")),
   });
   await session.refresh();
-  const buffers = new Map<number, GutterBuffer>([
+  const buffers = new Map<BufNr, GutterBuffer>([
     [F, { name: join(repo.root, "f.txt"), lines: f, modified: false, seq: 1 }],
     [D, { name: join(repo.root, "d.txt"), lines: d, modified: false, seq: 1 }],
   ]);
   const { ui, rec } = recordGutterUi(buffers);
   const g = new FileGutter(ui, () => session);
-  const buf = (n: number) => buffers.get(n) as GutterBuffer;
+  const buf = (n: BufNr) => buffers.get(n) as GutterBuffer;
   await g.refreshAll();
   const mark = (line1: number, line2?: number) =>
     g.handle({
@@ -89,6 +89,8 @@ it("a novel edit wipes the stack", async () => {
   const t = await setup();
   await t.mark(4);
   await t.g.handle({ kind: "undo", buf: F, seq: 7 });
+  expect(t.rec.depth.get(F)).toEqual({ undo: 0, redo: 0, seq: 7 });
+  await t.g.handle({ kind: "undo", buf: F, seq: 1 });
   await t.repaint();
   expect(t.rec.signs.get(F)).toBe(UNSEEN.replace("4:add ", "4:add+ "));
 });
@@ -118,10 +120,10 @@ it("refuses a modified buffer or one out of date with the model", async () => {
 
 it("gmc marks the hunk and focus covers it", async () => {
   const t = await setup();
-  t.buf(F).cursor = 4;
+  t.buf(F).cursor = L(4);
   await t.g.handle({ kind: "focus", buf: F, row: L(4) });
   expect(t.rec.focus.get(F)).toBe("2:change 3:context+ 4:add 5:add");
-  t.buf(F).cursor = 3;
+  t.buf(F).cursor = L(3);
   await t.g.handle({ kind: "focus", buf: F, row: L(3) });
   expect(t.rec.focus.get(F)).toBe("");
   await t.g.handle({ kind: "toggle-mark", buf: F, line1: L(2) });

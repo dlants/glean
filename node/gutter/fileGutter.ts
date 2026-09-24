@@ -7,7 +7,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { RepoPath, WorktreeLnum } from "../core/types.ts";
+import type { BufNr, RepoPath, WorktreeLnum } from "../core/types.ts";
 import type { SeenPlan } from "../render/actions.ts";
 import { splitLines } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
@@ -23,24 +23,24 @@ import {
 } from "./project.ts";
 
 export type GutterEvent =
-  | { kind: "refresh"; buf: number }
-  | { kind: "focus"; buf: number; row: WorktreeLnum }
+  | { kind: "refresh"; buf: BufNr }
+  | { kind: "focus"; buf: BufNr; row: WorktreeLnum }
   | {
       kind: "toggle-mark";
-      buf: number;
+      buf: BufNr;
       line1: WorktreeLnum;
       line2?: WorktreeLnum;
     }
-  | { kind: "goto-hunk"; buf: number; row: WorktreeLnum; dir: 1 | -1 }
-  | { kind: "undo" | "redo"; buf: number; seq: number }
-  | { kind: "toggle"; buf: number }
-  | { kind: "wipe"; buf: number };
+  | { kind: "goto-hunk"; buf: BufNr; row: WorktreeLnum; dir: 1 | -1 }
+  | { kind: "undo" | "redo"; buf: BufNr; seq: number }
+  | { kind: "toggle"; buf: BufNr }
+  | { kind: "wipe"; buf: BufNr };
 
 export function parseGutterEvent(v: unknown): GutterEvent | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
-  const buf = o.buf;
-  if (typeof buf !== "number") return undefined;
+  if (typeof o.buf !== "number") return undefined;
+  const buf = o.buf as BufNr;
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
   // File-buffer rows are 1-based; the gutter only acts on buffers whose text
   // is the work tree, so they name work-tree lines.
@@ -80,16 +80,16 @@ export function parseGutterEvent(v: unknown): GutterEvent | undefined {
 }
 
 export type BufInfo = {
-  buf: number;
+  buf: BufNr;
   name: string;
   modified: boolean;
   lines: number;
   cursor: WorktreeLnum | undefined;
-  /** Only fetched on request (`undotree()` is not constant work). */
-  seq: number | undefined;
   focus: boolean;
 };
-export function parseInfos(v: unknown): BufInfo[] {
+/** `seq` is only fetched on request (`undotree()` is not constant work). */
+export type SeqInfo = BufInfo & { seq: number };
+export function parseInfos(v: unknown): (BufInfo & { seq?: number })[] {
   if (!Array.isArray(v)) return [];
   return v.flatMap((x: Record<string, unknown>) =>
     typeof x.buf === "number" &&
@@ -97,7 +97,7 @@ export function parseInfos(v: unknown): BufInfo[] {
     typeof x.lines === "number"
       ? [
           {
-            buf: x.buf,
+            buf: x.buf as BufNr,
             name: x.name,
             modified: x.modified === true,
             lines: x.lines,
@@ -105,7 +105,7 @@ export function parseInfos(v: unknown): BufInfo[] {
               typeof x.cursor === "number"
                 ? (x.cursor as WorktreeLnum)
                 : undefined,
-            seq: typeof x.seq === "number" ? x.seq : undefined,
+            ...(typeof x.seq === "number" ? { seq: x.seq } : {}),
             focus: x.focus !== false,
           },
         ]
@@ -121,21 +121,23 @@ export type GutterSign = {
 /** One buffer's new gutter state. `member` flips the maps/sign column (and
  * the foreign provider); `signs` replace the previous ones. */
 export type GutterPaint = {
-  buf: number;
+  buf: BufNr;
   member: "attach" | "detach" | undefined;
-  signs: GutterSign[];
-  stale: boolean;
-  focus: GutterSign[];
+  state:
+    | { kind: "clear" }
+    | { kind: "stale"; lnums: WorktreeLnum[] }
+    | { kind: "live"; signs: GutterSign[]; focus: GutterSign[] };
 };
 export type GutterUi = {
-  infos(bufs: number[] | undefined, withSeq: boolean): Promise<BufInfo[]>;
-  lines(buf: number): Promise<string[]>;
+  infos(bufs: BufNr[] | undefined): Promise<BufInfo[]>;
+  seqInfo(buf: BufNr): Promise<SeqInfo | undefined>;
+  lines(buf: BufNr): Promise<string[]>;
   /** Applied as one batch, in order. */
   paint(paints: GutterPaint[]): Promise<void>;
-  focus(buf: number, signs: GutterSign[]): Promise<void>;
-  setUndoDepth(buf: number, depth: UndoDepth): Promise<void>;
+  focus(buf: BufNr, signs: GutterSign[]): Promise<void>;
+  setUndoDepth(buf: BufNr, depth: UndoDepth): Promise<void>;
   /** Move the cursor (with a jumplist entry) if `buf` is still current. */
-  park(buf: number, row: number): Promise<void>;
+  park(buf: BufNr, row: WorktreeLnum): Promise<void>;
   notify(msg: string, level: NotifyLevel): Promise<void>;
   logError(err: unknown): void;
 };
@@ -148,17 +150,17 @@ export type FileUndo =
   | {
       kind: "comment";
       run: (reverse: boolean) => Promise<void>;
-      cursor: number;
+      cursor: WorktreeLnum;
     };
 
 export class FileGutter {
   enabled = true;
-  private readonly off = new Set<number>();
-  private readonly painted = new Map<number, Painted>();
-  private readonly members = new Set<number>();
+  private readonly off = new Set<BufNr>();
+  private readonly painted = new Map<BufNr, Painted>();
+  private readonly members = new Set<BufNr>();
   readonly undo = new BufUndo<FileUndo>();
   private chain: Promise<void> = Promise.resolve();
-  private readonly pendingRefresh = new Set<number>();
+  private readonly pendingRefresh = new Set<BufNr>();
   /** Bumped per `refreshAll`; a superseded full repaint is skipped. */
   private allGen = 0;
 
@@ -207,7 +209,7 @@ export class FileGutter {
         return this.repaint([ev.buf]);
       case "focus": {
         const p = this.painted.get(ev.buf);
-        const [info] = await this.ui.infos([ev.buf], false);
+        const [info] = await this.ui.infos([ev.buf]);
         if (!info) return;
         await this.ui.focus(ev.buf, focusSigns(info, p));
         return;
@@ -225,7 +227,7 @@ export class FileGutter {
         return;
       case "goto-hunk": {
         const p = this.painted.get(ev.buf);
-        const [info] = await this.ui.infos([ev.buf], false);
+        const [info] = await this.ui.infos([ev.buf]);
         if (!p || !info) return;
         const row = nextHunkRow(hunkStarts(p.marks, true), ev.row, ev.dir);
         if (row === undefined || row > info.lines) return;
@@ -248,7 +250,7 @@ export class FileGutter {
     return rel as RepoPath;
   }
 
-  private statusFor(buf: number, name: string) {
+  private statusFor(buf: BufNr, name: string) {
     if (!this.enabled || this.off.has(buf)) return undefined;
     const path = this.relPath(name);
     const cls = this.session()?.current?.cls;
@@ -257,9 +259,9 @@ export class FileGutter {
     return marks && { path, marks };
   }
 
-  private async repaint(bufs: number[] | undefined, gen?: number) {
+  private async repaint(bufs: BufNr[] | undefined, gen?: number) {
     const paints: GutterPaint[] = [];
-    for (const info of await this.ui.infos(bufs, false)) {
+    for (const info of await this.ui.infos(bufs)) {
       // Projection is per buffer; yield between them, and abandon a full
       // repaint once a newer one is queued.
       if (gen !== undefined) {
@@ -277,22 +279,23 @@ export class FileGutter {
       } else if (this.members.delete(buf)) member = "detach";
       const had = this.painted.delete(buf);
       if (!(had || st || member)) continue;
-      const paint: GutterPaint = {
-        buf,
-        member,
-        signs: [],
-        stale: false,
-        focus: [],
-      };
-      paints.push(paint);
-      if (!st || st.marks.size === 0) continue;
+      if (!st || st.marks.size === 0) {
+        paints.push({ buf, member, state: { kind: "clear" } });
+        continue;
+      }
       const p = { ...st, stale: info.modified };
       this.painted.set(buf, p);
-      paint.stale = p.stale;
+      const signs: GutterSign[] = [];
       for (const [lnum, m] of st.marks)
         if (lnum >= 1 && lnum <= info.lines)
-          paint.signs.push({ lnum, kind: m.kind, seen: m.seen });
-      paint.focus = focusSigns(info, p);
+          signs.push({ lnum, kind: m.kind, seen: m.seen });
+      paints.push({
+        buf,
+        member,
+        state: p.stale
+          ? { kind: "stale", lnums: signs.map((x) => x.lnum) }
+          : { kind: "live", signs, focus: focusSigns(info, p) },
+      });
     }
     await this.ui.paint(paints);
   }
@@ -301,17 +304,17 @@ export class FileGutter {
     return this.ui.notify(`glean: ${msg}`, "warn");
   }
 
-  private park(buf: number, row: number) {
+  private park(buf: BufNr, row: WorktreeLnum) {
     return this.ui.park(buf, row);
   }
 
   /** Record an already-applied action on `buf`'s stack (seq: its `seq_last`). */
-  async push(buf: number, seq: number, a: FileUndo) {
+  async push(buf: BufNr, seq: number, a: FileUndo) {
     this.undo.push(buf, seq, a);
     await this.syncUndoVar(buf);
   }
 
-  private async syncUndoVar(buf: number) {
+  private async syncUndoVar(buf: BufNr) {
     const d = this.undo.depth(buf);
     if (d) await this.ui.setUndoDepth(buf, d);
   }
@@ -322,14 +325,14 @@ export class FileGutter {
    * lines the reviewer is not looking at.
    */
   private async toggleMark(
-    buf: number,
+    buf: BufNr,
     line1: WorktreeLnum,
     line2?: WorktreeLnum,
   ) {
     const s = this.session();
     if (!s?.worktree) return void (await this.warn("no live work-tree review"));
-    const [info] = await this.ui.infos([buf], true);
-    if (!info || info.seq === undefined) return;
+    const info = await this.ui.seqInfo(buf);
+    if (!info) return;
     if (info.modified)
       return void (await this.warn("buffer is modified; write it first"));
     const path = this.relPath(info.name);
@@ -366,7 +369,7 @@ export class FileGutter {
     });
   }
 
-  private async step(dir: "undo" | "redo", buf: number, seq: number) {
+  private async step(dir: "undo" | "redo", buf: BufNr, seq: number) {
     const s = this.session();
     const a =
       dir === "undo" ? this.undo.undo(buf, seq) : this.undo.redo(buf, seq);

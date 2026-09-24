@@ -190,7 +190,8 @@ Test helper (node-only): `node/test/ui.ts` with recorder implementations of each
 - Status: done.
   - `GutterUi` + `GutterPaint`/`GutterSign` live in `fileGutter.ts`; the adapter is `NvimGutterUi` (`nvimGutterUi.ts`: namespaces, glyphs/highlight groups, batching, Lua `info`/`attach`/`detach`, park). `recordGutterUi(buffers)` in `node/test/ui.ts`; tests in `fileGutter.test.ts`.
   - Deviations: instead of separate `paint`/`provider` per buffer, `paint(paints[])` takes one batch of `{ buf, member: "attach"|"detach"|undefined, signs, stale, focus }` (the adapter keeps it one atomic write); `focus(buf, signs)` takes the computed focus signs (pure `focusSigns` in the core). The port also has `logError`. `setUndoDepth` is only called with a defined depth (as before).
-  - Driver tests removed (now node-only): gm2j range, write-reconcile/novel-edit stack wipe, `:Glean toggle-gutter`, uncommitted deletion marking.
+  - Driver tests removed (now node-only): gm2j range, write-reconcile/novel-edit stack wipe.
+  - Review follow-up: `GutterPaint` is `{ buf, member, state }` with `state` a union `clear | stale { lnums } | live { signs, focus }`. Buffers across the port/events are `BufNr` (branded at `parseGutterEvent`/`parseInfos`); `park` takes `WorktreeLnum` (so `FileUndo` comment cursors and overlay event lnums are `WorktreeLnum`, branded at `parseOverlayEvent`). `infos(bufs)` no longer takes `withSeq`; `seqInfo(buf)` returns `SeqInfo` with a guaranteed `seq`. The driver test keeps `:Glean toggle-gutter` and `1Glean toggle-mark` on d.txt (command → range forwarding); stale signs are already covered by the driver paint test. The novel-edit node test now asserts the stack depth is reset.
 
 ## App registry and lists
 

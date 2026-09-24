@@ -37,8 +37,12 @@ import {
 
 export type OverlayEvent =
   | { kind: "refresh" | "toggle" | "wipe"; buf: BufNr }
-  | { kind: "show" | "edit" | "delete" | "reply"; buf: BufNr; lnum: number }
-  | { kind: "add"; buf: BufNr; line1: number; line2: number }
+  | {
+      kind: "show" | "edit" | "delete" | "reply";
+      buf: BufNr;
+      lnum: WorktreeLnum;
+    }
+  | { kind: "add"; buf: BufNr; line1: WorktreeLnum; line2: WorktreeLnum }
   | { kind: "jump"; buf: BufNr; lnum: number; dir: 1 | -1 }
   | { kind: "quickfix"; buf: BufNr }
   | PromptResult;
@@ -78,7 +82,7 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
     case "edit":
     case "delete":
     case "reply": {
-      const lnum = num("lnum");
+      const lnum = num("lnum") as WorktreeLnum | undefined;
       return lnum === undefined ? undefined : { kind: o.kind, buf, lnum };
     }
     case "add": {
@@ -88,8 +92,8 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
       return {
         kind: "add",
         buf,
-        line1: Math.min(line1, line2),
-        line2: Math.max(line1, line2),
+        line1: Math.min(line1, line2) as WorktreeLnum,
+        line2: Math.max(line1, line2) as WorktreeLnum,
       };
     }
     case "jump": {
@@ -319,12 +323,12 @@ export class Overlay {
   }
 
   /** A file view never sees a deletion: the run is captured as post-image lines. */
-  private async add(buf: BufNr, line1: number, line2: number) {
+  private async add(buf: BufNr, line1: WorktreeLnum, line2: WorktreeLnum) {
     const f = await this.ui.facts(buf);
     const t = f && (await this.target(f));
     if (!f || !t) return void (await this.ui.notify(NOT_A_REPO, "warn"));
     const got = await this.ui.range(buf, {
-      from: line1 as WorktreeLnum,
+      from: line1,
       to: line2 as WorktreeLnum,
     });
     if (got.length === 0) return;
@@ -350,7 +354,7 @@ export class Overlay {
     buf: BufNr,
     path: RepoPath,
     op: CommentOp,
-    cursor: number,
+    cursor: WorktreeLnum,
   ) {
     const applied = await this.apply(buf, path, op, false);
     if (!applied) return;
@@ -417,7 +421,7 @@ export class Overlay {
   /** Run `kind` on the line's comment, asking which one when several resolve there. */
   private async withRecord(
     buf: BufNr,
-    lnum: number,
+    lnum: WorktreeLnum,
     kind: "delete" | "edit" | "reply",
   ) {
     const r = await this.resolve(buf);
@@ -447,7 +451,7 @@ export class Overlay {
   private async act(
     buf: BufNr,
     path: RepoPath,
-    lnum: number,
+    lnum: WorktreeLnum,
     kind: "delete" | "edit" | "reply",
     record: CommentRecord,
   ) {

@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { Store } from "../core/state.ts";
-import type { BufNr, RepoPath } from "../core/types.ts";
+import type { BufNr, RepoPath, WorktreeLnum } from "../core/types.ts";
+
+const L = (n: number) => n as WorktreeLnum;
+
 import { Git, spawnRunner } from "../git/git.ts";
 import { repoRelative } from "../glean.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
@@ -74,7 +77,12 @@ function setup(opts: { noRepo?: boolean } = {}) {
   };
   const add = async (text: string, line1 = 2, line2 = line1) => {
     rec.answer(text);
-    await ov.handle({ kind: "add", buf: B, line1, line2 });
+    await ov.handle({
+      kind: "add",
+      buf: B,
+      line1: line1 as WorktreeLnum,
+      line2: line2 as WorktreeLnum,
+    });
     await settle();
   };
   return { ov, rec, buf, undos, settle, recs, run, add, root, store };
@@ -108,7 +116,7 @@ it("re-stamps after an api write via refreshAll", async () => {
   expect(t.rec.stamps.get(1)).toEqual([]);
   const s = await t.store();
   s.addCommentRecord(F, {
-    lnum: 3,
+    lnum: L(3),
     content: [{ kind: "add", text: "gamma" }],
     text: "api",
     reply: undefined,
@@ -142,7 +150,7 @@ it("adds on a line and a range with HEAD / dirty origin", async () => {
 it("undo/redo of an add keeps the same id; a dismissed editor adds nothing", async () => {
   const t = setup();
   t.rec.answer(undefined);
-  await t.ov.handle({ kind: "add", buf: B, line1: 2, line2: 2 });
+  await t.ov.handle({ kind: "add", buf: B, line1: L(2), line2: L(2) });
   await t.settle();
   expect(await t.recs()).toEqual([]);
   await t.add("x");
@@ -157,11 +165,11 @@ it("edit round-trips through undo; unchanged edit pushes nothing", async () => {
   const t = setup();
   await t.add("before");
   t.rec.answer("before");
-  await t.ov.handle({ kind: "edit", buf: B, lnum: 2 });
+  await t.ov.handle({ kind: "edit", buf: B, lnum: L(2) });
   await t.settle();
   expect(t.undos).toHaveLength(1);
   t.rec.answer("after");
-  await t.ov.handle({ kind: "edit", buf: B, lnum: 2 });
+  await t.ov.handle({ kind: "edit", buf: B, lnum: L(2) });
   await t.settle();
   expect(t.rec.editors.at(-1)).toEqual(["before"]);
   expect((await t.recs())[0]?.text).toBe("after");
@@ -173,10 +181,10 @@ it("reply fills then replaces the slot, each undoable", async () => {
   const t = setup();
   await t.add("c");
   t.rec.answer("r1");
-  await t.ov.handle({ kind: "reply", buf: B, lnum: 2 });
+  await t.ov.handle({ kind: "reply", buf: B, lnum: L(2) });
   await t.settle();
   t.rec.answer("r2");
-  await t.ov.handle({ kind: "reply", buf: B, lnum: 2 });
+  await t.ov.handle({ kind: "reply", buf: B, lnum: L(2) });
   await t.settle();
   expect(t.rec.editors.at(-1)).toEqual(["r1"]);
   expect((await t.recs())[0]?.reply).toBe("r2");
@@ -191,11 +199,11 @@ it("delete asks which of several; a dismissed pick deletes nothing", async () =>
   await t.add("first");
   await t.add("second");
   t.rec.answer(undefined);
-  await t.ov.handle({ kind: "delete", buf: B, lnum: 2 });
+  await t.ov.handle({ kind: "delete", buf: B, lnum: L(2) });
   await t.settle();
   expect(await t.recs()).toHaveLength(2);
   t.rec.answer(1);
-  await t.ov.handle({ kind: "delete", buf: B, lnum: 2 });
+  await t.ov.handle({ kind: "delete", buf: B, lnum: L(2) });
   await t.settle();
   expect(t.rec.picks.at(-1)).toEqual({
     items: ["first", "second"],
@@ -204,25 +212,25 @@ it("delete asks which of several; a dismissed pick deletes nothing", async () =>
   expect((await t.recs()).map((r) => r.text)).toEqual(["first"]);
   await t.run(t.undos.at(-1), true);
   expect(await t.recs()).toHaveLength(2);
-  await t.ov.handle({ kind: "delete", buf: B, lnum: 3 });
+  await t.ov.handle({ kind: "delete", buf: B, lnum: L(3) });
   expect(t.rec.notes.at(-1)?.msg).toBe("glean: no comment on this line");
 });
 
 it("show floats bodies, jump parks, quickfix lists", async () => {
   const t = setup();
   await t.add("hello");
-  await t.ov.handle({ kind: "show", buf: B, lnum: 2 });
+  await t.ov.handle({ kind: "show", buf: B, lnum: L(2) });
   expect(t.rec.floats[0]?.some((l) => l.text.includes("hello"))).toBe(true);
-  await t.ov.handle({ kind: "jump", buf: B, lnum: 1, dir: 1 });
-  expect(t.rec.parked).toEqual([{ buf: B, lnum: 2 }]);
+  await t.ov.handle({ kind: "jump", buf: B, lnum: L(1), dir: 1 });
+  expect(t.rec.parked).toEqual([{ buf: B, lnum: L(2) }]);
   await t.ov.handle({ kind: "quickfix", buf: B });
   expect(t.rec.quickfix).toHaveLength(1);
-  expect(t.rec.quickfix?.[0]).toMatchObject({ lnum: 2 });
+  expect(t.rec.quickfix?.[0]).toMatchObject({ lnum: L(2) });
 });
 
 it("outside a repo, add only notifies", async () => {
   const t = setup({ noRepo: true });
-  await t.ov.handle({ kind: "add", buf: B, line1: 1, line2: 1 });
+  await t.ov.handle({ kind: "add", buf: B, line1: L(1), line2: L(1) });
   expect(t.rec.editors).toEqual([]);
   expect(t.rec.notes[0]?.level).toBe("warn");
 });

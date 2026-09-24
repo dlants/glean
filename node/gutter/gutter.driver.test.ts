@@ -160,7 +160,7 @@ describe("file-buffer gutter (driver)", () => {
       );
     });
   });
-  it("]c and gt reach the gutter", async () => {
+  it("]c, gt and the :Glean gutter commands reach the gutter", async () => {
     await withShared(async (nvim) => {
       await openFile(nvim);
       await cursor(nvim, 1);
@@ -175,6 +175,14 @@ describe("file-buffer gutter (driver)", () => {
       await waitSigns(nvim, "");
       await input(nvim, "gt");
       await waitSigns(nvim, UNSEEN);
+      await nvim.call("nvim_command", ["Glean toggle-gutter"]);
+      await waitSigns(nvim, "");
+      await nvim.call("nvim_command", ["Glean toggle-gutter"]);
+      await waitSigns(nvim, UNSEEN);
+      await nvim.call("nvim_command", ["edit d.txt"]);
+      await waitSigns(nvim, "1:GleanGutterDelete");
+      await nvim.call("nvim_command", ["1Glean toggle-mark"]);
+      await waitSigns(nvim, "1:GleanGutterDeleteSeen");
     });
   });
   it("suppresses the foreign provider and reattaches on backend exit", async () => {
