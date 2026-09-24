@@ -65,6 +65,7 @@ local function maps(buf)
   return {
     { "n", "]c", function() notify({ kind = "goto-hunk", buf = buf, row = row(), dir = 1 }) end, "glean: next hunk" },
     { "n", "[c", function() notify({ kind = "goto-hunk", buf = buf, row = row(), dir = -1 }) end, "glean: previous hunk" },
+    { "n", "gj", "<Cmd>Glean jump<CR>", "glean: jump to the review" },
     { "n", "gm", "<Cmd>set operatorfunc=v:lua.require'glean.node_gutter'.op<CR>g@", "glean: toggle mark over a motion" },
     { "n", "gmm", "<Cmd>set operatorfunc=v:lua.require'glean.node_gutter'.op<CR>g@_", "glean: toggle mark on this line" },
     { "n", "gmc", function() notify({ kind = "toggle-mark", buf = buf, line1 = row() }) end, "glean: toggle mark on this hunk" },

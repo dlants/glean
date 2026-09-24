@@ -2,7 +2,7 @@
  * In-memory recorders for the UI ports, so controller cores run in node tests.
  * They implement glean's own narrow interfaces, not a fake nvim.
  */
-import type { RepoPath } from "../core/types.ts";
+import type { RepoPath, WorktreeLnum } from "../core/types.ts";
 import type { DiffContext } from "../render/nav.ts";
 import type { Frame } from "../render/render.ts";
 import { diskLine, type ResolvedJump } from "../view/jump.ts";
@@ -25,7 +25,7 @@ export function recordReviewUi() {
     picks: [] as string[][],
     jumps: [] as { target: ResolvedJump; col: number }[],
     diffsplits: [] as { ctx: DiffContext; ignoreWhitespace: boolean }[],
-    opened: [] as { path: RepoPath; lnum: number }[],
+    opened: [] as { path: RepoPath; lnum: WorktreeLnum }[],
     /** Queue the next editor text / pick index (`undefined`: dismissed). */
     answer(a: Answer) {
       answers.push(a);

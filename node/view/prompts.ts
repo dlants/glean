@@ -1,6 +1,11 @@
 import type { Brand } from "../core/types.ts";
 
 export type PromptToken = Brand<number, "PromptToken">;
+export type PromptResult =
+  | { kind: "editor-submit"; token: PromptToken; text: string | undefined }
+  | { kind: "pick"; token: PromptToken; index: number | undefined };
+/** Brands a token read off the wire (the action parsers are the only boundary). */
+export const toPromptToken = (n: number) => n as PromptToken;
 
 /**
  * Pending Lua prompts (comment editor, picker) awaiting their result. Each kind
@@ -33,12 +38,8 @@ export class Prompts {
     return { token, result };
   }
   /** Resolves the prompt for `token`; false when it is unknown or of another kind. */
-  submit(
-    r:
-      | { kind: "editor-submit"; token: number; text: string | undefined }
-      | { kind: "pick"; token: number; index: number | undefined },
-  ): boolean {
-    const token = r.token as PromptToken;
+  submit(r: PromptResult): boolean {
+    const token = r.token;
     if (r.kind === "editor-submit") {
       const fn = this.editors.get(token);
       this.editors.delete(token);

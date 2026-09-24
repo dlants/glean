@@ -220,7 +220,12 @@ describe("ReviewController", () => {
     await h.c.dispatch({ kind: "jump", row: r, col: 3 });
     expect(h.rec.jumps).toEqual([
       {
-        target: { kind: "live", path: "a.txt", lnum: 1, rev: "HEAD" },
+        target: {
+          kind: "live",
+          path: "a.txt",
+          lnum: 1,
+          fallback: { rev: "HEAD", lnum: 1 },
+        },
         col: 3,
       },
     ]);

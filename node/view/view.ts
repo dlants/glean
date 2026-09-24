@@ -7,7 +7,14 @@
  */
 
 import { join } from "node:path";
-import type { BufNr, NsId, PostLnum, RepoPath, WinId } from "../core/types.ts";
+import type {
+  BufNr,
+  NsId,
+  PostLnum,
+  RepoPath,
+  WinId,
+  WorktreeLnum,
+} from "../core/types.ts";
 import {
   type Generation,
   GenerationGuard,
@@ -364,7 +371,7 @@ export class ReviewView implements ReviewUi {
       isStale,
     );
   }
-  async openFileAt(path: RepoPath, lnum: number) {
+  async openFileAt(path: RepoPath, lnum: WorktreeLnum) {
     await this.nvim.call("nvim_exec_lua", [
       `return require("glean.node").open_file_at(...)`,
       [await this.win(), join(this.session.repoRoot, path), lnum, 0],

@@ -273,6 +273,46 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
     });
   });
 
+  it("a cancelled editor or dismissed picker adds/deletes nothing and later prompts still run", async () => {
+    await withOverlay(async ({ nvim, recs, has, api }) => {
+      for (const text of ["one a", "one b"])
+        await api(
+          `add_comment({ repo = $REPO, path = "author.txt", lnum = 2, text = "${text}" })`,
+        );
+      await nvim.call("nvim_command", ["edit author.txt"]);
+      await waitFor(() => mapped(nvim, "u"));
+      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_command", ["Glean comment"]);
+      await waitFor(async () =>
+        (await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)")).includes(
+          "glean-comment://",
+        ),
+      );
+      await nvim.call("nvim_input", ["<Esc>q"]);
+      await waitFor(
+        async () =>
+          !(
+            await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)")
+          ).includes("glean-comment://"),
+      );
+      await luaEval(
+        nvim,
+        `(function() vim.ui.select = function(_, _, cb) cb(nil, nil) end end)()`,
+      );
+      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_input", ["<Plug>(glean-comment-delete)"]);
+      await nvim.call("nvim_win_set_cursor", [0, [3, 0]]);
+      await nvim.call("nvim_command", ["Glean comment"]);
+      await author(nvim, "after cancel");
+      await waitFor(() => has("after cancel"));
+      expect((await recs()).map((r) => r.text).sort()).toEqual([
+        "after cancel",
+        "one a",
+        "one b",
+      ]);
+      await undoDepth(nvim, 1);
+    });
+  });
   it("deletes the picked one of several, u restores and <C-r> re-deletes", async () => {
     await withOverlay(async ({ nvim, recs, has, api }) => {
       for (const text of ["about two", "second on two"])

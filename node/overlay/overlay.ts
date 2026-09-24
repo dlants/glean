@@ -14,7 +14,7 @@ import type { Git } from "../git/git.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import { splitLines } from "../session/model.ts";
-import { Prompts } from "../view/prompts.ts";
+import { type PromptResult, Prompts, toPromptToken } from "../view/prompts.ts";
 import { MAX_BATCH_CALLS } from "../view/view.ts";
 import {
   firstLine,
@@ -33,8 +33,7 @@ export type OverlayEvent =
   | { kind: "add"; buf: number; line1: number; line2: number }
   | { kind: "jump"; buf: number; lnum: number; dir: 1 | -1 }
   | { kind: "quickfix"; buf: number }
-  | { kind: "editor-submit"; token: number; text: string | undefined }
-  | { kind: "pick"; token: number; index: number | undefined };
+  | PromptResult;
 
 export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
   if (typeof v !== "object" || v === null) return undefined;
@@ -48,14 +47,16 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
         ? undefined
         : {
             kind: o.kind,
-            token,
+            token: toPromptToken(token),
             text: typeof o.text === "string" ? o.text : undefined,
           };
     }
     case "pick": {
       const token = num("token");
       const index = num("index");
-      return token === undefined ? undefined : { kind: o.kind, token, index };
+      return token === undefined
+        ? undefined
+        : { kind: o.kind, token: toPromptToken(token), index };
     }
   }
   if (buf === undefined) return undefined;

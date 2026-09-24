@@ -6,7 +6,13 @@
  */
 
 import type { CommentRecord } from "../core/state.ts";
-import type { Layer, LineId, PostLnum, RepoPath } from "../core/types.ts";
+import type {
+  Layer,
+  LineId,
+  PostLnum,
+  RepoPath,
+  WorktreeLnum,
+} from "../core/types.ts";
 import { GenerationGuard } from "../git/scheduler.ts";
 import {
   collapseTarget,
@@ -51,6 +57,7 @@ import {
   type ResolvedJump,
   resolveJump,
 } from "./jump.ts";
+import { type PromptResult, toPromptToken } from "./prompts.ts";
 
 /** Everything the Lua keymaps can send. Rows are 0-based. */
 export type Action =
@@ -66,8 +73,7 @@ export type Action =
   | { kind: "delete-comment"; row: number }
   | { kind: "delete-comment-at"; row: number }
   /** A comment editor / picker opened by node returned (no value: dismissed). */
-  | { kind: "editor-submit"; token: number; text: string | undefined }
-  | { kind: "pick"; token: number; index: number | undefined }
+  | PromptResult
   | { kind: "undo" }
   | { kind: "redo" }
   | { kind: "unmark-hunk"; row: number }
@@ -120,7 +126,7 @@ export function parseAction(v: unknown): Action | undefined {
         ? undefined
         : {
             kind: "editor-submit",
-            token,
+            token: toPromptToken(token),
             text: typeof o.text === "string" ? o.text : undefined,
           };
     }
@@ -128,7 +134,7 @@ export function parseAction(v: unknown): Action | undefined {
       const token = num("token");
       return token === undefined
         ? undefined
-        : { kind: "pick", token, index: num("index") };
+        : { kind: "pick", token: toPromptToken(token), index: num("index") };
     }
     case "reset":
       return { kind: "reset", row: num("row") };
@@ -211,7 +217,7 @@ export type ReviewUi = {
     ignoreWhitespace: boolean,
     isStale: IsStale,
   ): Promise<void>;
-  openFileAt(path: RepoPath, lnum: number): Promise<void>;
+  openFileAt(path: RepoPath, lnum: WorktreeLnum): Promise<void>;
 };
 
 export type ViewOpts = {
@@ -355,7 +361,7 @@ export class ReviewController {
         ?.entries.find((e) => e.record.id === t.commentId);
       // An off-diff comment has no review row: open the file at its line.
       if (entry?.state === "file" && entry.fileLnum !== undefined) {
-        await this.ui.openFileAt(t.path, entry.fileLnum);
+        await this.ui.openFileAt(t.path, entry.fileLnum as WorktreeLnum);
         return;
       }
       // A comment hidden by ignore-whitespace has no row in this mode: go back

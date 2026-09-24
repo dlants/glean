@@ -6,7 +6,12 @@ import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { mapLnum } from "../core/diff.ts";
-import type { RepoPath } from "../core/types.ts";
+import type {
+  PostLnum,
+  PreLnum,
+  RepoPath,
+  WorktreeLnum,
+} from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { DiffContext, JumpTarget, SourceRef } from "../render/nav.ts";
@@ -134,12 +139,14 @@ async function scratchBuf(
  * tree; otherwise `rev`'s blob. `rev` is also the fallback when the live file
  * cannot be opened.
  */
-export type ResolvedJump = {
-  kind: "live" | "scratch";
-  path: RepoPath;
-  lnum: number;
-  rev: string;
-};
+export type ResolvedJump =
+  | {
+      kind: "live";
+      path: RepoPath;
+      lnum: WorktreeLnum;
+      fallback: { rev: string; lnum: PostLnum };
+    }
+  | { kind: "scratch"; path: RepoPath; rev: string; lnum: PostLnum | PreLnum };
 export async function resolveJump(
   git: Git,
   jt: JumpTarget,
@@ -147,7 +154,12 @@ export async function resolveJump(
 ): Promise<ResolvedJump> {
   const rev = jt.ref.kind === "rev" ? jt.ref.rev : "HEAD";
   if (jt.kind === "post" && (await isHead(git, jt.ref)))
-    return { kind: "live", path: jt.path, lnum: jt.lnum, rev };
+    return {
+      kind: "live",
+      path: jt.path,
+      lnum: jt.lnum as number as WorktreeLnum,
+      fallback: { rev, lnum: jt.lnum },
+    };
   if (jt.kind === "post" && jt.ref.kind === "rev") {
     const sha = await git.revParse(jt.ref.rev);
     const mapped =
@@ -158,7 +170,12 @@ export async function resolveJump(
       mapped !== undefined &&
       (await readLine(join(git.repoRoot, jt.path), mapped)) === jt.text
     )
-      return { kind: "live", path: jt.path, lnum: mapped, rev };
+      return {
+        kind: "live",
+        path: jt.path,
+        lnum: mapped as WorktreeLnum,
+        fallback: { rev, lnum: jt.lnum },
+      };
   }
   return { kind: "scratch", path: jt.path, lnum: jt.lnum, rev };
 }
@@ -174,15 +191,18 @@ export async function openJump(
   isStale: IsStale,
 ): Promise<void> {
   if (isStale()) return;
-  if (rj.kind === "live") {
+  let blob: { rev: string; lnum: number };
+  if (rj.kind === "scratch") blob = rj;
+  else {
     const ok = await nvim.call("nvim_exec_lua", [
       `return require("glean.node").open_file_at(...)`,
       [win, join(git.repoRoot, rj.path), rj.lnum, col],
     ]);
     if (ok === true) return;
+    blob = rj.fallback;
   }
-  const name = `glean://${git.repoRoot}/.git//${await fullSha(git, rj.rev)}/${rj.path}`;
-  const buf = await scratchBuf(nvim, git, rj.rev, {
+  const name = `glean://${git.repoRoot}/.git//${await fullSha(git, blob.rev)}/${rj.path}`;
+  const buf = await scratchBuf(nvim, git, blob.rev, {
     name,
     path: rj.path,
     bufhidden: "hide",
@@ -191,7 +211,7 @@ export async function openJump(
   if (isStale()) return;
   await nvim.call("nvim_exec_lua", [
     `return require("glean.node").open_scratch_at(...)`,
-    [win, buf, rj.lnum, col],
+    [win, buf, blob.lnum, col],
   ]);
 }
 

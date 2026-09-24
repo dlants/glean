@@ -32,7 +32,7 @@ describe("resolveJump", () => {
       kind: "live",
       path,
       lnum: 2,
-      rev: "HEAD",
+      fallback: { rev: "HEAD", lnum: 2 },
     });
     expect((await resolveJump(git, post(repo.shas[2] ?? ""))).kind).toBe(
       "live",
@@ -53,7 +53,7 @@ describe("resolveJump", () => {
       kind: "live",
       path,
       lnum: 3,
-      rev: sha,
+      fallback: { rev: sha, lnum: 2 },
     });
     // An unsaved buffer counts: the reader overrides what is on disk.
     expect((await resolveJump(git, jt, async () => "Y")).kind).toBe("scratch");
