@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { App, type AppUi, type OpenConfig } from "./app.ts";
+import type { WorktreeLnum } from "./core/types.ts";
 import { spawnRunner } from "./git/git.ts";
 import type { ListFrame } from "./targets.ts";
 import { type CommitSpec, makeRepo } from "./test/repo.ts";
@@ -20,7 +21,7 @@ function setup(spec: CommitSpec[], cfg: Partial<OpenConfig> = {}) {
     lists: new Map<number, ListFrame>(),
     notes: [] as { msg: string; level: NotifyLevel }[],
     reviews: new Map<number, ReturnType<typeof recordReviewUi>["rec"]>(),
-    file: { name: "", lnum: 1 },
+    file: { name: "", lnum: 1 as WorktreeLnum },
   };
   const config: OpenConfig = {
     cwd: repo.root,
@@ -197,7 +198,7 @@ describe("App", () => {
       { files: { "j.txt": "a\nb\n", "o.txt": "o\n" } },
       { msg: "c1", files: { "j.txt": "a\nB\n" } },
     ]);
-    h.rec.file = { name: join(h.repo.root, "o.txt"), lnum: 1 };
+    h.rec.file = { name: join(h.repo.root, "o.txt"), lnum: 1 as WorktreeLnum };
     await h.app.command({ kind: "jump" });
     expect(h.app.reviews).toHaveLength(1);
     expect(h.rec.notes.at(-1)?.msg).toContain(
@@ -206,12 +207,12 @@ describe("App", () => {
     expect(h.rec.notes.at(-1)?.level).toBe("warn");
     await h.settle();
     expect(h.lines(1)).toContain("B");
-    h.rec.file = { name: join(h.repo.root, "j.txt"), lnum: 2 };
+    h.rec.file = { name: join(h.repo.root, "j.txt"), lnum: 2 as WorktreeLnum };
     const before = h.rec.notes.length;
     await h.app.command({ kind: "jump" });
     expect(h.rec.notes).toHaveLength(before);
     expect(h.rec.reviews.get(1)?.cursor).toBeDefined();
-    h.rec.file = { name: "/elsewhere/x.txt", lnum: 1 };
+    h.rec.file = { name: "/elsewhere/x.txt", lnum: 1 as WorktreeLnum };
     await expect(h.app.command({ kind: "jump" })).rejects.toThrow(
       "not a file in the repo",
     );

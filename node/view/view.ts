@@ -10,7 +10,6 @@ import { join } from "node:path";
 import type {
   BufNr,
   NsId,
-  PostLnum,
   RepoPath,
   WinId,
   WorktreeLnum,
@@ -148,7 +147,7 @@ export class ReviewView implements ReviewUi {
   redraw() {
     return this.controller.redraw();
   }
-  gotoSource(path: RepoPath, lnum: PostLnum) {
+  gotoSource(path: RepoPath, lnum: WorktreeLnum) {
     return this.controller.gotoSource(path, lnum);
   }
 

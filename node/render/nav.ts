@@ -9,6 +9,7 @@ import {
   type PreLnum,
   type RepoPath,
   WORKTREE,
+  type WorktreeLnum,
 } from "../core/types.ts";
 import type { Classifier, Target } from "../session/model.ts";
 import { resolveFile } from "./actions.ts";
@@ -201,7 +202,8 @@ export function sourceLineRow(
   cls: Classifier,
   frame: Frame,
   path: RepoPath,
-  lnum: PostLnum,
+  /** A file-buffer line; matched to the nearest post-image line by number. */
+  lnum: WorktreeLnum,
 ): number | undefined {
   let best: number | undefined;
   let bestScore = Number.POSITIVE_INFINITY;

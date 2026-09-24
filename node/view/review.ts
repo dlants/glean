@@ -6,13 +6,7 @@
  */
 
 import type { CommentRecord } from "../core/state.ts";
-import type {
-  Layer,
-  LineId,
-  PostLnum,
-  RepoPath,
-  WorktreeLnum,
-} from "../core/types.ts";
+import type { Layer, LineId, RepoPath, WorktreeLnum } from "../core/types.ts";
 import { GenerationGuard } from "../git/scheduler.ts";
 import {
   collapseTarget,
@@ -327,7 +321,7 @@ export class ReviewController {
    */
   async gotoSource(
     path: RepoPath,
-    lnum: PostLnum,
+    lnum: WorktreeLnum,
   ): Promise<number | undefined> {
     const snap = this.session.current;
     if (!snap) return undefined;

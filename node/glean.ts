@@ -9,6 +9,7 @@ import {
   storeLocation,
 } from "./app.ts";
 import { Store } from "./core/state.ts";
+import type { WorktreeLnum } from "./core/types.ts";
 import { Git, spawnRunner } from "./git/git.ts";
 import { FileGutter, parseGutterEvent } from "./gutter/fileGutter.ts";
 import { NvimGutterUi } from "./gutter/nvimGutterUi.ts";
@@ -203,7 +204,7 @@ return { vim.api.nvim_buf_get_name(0), c.default_base, c.hunk_indent, c.hunk_ind
       const [name, lnum] = (await lua(
         `return { vim.api.nvim_buf_get_name(0), vim.api.nvim_win_get_cursor(0)[1] }`,
       )) as [string, number];
-      return { name, lnum };
+      return { name, lnum: lnum as WorktreeLnum };
     },
     async bufValid(buf) {
       return (await nvim.call("nvim_buf_is_valid", [buf])) as boolean;

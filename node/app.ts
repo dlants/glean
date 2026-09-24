@@ -8,7 +8,7 @@ import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { LiveReview } from "./api/api.ts";
 import { COMMENTS_ID } from "./core/state.ts";
-import { type PostLnum, type RepoPath, toRepoPath } from "./core/types.ts";
+import { type RepoPath, toRepoPath, type WorktreeLnum } from "./core/types.ts";
 import {
   Git,
   type GitRunner,
@@ -74,7 +74,7 @@ export type ReviewHost = {
 export type AppUi = {
   config(): Promise<OpenConfig>;
   /** The current window's buffer name and 1-based cursor line. */
-  cursorFile(): Promise<{ name: string; lnum: number }>;
+  cursorFile(): Promise<{ name: string; lnum: WorktreeLnum }>;
   bufValid(buf: number): Promise<boolean>;
   openReviewBuffer(title: string): Promise<number>;
   renameBuffer(buf: number, title: string): Promise<void>;
@@ -439,21 +439,23 @@ export class App {
    */
   private async jump() {
     const { name, lnum } = await this.ui.cursorFile();
-    const ctx = this.current ? undefined : await this.openContext();
-    const root = this.current?.review.session.repoRoot ?? ctx?.root ?? "";
+    const current = this.current;
+    const src = current
+      ? { kind: "current" as const, root: current.review.session.repoRoot }
+      : { kind: "open" as const, ctx: await this.openContext() };
+    const root = src.kind === "current" ? src.root : src.ctx.root;
     const path = await repoRelative(root, name);
     if (path === undefined)
       throw new TargetError("glean: not a file in the repo");
-    if (this.current) await this.ui.showBuffer(this.current.bufnr);
-    else if (ctx)
+    if (current) await this.ui.showBuffer(current.bufnr);
+    else if (src.kind === "open") {
+      const ctx = src.ctx;
       await this.openReview(
         ctx,
         await openDirtySpec(ctx.git, ctx.defaultBase, undefined),
       );
-    const row = await this.current?.view.controller.gotoSource(
-      path,
-      lnum as PostLnum,
-    );
+    }
+    const row = await this.current?.view.controller.gotoSource(path, lnum);
     if (row === undefined)
       await this.ui.notify(`glean: ${path} is not part of the review`, "warn");
   }

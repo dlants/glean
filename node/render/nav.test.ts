@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
-import type { PostLnum, RepoPath } from "../core/types.ts";
+import type { RepoPath, WorktreeLnum } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import {
   buildModel,
@@ -188,16 +188,19 @@ describe("source line row (:Glean jump)", () => {
     // Like the Lua version, a deletion ties with the line it sits before and
     // the earlier row wins.
     expect(
-      rowPostLnum(cls, f.rows[sourceLineRow(cls, f, p, 2 as PostLnum) ?? -1]),
+      rowPostLnum(
+        cls,
+        f.rows[sourceLineRow(cls, f, p, 2 as WorktreeLnum) ?? -1],
+      ),
     ).toEqual({
       path: p,
       lnum: 2,
     });
-    expect(f.rows[sourceLineRow(cls, f, p, 500 as PostLnum) ?? -1]?.kind).toBe(
-      "line",
-    );
     expect(
-      sourceLineRow(cls, f, "nope.txt" as RepoPath, 1 as PostLnum),
+      f.rows[sourceLineRow(cls, f, p, 500 as WorktreeLnum) ?? -1]?.kind,
+    ).toBe("line");
+    expect(
+      sourceLineRow(cls, f, "nope.txt" as RepoPath, 1 as WorktreeLnum),
     ).toBeUndefined();
     expect(fileHeaderRow(cls, f, "g.txt" as RepoPath)).toBeDefined();
   });

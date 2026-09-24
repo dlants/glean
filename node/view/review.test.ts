@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { PostLnum, RepoPath } from "../core/types.ts";
+import type { RepoPath, WorktreeLnum } from "../core/types.ts";
 import { Git, spawnRunner } from "../git/git.ts";
 import { Session } from "../session/session.ts";
 import { type CommitSpec, makeRepo } from "../test/repo.ts";
@@ -243,13 +243,13 @@ describe("ReviewController", () => {
     const h = await open(twoFiles);
     await h.c.dispatch({ kind: "toggle-seen", row: h.row("A") - 1 });
     expect(h.rec.lines()).not.toContain("A");
-    const row = await h.c.gotoSource("a.txt" as RepoPath, 1 as PostLnum);
+    const row = await h.c.gotoSource("a.txt" as RepoPath, 1 as WorktreeLnum);
     expect(row).toBeDefined();
     // Lands inside the revealed hunk.
     expect(["1", "A"]).toContain(h.rec.lines()[row ?? -1]);
     expect(h.rec.cursor).toBe(row);
     expect(
-      await h.c.gotoSource("nope.txt" as RepoPath, 1 as PostLnum),
+      await h.c.gotoSource("nope.txt" as RepoPath, 1 as WorktreeLnum),
     ).toBeUndefined();
   });
 });
