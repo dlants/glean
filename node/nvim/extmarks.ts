@@ -1,3 +1,4 @@
+import type { ByteCol } from "../core/types.ts";
 /**
  * Union type of all available highlight groups for type safety.
  * Includes standard Neovim groups, Treesitter groups, LSP semantic tokens, and dynamic groups.
@@ -103,7 +104,7 @@ export type ExtmarkOptions = {
   // Virtual text
   virt_text?: Array<[string, HLGroup]>;
   virt_text_pos?: "overlay" | "eol" | "right_align" | "inline";
-  virt_text_win_col?: number;
+  virt_text_win_col?: ByteCol;
   virt_text_hide?: boolean;
   virt_text_repeat_linebreak?: boolean;
 

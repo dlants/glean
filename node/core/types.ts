@@ -11,6 +11,8 @@ export type Lnum = number & { readonly [rowBase]: 1 };
 export type ByteCol = number & { readonly [colBase]: "byte0" };
 /** 0-based utf-16 index into a JS string. */
 export type StrIdx = number & { readonly [colBase]: "utf16" };
+/** 1-based utf-8 byte column (vim `col()`/`getpos()`). */
+export type ByteCol1 = number & { readonly [colBase]: "byte1" };
 export function toRow(l: Lnum): Row {
   return (l - 1) as Row;
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { rowAt } from "../core/types.ts";
 import type { FileRef, RowTarget } from "./render.ts";
 import { computeAncestry, computePinned } from "./sticky.ts";
 
@@ -60,9 +61,11 @@ describe("computePinned", () => {
     [8, [0, 1, 2, 5, 6]],
     [99, []],
   ])("w0=%i pins %j", (w0, exp) => {
-    expect(computePinned(anc, w0)).toEqual(exp);
+    expect(computePinned(anc, rowAt(w0))).toEqual(exp);
   });
   it("pins summary+file+hunk in the combined scope", () => {
-    expect(computePinned(computeAncestry(combined), 3)).toEqual([0, 1, 2]);
+    expect(computePinned(computeAncestry(combined), rowAt(3))).toEqual([
+      0, 1, 2,
+    ]);
   });
 });

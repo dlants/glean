@@ -104,6 +104,8 @@ Status: done.
 - `nvim/atomic.ts` adds `atomic(method, args)`; existing `nvim_call_atomic` call sites (view.ts, nvimGutterUi.ts, nvimOverlayUi.ts) still build untyped arrays — migrate them in stage 4.
 - Temporary `rowAt`/`toLnum(rowAt(..))` at the boundary, to revisit in stage 4: `view/view.ts` (set_lines `at/end`, clear_namespace `lo/hi`, `setCursor` `row + 1`), `view/jump.ts` scratch set_lines, `overlay/nvimOverlayUi.ts` `range` (`rowAt(r.to)` exclusive end). Driver tests use `lnumAt(..)`/`COL0`/`ROW0`.
 - Type tests in `core/types.typetest.ts`, unit tests in `core/types.test.ts`.
+- Review follow-ups: `sticky.ts` uses `rowAt`/`ROW0` and `computePinned(w0: Row)`; `lineEdit` returns `Row`s so view.ts set_lines/clear_namespace are checked without call-site branding; `CursorInfo.top: Row`; `ReviewUi.setCursor(row: Row)` with temporary `rowAt(..)` at the review.ts callers (removed when render rows are typed in stage 3); `ByteIdx1Indexed = ByteCol1` (new 1-based byte brand in core/types.ts); `ExtmarkOpts` is now `ExtmarkOptions` (extmarks.ts, `virt_text_win_col: ByteCol`) plus typed `end_row/end_col`, no index signature. `jump.ts` `rowAt(i)` is the intended array-index use.
+- Deferred: tightening `buffer`/`ns_id` params in `neovim-api.types.ts` to `BufNr`/`NsId` (52 sites, out of scope for coordinates; revisit in stage 4 alongside the boundary work).
 
 - Goal: brands and conversion helpers in `core/types.ts`; `window.ts`/`buffer.ts` re-pointed; `neovim-api.types.ts` tightened; typed `atomic()` builder. Call sites made to compile with explicit `rowAt`/`toRow`/`byteLen` at the boundary (temporarily, where upstream values are still `number`, use `rowAt`, and leave a list of them for later stages).
 - Tests:

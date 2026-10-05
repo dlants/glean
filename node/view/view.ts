@@ -1,4 +1,4 @@
-import { COL0, ROW0, rowAt, toLnum } from "../core/types.ts";
+import { COL0, ROW0, type Row, rowAt, toLnum } from "../core/types.ts";
 /**
  * The nvim adapter for a review: implements `ReviewUi` on the scratch buffer.
  * Each frame is diffed against the previous one (common prefix/suffix) and
@@ -63,7 +63,7 @@ export const MAX_BATCH_CALLS = 1000;
 export function lineEdit(
   prev: readonly string[],
   next: readonly string[],
-): { start: number; end: number; lines: string[] } | undefined {
+): { start: Row; end: Row; lines: string[] } | undefined {
   let s = 0;
   const max = Math.min(prev.length, next.length);
   while (s < max && prev[s] === next[s]) s++;
@@ -72,8 +72,8 @@ export function lineEdit(
     e++;
   if (s === prev.length && s === next.length) return undefined;
   return {
-    start: s,
-    end: prev.length - e,
+    start: rowAt(s),
+    end: rowAt(prev.length - e),
     lines: next.slice(s, next.length - e),
   };
 }
@@ -91,7 +91,7 @@ export function frameRowKeys(frame: Frame): string[] {
 type CursorInfo = {
   win: number;
   row: number;
-  top: number;
+  top: Row;
   width: number;
   textoff: number;
 };
@@ -112,7 +112,7 @@ function parseCursorInfo(v: unknown): CursorInfo | undefined {
     textoff === undefined
   )
     return undefined;
-  return { win, row, top, width, textoff };
+  return { win, row, top: rowAt(top), width, textoff };
 }
 export class ReviewView implements ReviewUi {
   readonly controller: ReviewController;
@@ -206,14 +206,8 @@ export class ReviewView implements ReviewUi {
       );
       do {
         const chunk = lines.slice(i, i + MAX_BATCH_LINES);
-        await this.nvim.call("nvim_buf_set_lines", [
-          b,
-          rowAt(at),
-          rowAt(end),
-          false,
-          chunk,
-        ]);
-        at += chunk.length;
+        await this.nvim.call("nvim_buf_set_lines", [b, at, end, false, chunk]);
+        at = rowAt(at + chunk.length);
         end = at;
         i += MAX_BATCH_LINES;
       } while (i < edit.lines.length);
@@ -225,15 +219,10 @@ export class ReviewView implements ReviewUi {
     ]);
     this.shown = rowKeys;
     const calls: unknown[] = [];
-    const lo = edit?.start ?? 0;
-    const hi = edit ? edit.start + edit.lines.length : 0;
+    const lo = edit?.start ?? ROW0;
+    const hi = edit ? rowAt(edit.start + edit.lines.length) : ROW0;
     if (edit)
-      await this.nvim.call("nvim_buf_clear_namespace", [
-        b,
-        this.ns,
-        rowAt(lo),
-        rowAt(hi),
-      ]);
+      await this.nvim.call("nvim_buf_clear_namespace", [b, this.ns, lo, hi]);
     for (const h of frame.highlights) {
       if (h.row < lo || h.row >= hi) continue;
       calls.push(
@@ -337,13 +326,10 @@ export class ReviewView implements ReviewUi {
     ]);
     return typeof w === "number" ? w : -1;
   }
-  async setCursor(row: number) {
+  async setCursor(row: Row) {
     const win = await this.win();
     if (win > 0)
-      await this.nvim.call("nvim_win_set_cursor", [
-        win,
-        [toLnum(rowAt(row)), COL0],
-      ]);
+      await this.nvim.call("nvim_win_set_cursor", [win, [toLnum(row), COL0]]);
   }
   async notify(msg: string, level: NotifyLevel) {
     const n = level === "error" ? 4 : level === "warn" ? 3 : 2;
@@ -421,7 +407,7 @@ export class ReviewView implements ReviewUi {
     }
   }
   /** Last painted float state; an unchanged topline/width/frame skips the work. */
-  private stickyKey: { top: number; width: number; frame: Frame } | undefined;
+  private stickyKey: { top: Row; width: number; frame: Frame } | undefined;
   private hunkKey: { lo: number; hi: number; frame: Frame } | undefined;
   private readonly indentGuard = new GenerationGuard();
   private decorChain: Promise<unknown> = Promise.resolve();

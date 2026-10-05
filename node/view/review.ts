@@ -6,7 +6,14 @@
  */
 
 import type { CommentRecord } from "../core/state.ts";
-import type { Layer, LineId, RepoPath, WorktreeLnum } from "../core/types.ts";
+import {
+  type Layer,
+  type LineId,
+  type RepoPath,
+  type Row,
+  rowAt,
+  type WorktreeLnum,
+} from "../core/types.ts";
 import { GenerationGuard } from "../git/scheduler.ts";
 import {
   collapseTarget,
@@ -179,7 +186,7 @@ export type NotifyLevel = "info" | "warn" | "error";
 export type ReviewUi = {
   /** Show `frame`; called in frame order, never concurrently. */
   paint(frame: Frame): Promise<void>;
-  setCursor(row: number): Promise<void>;
+  setCursor(row: Row): Promise<void>;
   notify(msg: string, level: NotifyLevel): Promise<void>;
   /** Resolves with the submitted text, or undefined when dismissed. */
   editor(initial: string[]): Promise<string | undefined>;
@@ -316,7 +323,7 @@ export class ReviewController {
     if (isStale()) return undefined;
     const cls = this.session.current?.cls ?? snap.cls;
     const row = this.frame && sourceLineRow(cls, this.frame, path, lnum);
-    if (row !== undefined) await this.ui.setCursor(row);
+    if (row !== undefined) await this.ui.setCursor(rowAt(row));
     return row;
   }
   /** `<CR>`: summary rows navigate within the review, diff rows open the source. */
@@ -328,7 +335,7 @@ export class ReviewController {
     const t = frame.rows[row];
     if (t?.kind === "summary-file") {
       const r = fileHeaderRow(snap.cls, frame, t.path);
-      if (r !== undefined) await this.ui.setCursor(r);
+      if (r !== undefined) await this.ui.setCursor(rowAt(r));
       return;
     }
     if (t?.kind === "summary-comment") {
@@ -382,7 +389,7 @@ export class ReviewController {
       const header = cls && this.frame && fileHeaderRow(cls, this.frame, path);
       if (header !== undefined) row = header;
     }
-    if (row >= 0 && !isStale()) await this.ui.setCursor(row);
+    if (row >= 0 && !isStale()) await this.ui.setCursor(rowAt(row));
   }
   private async dropComment(
     path: RepoPath,
@@ -407,7 +414,9 @@ export class ReviewController {
     const frame = this.frame;
     if (!frame || frame.rows.length === 0) return;
     const dest = next === undefined ? undefined : rowOfHunk(frame, next);
-    await this.ui.setCursor(dest ?? Math.min(row, frame.rows.length - 1));
+    await this.ui.setCursor(
+      rowAt(dest ?? Math.min(row, frame.rows.length - 1)),
+    );
   }
   /**
    * `W`: flip the whitespace projection and put the cursor back on the same
@@ -424,7 +433,7 @@ export class ReviewController {
     const next = this.frame;
     const cls = this.session.current?.cls;
     const dest = anchor && next && cls && restoreAnchor(cls, next, anchor);
-    if (dest !== undefined) await this.ui.setCursor(dest);
+    if (dest !== undefined) await this.ui.setCursor(rowAt(dest));
   }
   /** Every review action except the display-only ones (`cursor`,
    * `sticky-close`, `visibility`) and prompt results, which the adapter routes. */
@@ -497,7 +506,7 @@ export class ReviewController {
         const next = this.frame;
         const cls = this.session.current?.cls ?? snap.cls;
         const row = anchor && next && restoreAnchor(cls, next, anchor);
-        if (row !== undefined) await this.ui.setCursor(row);
+        if (row !== undefined) await this.ui.setCursor(rowAt(row));
         return;
       }
       case "jump":
@@ -622,7 +631,7 @@ export class ReviewController {
         await this.redraw();
         const n = this.frame?.rows.length ?? 0;
         if (r.cursor !== undefined && n > 0)
-          await this.ui.setCursor(Math.min(r.cursor, n - 1));
+          await this.ui.setCursor(rowAt(Math.min(r.cursor, n - 1)));
         return;
       }
     }

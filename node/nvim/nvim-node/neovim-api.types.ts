@@ -1,13 +1,16 @@
 /* eslint @typescript-eslint/no-invalid-void-type: 0 */
 
 import type { ByteCol, Lnum, Row } from "../../core/types.ts";
+import type { ExtmarkOptions } from "../extmarks.ts";
 import type { EventsMap } from "./types.ts";
 
 /** Extmark opts with typed coordinates; ends are exclusive. */
-export type ExtmarkOpts = {
+export type ExtmarkOpts = ExtmarkOptions & {
+  id?: number;
   end_row?: Row;
   end_col?: ByteCol;
-  [key: string]: unknown;
+  cursorline_hl_group?: string;
+  spell?: boolean;
 };
 
 type ui_options = [

@@ -3,7 +3,7 @@
  * hunk header rows, and which of them to pin above a given topline. Ports the
  * Lua `compute_ancestry`/`compute_pinned`.
  */
-import type { Row } from "../core/types.ts";
+import { ROW0, type Row, rowAt } from "../core/types.ts";
 import type { RowTarget } from "./render.ts";
 /** A seen-section or hunk header only exists under a file header. */
 export type FileAncestry = { row: Row; sec?: Row; hunk?: Row };
@@ -13,7 +13,7 @@ export function computeAncestry(rows: readonly RowTarget[]): Ancestry[] {
   const out: Ancestry[] = [];
   let cur: Ancestry = {};
   rows.forEach((t, i) => {
-    const row = i as Row;
+    const row = rowAt(i);
     const f = cur.file;
     if (t.kind === "commit-header") cur = { commit: row };
     else if (t.kind === "file-header")
@@ -33,13 +33,10 @@ export function computeAncestry(rows: readonly RowTarget[]): Ancestry[] {
  * Once the top row scrolls away it is always pinned, followed by the enclosing
  * headers strictly above `w0`. Empty means no float.
  */
-export function computePinned(
-  ancestry: readonly Ancestry[],
-  w0: number,
-): Row[] {
+export function computePinned(ancestry: readonly Ancestry[], w0: Row): Row[] {
   const a = ancestry[w0];
   if (!a) return [];
-  const pinned: Row[] = w0 > 0 ? [0 as Row] : [];
+  const pinned: Row[] = w0 > 0 ? [ROW0] : [];
   for (const row of [a.commit, a.file?.row, a.file?.sec, a.file?.hunk])
     if (row !== undefined && row < w0) pinned.push(row);
   return pinned;
