@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
-import { type RepoPath, WORKTREE } from "../core/types.ts";
+import { lnumAt, type RepoPath, WORKTREE } from "../core/types.ts";
 import { Git, spawnRunner } from "../git/git.ts";
 import type { Target } from "../session/model.ts";
 import { Session } from "../session/session.ts";
@@ -128,7 +128,7 @@ describe("agent api: comments", () => {
     const store = r.session.current!.store;
     const add = (path: string, text: string, content: string) =>
       store.addCommentRecord(path as RepoPath, {
-        lnum: 1,
+        lnum: lnumAt(1),
         content: [{ kind: "add", text: content }],
         text,
         reply: undefined,

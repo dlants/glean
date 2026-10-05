@@ -11,7 +11,7 @@ import { diffProjection, fileProjection, locate } from "../core/comments.ts";
 import type { FileKind, Hunk } from "../core/diff.ts";
 import type { CommentOrigin, CommentRecord, Store } from "../core/state.ts";
 import type { LineId, RepoPath, Sha } from "../core/types.ts";
-import { WORKTREE } from "../core/types.ts";
+import { lnumAt, WORKTREE } from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import { resolveFile, type Sticky } from "../render/actions.ts";
 import type { Frame } from "../render/render.ts";
@@ -582,7 +582,7 @@ export class Api {
           }
         : undefined;
     const rec = ctx.store.addCommentRecord(path, {
-      lnum: first,
+      lnum: lnumAt(first),
       content: lines
         .slice(first - 1, last)
         .map((t) => ({ kind: "add" as const, text: t })),

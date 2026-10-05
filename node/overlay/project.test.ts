@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CommentEntry, CommentRecord } from "../core/state.ts";
 import type { RepoPath } from "../core/types.ts";
+import { lnumAt } from "../core/types.ts";
 import {
   firstLine,
   floatLines,
@@ -19,7 +20,7 @@ const rec = (
   reply?: string,
 ): CommentRecord => ({
   id: nextId++,
-  lnum,
+  lnum: lnumAt(lnum),
   content,
   text,
   reply,
@@ -59,12 +60,16 @@ describe("overlay projection (overlay_test)", () => {
       2,
       [
         { kind: "context", text: "two" },
-        { kind: "del", text: "gone", oldLnum: 7 },
+        { kind: "del", text: "gone", oldLnum: lnumAt(7) },
         add("three"),
       ],
       "mixed",
     );
-    const delOnly = rec(3, [{ kind: "del", text: "gone", oldLnum: 7 }], "d");
+    const delOnly = rec(
+      3,
+      [{ kind: "del", text: "gone", oldLnum: lnumAt(7) }],
+      "d",
+    );
     const lines = ["one", "two", "three", "four"];
     const { groups } = resolveOverlay([mixed, delOnly], lines);
     const s = stamps(groups, false, lines.length);
@@ -120,7 +125,9 @@ describe("overlay projection (overlay_test)", () => {
       },
       {
         path: "multi.txt" as RepoPath,
-        records: [rec(3, [{ kind: "del", text: "g", oldLnum: 7 }], "del only")],
+        records: [
+          rec(3, [{ kind: "del", text: "g", oldLnum: lnumAt(7) }], "del only"),
+        ],
         lines: ["x"],
       },
     ]);

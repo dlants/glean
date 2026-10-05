@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DiffLine, Hunk } from "../core/diff.ts";
 import type { WorktreeLnum } from "../core/types.ts";
+import { lnumAt } from "../core/types.ts";
 import {
   type GutterMarks,
   type GutterSource,
@@ -17,15 +18,26 @@ function hunk(start: number, spec: readonly string[]): Hunk {
   let o = start;
   for (const s of spec) {
     const text = s.slice(1);
-    if (s[0] === "+") lines.push({ kind: "add", text, newLnum: n++ });
+    if (s[0] === "+") lines.push({ kind: "add", text, newLnum: lnumAt(n++) });
     else if (s[0] === "-")
-      lines.push({ kind: "del", text, oldLnum: o++, newLnum: n });
-    else lines.push({ kind: "context", text, oldLnum: o++, newLnum: n++ });
+      lines.push({
+        kind: "del",
+        text,
+        oldLnum: lnumAt(o++),
+        newLnum: lnumAt(n),
+      });
+    else
+      lines.push({
+        kind: "context",
+        text,
+        oldLnum: lnumAt(o++),
+        newLnum: lnumAt(n++),
+      });
   }
   return {
-    oldStart: start,
+    oldStart: lnumAt(start),
     oldCount: 0,
-    newStart: start,
+    newStart: lnumAt(start),
     newCount: 0,
     header: "",
     lines,

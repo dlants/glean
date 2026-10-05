@@ -22,7 +22,14 @@ import type {
   RepoPath,
   Sha,
 } from "./types.ts";
-import { WORKTREE } from "./types.ts";
+import {
+  type Lnum,
+  lnumAt,
+  type Row,
+  rowAt,
+  toLnum,
+  WORKTREE,
+} from "./types.ts";
 
 export const COMMENTS_ID = "WORKTREE";
 
@@ -43,8 +50,8 @@ export function contentHash(lines: readonly string[]): ContentHash {
 export function resolve(
   needles: readonly string[],
   haystack: readonly string[],
-  lnumOf: (i: number) => number | undefined = (i) => i + 1,
-  anchor = 0,
+  lnumOf: (i: Row) => Lnum | undefined = toLnum,
+  anchor: number = 0,
 ): number | undefined {
   const n = needles.length;
   if (n === 0) return undefined;
@@ -59,7 +66,7 @@ export function resolve(
       }
     }
     if (!match) continue;
-    const l = lnumOf(i);
+    const l = lnumOf(rowAt(i));
     const dist = l === undefined ? Infinity : Math.abs(l - anchor);
     if (best === undefined || dist < bestDist) {
       best = i;
@@ -73,7 +80,7 @@ export function resolve(
 
 export type CommentEntry =
   | { kind: "context" | "add"; text: string }
-  | { kind: "del"; text: string; oldLnum: number };
+  | { kind: "del"; text: string; oldLnum: Lnum };
 
 /** `sha` is the WORKTREE layer when the text was read from uncommitted changes (persisted as "WORKTREE", as in Lua). */
 export type CommentOrigin = { sha: Layer; dirty: boolean };
@@ -81,7 +88,7 @@ export type CommentOrigin = { sha: Layer; dirty: boolean };
 export type CommentRecord = {
   id: number;
   /** Post-image authoring line: a tiebreak/fallback hint, never a coordinate. */
-  lnum: number;
+  lnum: Lnum;
   content: CommentEntry[];
   text: string;
   reply: string | undefined;
@@ -91,7 +98,7 @@ export type CommentRecord = {
 /** How a caller names an existing record: by id, or by its authored fields. */
 export type CommentKey =
   | { id: number }
-  | { lnum: number; text: string; content: readonly CommentEntry[] };
+  | { lnum: Lnum; text: string; content: readonly CommentEntry[] };
 
 /** The uncommitted seen record for one path. */
 export type WorktreeRecord = {
@@ -123,7 +130,7 @@ function entries(v: Json): [string, Json][] {
 const isInt = (v: Json): v is number =>
   typeof v === "number" && Number.isInteger(v);
 
-function parseRanges<L extends number>(v: Json): RangeSet<L> {
+function parseRanges<L extends Lnum>(v: Json): RangeSet<L> {
   if (!Array.isArray(v)) return [];
   const out: [L, L][] = [];
   for (const r of v) {
@@ -139,7 +146,7 @@ function parseEntry(v: Json): CommentEntry | undefined {
   if (!isObj(v) || typeof v.text !== "string") return undefined;
   if (v.kind === "del") {
     return isInt(v.old_lnum)
-      ? { kind: "del", text: v.text, oldLnum: v.old_lnum }
+      ? { kind: "del", text: v.text, oldLnum: lnumAt(v.old_lnum) }
       : undefined;
   }
   return { kind: v.kind === "context" ? "context" : "add", text: v.text };
@@ -153,7 +160,7 @@ function parseComment(
   const content = (Array.isArray(v.content) ? v.content : [])
     .map(parseEntry)
     .filter((e): e is CommentEntry => e !== undefined);
-  const lnum = isInt(v.lnum) ? v.lnum : isInt(v.anchor) ? v.anchor : 0;
+  const lnum = lnumAt(isInt(v.lnum) ? v.lnum : isInt(v.anchor) ? v.anchor : 0);
   const o = v.origin;
   return {
     id: isInt(v.id) ? v.id : undefined,

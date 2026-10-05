@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
 import type { RepoPath } from "../core/types.ts";
+import { lnumAt } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import { buildModel, Classifier, loadWorktreeSeen } from "../session/model.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -77,7 +78,7 @@ describe("render", () => {
     const { cls } = await setup();
     const record = {
       id: 7,
-      lnum: 2,
+      lnum: lnumAt(2),
       content: [],
       text: "why X?",
       reply: "because",

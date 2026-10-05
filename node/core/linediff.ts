@@ -1,11 +1,12 @@
+import { type Lnum, rowAt, toLnum } from "./types.ts";
 /**
  * Myers O((N+M)·D) line diff over in-memory line lists. Replaces `vim.diff`.
  */
 
 export type LineOp =
-  | { kind: "context"; text: string; aLnum: number; bLnum: number }
-  | { kind: "del"; text: string; aLnum: number }
-  | { kind: "add"; text: string; bLnum: number };
+  | { kind: "context"; text: string; aLnum: Lnum; bLnum: Lnum }
+  | { kind: "del"; text: string; aLnum: Lnum }
+  | { kind: "add"; text: string; bLnum: Lnum };
 
 /**
  * Every line of both sides appears exactly once, in order, 1-based line numbers.
@@ -40,10 +41,17 @@ export function alignLines(
   let ai = 0;
   let bi = 0;
   for (const [x, y] of matches) {
-    for (; ai < x; ai++) ops.push({ kind: "del", text: a[ai]!, aLnum: ai + 1 });
-    for (; bi < y; bi++) ops.push({ kind: "add", text: b[bi]!, bLnum: bi + 1 });
+    for (; ai < x; ai++)
+      ops.push({ kind: "del", text: a[ai]!, aLnum: toLnum(rowAt(ai)) });
+    for (; bi < y; bi++)
+      ops.push({ kind: "add", text: b[bi]!, bLnum: toLnum(rowAt(bi)) });
     if (x < a.length) {
-      ops.push({ kind: "context", text: a[x]!, aLnum: x + 1, bLnum: y + 1 });
+      ops.push({
+        kind: "context",
+        text: a[x]!,
+        aLnum: toLnum(rowAt(x)),
+        bLnum: toLnum(rowAt(y)),
+      });
       ai = x + 1;
       bi = y + 1;
     }

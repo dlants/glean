@@ -1,3 +1,4 @@
+import { addBytes, type ByteCol, byteLen, COL0 } from "./types.ts";
 /**
  * Pure intra-line (word-level) diff helpers: tokenizer, affine-gap token
  * alignment, and order-preserving del/add line pairing.
@@ -8,9 +9,9 @@
  */
 
 /** Byte-offset token (`col` 0-based, UTF-8 bytes, as nvim extmarks expect). */
-export type Token = { text: string; col: number; len: number };
+export type Token = { text: string; col: ByteCol; len: ByteCol };
 /** Byte range of changed tokens, `endCol` exclusive. */
-export type Segment = { startCol: number; endCol: number };
+export type Segment = { startCol: ByteCol; endCol: ByteCol };
 export type Alignment = { aSegs: Segment[]; bSegs: Segment[] };
 
 const WORD = /[A-Za-z0-9_]/;
@@ -21,21 +22,22 @@ const WORD = /[A-Za-z0-9_]/;
  */
 export function tokenize(s: string): Token[] {
   const tokens: Token[] = [];
-  let col = 0;
+  let col = COL0;
   let i = 0;
   while (i < s.length) {
     if (WORD.test(s[i]!)) {
       const start = i;
       while (i < s.length && WORD.test(s[i]!)) i++;
       const text = s.slice(start, i);
-      tokens.push({ text, col, len: text.length });
-      col += text.length;
+      const len = byteLen(text);
+      tokens.push({ text, col, len });
+      col = addBytes(col, len);
     } else {
       const cp = s.codePointAt(i)!;
       const text = String.fromCodePoint(cp);
-      const len = Buffer.byteLength(text);
+      const len = byteLen(text);
       tokens.push({ text, col, len });
-      col += len;
+      col = addBytes(col, len);
       i += text.length;
     }
   }
@@ -63,7 +65,7 @@ function mergeSegments(tokens: readonly Token[], changed: number[]): Segment[] {
     while (j + 1 < changed.length && changed[j + 1] === changed[j]! + 1) j++;
     const first = tokens[changed[i]!]!;
     const last = tokens[changed[j]!]!;
-    segs.push({ startCol: first.col, endCol: last.col + last.len });
+    segs.push({ startCol: first.col, endCol: addBytes(last.col, last.len) });
     i = j + 1;
   }
   return segs;

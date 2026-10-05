@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { DiffLine } from "../core/diff.ts";
 import type { RepoPath } from "../core/types.ts";
+import { lnumAt } from "../core/types.ts";
 import { displaySeenSet, hunkMarkerRuns, markerKey } from "./markers.ts";
 
 const hunk: { lines: DiffLine[] } = {
   lines: [
-    { kind: "context", text: "l1", oldLnum: 1, newLnum: 1 },
-    { kind: "add", text: "l2", newLnum: 2 },
-    { kind: "add", text: "l3", newLnum: 3 },
-    { kind: "add", text: "l4", newLnum: 4 },
-    { kind: "del", text: "gone", oldLnum: 2, newLnum: 5 },
-    { kind: "context", text: "l5", oldLnum: 3, newLnum: 5 },
-    { kind: "add", text: "l7", newLnum: 7 },
-    { kind: "context", text: "l8", oldLnum: 4, newLnum: 8 },
+    { kind: "context", text: "l1", oldLnum: lnumAt(1), newLnum: lnumAt(1) },
+    { kind: "add", text: "l2", newLnum: lnumAt(2) },
+    { kind: "add", text: "l3", newLnum: lnumAt(3) },
+    { kind: "add", text: "l4", newLnum: lnumAt(4) },
+    { kind: "del", text: "gone", oldLnum: lnumAt(2), newLnum: lnumAt(5) },
+    { kind: "context", text: "l5", oldLnum: lnumAt(3), newLnum: lnumAt(5) },
+    { kind: "add", text: "l7", newLnum: lnumAt(7) },
+    { kind: "context", text: "l8", oldLnum: lnumAt(4), newLnum: lnumAt(8) },
   ],
 };
 const seen = (texts: string[]) => (dl: DiffLine) => texts.includes(dl.text);

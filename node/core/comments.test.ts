@@ -1,19 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { diffProjection, fileProjection, locate } from "./comments.ts";
 import type { CommentEntry } from "./state.ts";
+import { lnumAt } from "./types.ts";
 
 const mixed = {
-  lnum: 4,
+  lnum: lnumAt(4),
   content: [
     { kind: "context", text: "kept" },
-    { kind: "del", text: "removed", oldLnum: 9 },
+    { kind: "del", text: "removed", oldLnum: lnumAt(9) },
     { kind: "add", text: "added" },
   ] satisfies CommentEntry[],
 };
 const delonly = {
-  lnum: 4,
+  lnum: lnumAt(4),
   content: [
-    { kind: "del", text: "removed", oldLnum: 9 },
+    { kind: "del", text: "removed", oldLnum: lnumAt(9) },
   ] satisfies CommentEntry[],
 };
 
@@ -25,7 +26,7 @@ describe("comments", () => {
   });
 
   it("locates against a diff through the lnum mapping", () => {
-    const lnums = [3, 4, 4, 5, 6];
+    const lnums = [3, 4, 4, 5, 6].map(lnumAt);
     expect(
       locate(
         mixed,
@@ -40,7 +41,7 @@ describe("comments", () => {
       locate(mixed, ["prelude", "kept", "added", "tail"], undefined, "file"),
     ).toMatchObject({
       kind: "found",
-      lnum: 2,
+      lnum: lnumAt(2),
     });
   });
 
@@ -54,7 +55,7 @@ describe("comments", () => {
       ),
     ).toEqual({ kind: "outdated", lnum: 4, fallback: 3 });
     expect(locate(mixed, ["a", "b"], undefined, "file")).toMatchObject({
-      lnum: 2,
+      lnum: lnumAt(2),
     });
   });
 

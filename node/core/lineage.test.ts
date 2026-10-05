@@ -16,6 +16,7 @@ import {
 } from "./lineage.ts";
 import {
   type Layer,
+  lnumAt,
   type PostLnum,
   type RepoPath,
   type Sha,
@@ -112,27 +113,27 @@ describe("line arithmetic", () => {
       kind: "modify",
       hunks: [
         {
-          oldStart: 2,
+          oldStart: lnumAt(2),
           oldCount: 1,
-          newStart: 2,
+          newStart: lnumAt(2),
           newCount: 3,
           header: "",
           lines: [
-            { kind: "del", text: "b", oldLnum: 2, newLnum: 2 },
-            { kind: "add", text: "B1", newLnum: 2 },
-            { kind: "add", text: "B2", newLnum: 3 },
-            { kind: "add", text: "B3", newLnum: 4 },
+            { kind: "del", text: "b", oldLnum: lnumAt(2), newLnum: lnumAt(2) },
+            { kind: "add", text: "B1", newLnum: lnumAt(2) },
+            { kind: "add", text: "B2", newLnum: lnumAt(3) },
+            { kind: "add", text: "B3", newLnum: lnumAt(4) },
           ],
         },
         {
-          oldStart: 4,
+          oldStart: lnumAt(4),
           oldCount: 1,
-          newStart: 6,
+          newStart: lnumAt(6),
           newCount: 1,
           header: "",
           lines: [
-            { kind: "del", text: "d", oldLnum: 4, newLnum: 6 },
-            { kind: "add", text: "D", newLnum: 6 },
+            { kind: "del", text: "d", oldLnum: lnumAt(4), newLnum: lnumAt(6) },
+            { kind: "add", text: "D", newLnum: lnumAt(6) },
           ],
         },
       ],
@@ -170,20 +171,24 @@ function entry(path: string, o: EntryOpts): FileEntry {
     lines.push({
       kind: "del",
       text: "-",
-      oldLnum: o.at + i,
-      newLnum: o.newLnum ?? 1,
+      oldLnum: lnumAt(o.at + i),
+      newLnum: lnumAt(o.newLnum ?? 1),
     });
   for (let i = 0; i < adds; i++)
-    lines.push({ kind: "add", text: "+", newLnum: (o.newLnum ?? 1) + i });
+    lines.push({
+      kind: "add",
+      text: "+",
+      newLnum: lnumAt((o.newLnum ?? 1) + i),
+    });
   return {
     path: P(path),
     oldPath: P(o.oldPath ?? path),
     kind: o.kind ?? "modify",
     hunks: [
       {
-        oldStart: dels > 0 ? o.at : o.at - 1,
+        oldStart: lnumAt(dels > 0 ? o.at : o.at - 1),
         oldCount: dels,
-        newStart: o.newLnum ?? 1,
+        newStart: lnumAt(o.newLnum ?? 1),
         newCount: adds,
         header: "",
         lines,

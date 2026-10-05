@@ -127,7 +127,7 @@ describe("review view (driver)", () => {
     const store = new Store(stateDir, `WORKTREE/${branch}`);
     await store.load([]);
     store.addCommentRecord("a.txt" as RepoPath, {
-      lnum: 2,
+      lnum: lnumAt(2),
       content: [{ kind: "add", text: "X" }],
       text: "why X?",
       reply: undefined,

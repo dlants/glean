@@ -44,6 +44,18 @@ describe("align", () => {
   });
   it("dissimilar lines terminate", () =>
     expect(align("import os", "return None")).toBeUndefined());
+  it("multibyte before and inside a changed token yields byte columns", () => {
+    const a = "é ü → valueö = 1";
+    const b = "é ü → valueö = 2ä";
+    const r = align(a, b)!;
+    const slice = (s: string, x: Segment) =>
+      Buffer.from(s).subarray(x.startCol, x.endCol).toString();
+    expect(r.aSegs.map((x) => slice(a, x))).toEqual(["1"]);
+    expect(r.bSegs.map((x) => slice(b, x))).toEqual(["2ä"]);
+    const prefix = "é ü → valueö = ";
+    expect(r.bSegs[0]!.startCol).toBe(Buffer.byteLength(prefix));
+    expect(r.bSegs[0]!.endCol).toBe(Buffer.byteLength(`${prefix}2ä`));
+  });
   it("identical lines have no segments", () =>
     expect(align("same line", "same line")).toEqual({ aSegs: [], bSegs: [] }));
 });

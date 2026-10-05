@@ -3,6 +3,7 @@
  * (non-deleted entries only). Pure.
  */
 import { type CommentRecord, resolve } from "./state.ts";
+import { type Lnum, type Row, rowAt, toLnum } from "./types.ts";
 
 export type Projection = "diff" | "file";
 
@@ -19,9 +20,9 @@ export function fileProjection(
 }
 
 export type Located =
-  | { kind: "found"; index: number; lnum: number }
+  | { kind: "found"; index: number; lnum: Lnum }
   /** `fallback` is the index whose lnum is nearest the record's hint, if any. */
-  | { kind: "outdated"; lnum: number; fallback: number | undefined };
+  | { kind: "outdated"; lnum: Lnum; fallback: number | undefined };
 
 /**
  * Resolve `record` in `lines` (0-based). `lnumOf` maps an index to a post-image
@@ -30,18 +31,22 @@ export type Located =
 export function locate(
   record: Pick<CommentRecord, "content" | "lnum">,
   lines: readonly string[],
-  lnumOf: (i: number) => number | undefined = (i) => i + 1,
+  lnumOf: (i: Row) => Lnum | undefined = toLnum,
   projection: Projection = "diff",
 ): Located {
   const needles =
     projection === "file" ? fileProjection(record) : diffProjection(record);
   const start = resolve(needles, lines, lnumOf, record.lnum);
   if (start !== undefined) {
-    return { kind: "found", index: start, lnum: lnumOf(start) ?? record.lnum };
+    return {
+      kind: "found",
+      index: start,
+      lnum: lnumOf(rowAt(start)) ?? record.lnum,
+    };
   }
-  let best: { i: number; lnum: number; dist: number } | undefined;
+  let best: { i: number; lnum: Lnum; dist: number } | undefined;
   for (let i = 0; i < lines.length; i++) {
-    const l = lnumOf(i);
+    const l = lnumOf(rowAt(i));
     if (l === undefined) continue;
     const dist = Math.abs(l - record.lnum);
     if (!best || dist < best.dist) best = { i, lnum: l, dist };

@@ -19,12 +19,13 @@ import type {
   RepoPath,
   Sha,
 } from "./types.ts";
+import { type Lnum, lnumAt } from "./types.ts";
 
 const P = (p: string) => p as RepoPath;
 const tmp = () => mkdtemp(join(tmpdir(), "glean-state-"));
-const str = (rs: ranges.RangeSet<number>) =>
+const str = (rs: ranges.RangeSet<Lnum>) =>
   rs.map(([s, e]) => `${s}-${e}`).join(",");
-const r = (s: number, e: number) => [s, e] as const;
+const r = (s: number, e: number) => [lnumAt(s), lnumAt(e)] as const;
 
 describe("ranges", () => {
   it("merge", () => {
@@ -41,8 +42,8 @@ describe("ranges", () => {
     expect(str(ranges.remove([r(1, 10)], r(1, 10)))).toBe("");
   });
   it("covers / rangeCovered", () => {
-    expect(ranges.covers([r(1, 3), r(7, 9)], 8)).toBe(true);
-    expect(ranges.covers([r(1, 3), r(7, 9)], 5)).toBe(false);
+    expect(ranges.covers([r(1, 3), r(7, 9)], lnumAt(8))).toBe(true);
+    expect(ranges.covers([r(1, 3), r(7, 9)], lnumAt(5))).toBe(false);
     expect(ranges.rangeCovered([r(1, 10)], r(3, 7))).toBe(true);
     expect(ranges.rangeCovered([r(1, 4), r(6, 10)], r(3, 7))).toBe(false);
   });
@@ -67,9 +68,9 @@ describe("resolve", () => {
     expect(resolve([], diff, undefined, 1)).toBeUndefined();
   });
   it("tiebreaks in lnumOf space", () => {
-    const lnums = [100, 101, 5, 6];
+    const lnums = [100, 101, 5, 6].map(lnumAt);
     const dup = ["x", "y", "x", "y"];
-    expect(resolve(["x"], dup, (i) => lnums[i], 5)).toBe(2);
+    expect(resolve(["x"], dup, (i) => lnums[i], lnumAt(5))).toBe(2);
     expect(resolve(["x"], dup, (i) => lnums[i], 99)).toBe(0);
   });
 });
@@ -117,14 +118,14 @@ describe("Store", () => {
     await s.load(["shaA" as Sha]);
     const single: CommentEntry[] = [{ kind: "add", text: "two" }];
     s.addCommentRecord(P("f.txt"), {
-      lnum: 3,
+      lnum: lnumAt(3),
       content: single,
       text: "single",
       reply: undefined,
       origin: undefined,
     });
     s.addCommentRecord(P("f.txt"), {
-      lnum: 5,
+      lnum: lnumAt(5),
       content: [
         { kind: "add", text: "a" },
         { kind: "add", text: "b" },
@@ -141,17 +142,17 @@ describe("Store", () => {
     expect(list[1]!.content[1]!.text).toBe("b");
     expect(list[1]!.lnum).toBe(5);
     s2.removeCommentRecord(P("f.txt"), {
-      lnum: 3,
+      lnum: lnumAt(3),
       content: single,
       text: "single",
     });
     expect(s2.commentsFor(P("f.txt")).map((c) => c.text)).toEqual(["multi"]);
     expect(s2.commentsFor(P("other.txt"))).toEqual([]);
     s2.addCommentRecord(P("f.txt"), {
-      lnum: 7,
+      lnum: lnumAt(7),
       content: [
         { kind: "context", text: "kept" },
-        { kind: "del", text: "removed", oldLnum: 42 },
+        { kind: "del", text: "removed", oldLnum: lnumAt(42) },
         { kind: "add", text: "added" },
       ],
       text: "mixed",
@@ -231,7 +232,7 @@ describe("Store", () => {
     await a.load([]);
     a.setBaseline(P("w.txt"), hash, ["line", "more"]);
     a.addCommentRecord(P("c.txt"), {
-      lnum: 1,
+      lnum: lnumAt(1),
       content: [{ kind: "add", text: "x" }],
       text: "hi",
       reply: undefined,
@@ -274,7 +275,7 @@ describe("Store", () => {
     const s = new Store(dir);
     await s.load([COMMENTS_ID]);
     const rec = (text: string) => ({
-      lnum: 1,
+      lnum: lnumAt(1),
       content: [{ kind: "add", text } as const],
       text,
       reply: undefined,
@@ -337,7 +338,7 @@ describe("Store", () => {
     expect(s2.commentsFor(P("a.txt"))[1]!.id).toBe(2);
     expect(
       s2.addCommentRecord(P("a.txt"), {
-        lnum: 9,
+        lnum: lnumAt(9),
         content: [{ kind: "add", text: "w" }],
         text: "new",
         reply: undefined,
@@ -425,7 +426,7 @@ describe("shards written by the Lua implementation", () => {
     const a = s.commentsFor(P("a.txt"));
     expect(a.map((c) => c.id)).toEqual([1, 2]);
     expect(a[1]).toMatchObject({
-      lnum: 2,
+      lnum: lnumAt(2),
       content: [{ kind: "add", text: "z" }],
     });
     expect(s.commentsFor(P("b.txt"))[0]!.id).toBe(3);

@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { lnumAt } from "../core/types.ts";
 import { Git, spawnRunner } from "../git/git.ts";
 import { render } from "../render/render.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -75,7 +76,7 @@ describe("Session", () => {
     const f = cur.model.files[idx];
     if (!f) throw new Error("no file");
     cur.store.addCommentRecord(f.path, {
-      lnum: 2,
+      lnum: lnumAt(2),
       content: [{ kind: "add", text: "X" }],
       text: "why X?",
       reply: undefined,
@@ -97,7 +98,7 @@ describe("Session", () => {
     if (!f) throw new Error("no file");
     const add = (text: string, line: string) =>
       cur.store.addCommentRecord(f.path, {
-        lnum: 2,
+        lnum: lnumAt(2),
         content: [{ kind: "context", text: line }],
         text,
         reply: undefined,
@@ -138,7 +139,7 @@ describe("Session", () => {
     if (!path) throw new Error("no file");
     const base = {
       id: 7,
-      lnum: 2,
+      lnum: lnumAt(2),
       content: [{ kind: "add" as const, text: "X" }],
       text: "a",
       reply: undefined,

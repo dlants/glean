@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
 import type { RepoPath } from "../core/types.ts";
-import { WORKTREE } from "../core/types.ts";
+import { lnumAt, WORKTREE } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import { buildModel, Classifier, loadWorktreeSeen } from "../session/model.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -92,7 +92,7 @@ describe("comment authoring targets", () => {
   it("commentUnder and summaryCommentsIn resolve rows to stored records once", async () => {
     const { store, cls } = await setup();
     const a = store.addCommentRecord(P, {
-      lnum: 2,
+      lnum: lnumAt(2),
       content: [{ kind: "add", text: "TWO" }],
       text: "a\nb",
       reply: undefined,

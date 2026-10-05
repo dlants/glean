@@ -9,14 +9,14 @@
  * by the caller, so R only ever grows toward W and diff(H, R) is add-only.
  */
 import { alignLines, type LineOp } from "./linediff.ts";
-import type { WorktreeLnum } from "./types.ts";
+import type { Lnum, WorktreeLnum } from "./types.ts";
 
 export { alignLines as align, type LineOp };
 
 export function mapForward(
   ops: readonly LineOp[],
-  aLnum: number,
-): number | undefined {
+  aLnum: Lnum,
+): Lnum | undefined {
   for (const op of ops) {
     if (op.kind !== "add" && op.aLnum === aLnum) {
       return op.kind === "context" ? op.bLnum : undefined;
@@ -27,8 +27,8 @@ export function mapForward(
 
 export function mapBack(
   ops: readonly LineOp[],
-  bLnum: number,
-): number | undefined {
+  bLnum: Lnum,
+): Lnum | undefined {
   for (const op of ops) {
     if (op.kind !== "del" && op.bLnum === bLnum) {
       return op.kind === "context" ? op.aLnum : undefined;

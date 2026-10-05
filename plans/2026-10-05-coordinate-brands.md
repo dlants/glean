@@ -114,6 +114,12 @@ Status: done.
 
 ## core line numbers and byte columns
 
+Status: done.
+- `DiffLine`/`Hunk` lnums, `LineOp`, `mapForward/mapBack`, `Range<L extends Lnum>` (private `shiftLnum` for ±1 within a space), `resolve/locate` `lnumOf: (i: Row) => Lnum | undefined` (default `toLnum`), `CommentRecord.lnum`, `CommentEntry.oldLnum`, `Located.lnum`, `Token`/`Segment` as `ByteCol`. `tokenize` uses `byteLen`/`addBytes`.
+- Boundary `lnumAt` added in `state.ts` JSON parsing, `git.ts` untracked-file synthetic hunk, `api.ts` comment add, `overlay/project.ts` clamped lnums (stage 4 to revisit the last three).
+- Deviation: `lineage.ts` internals (`Origin.base`, `splice(at)`, base-space maps) stay `number`; they are a private base-line coordinate space that consumers only read via `PostLnum`/`PreLnum` attributions. Revisit only if stage 3/4 needs them.
+- Tests: fixtures wrap literals with `lnumAt`; new multibyte `align` segment test in `intraline.test.ts`.
+
 - Goal: `diff`, `linediff`, `baseline`, `lineage`, `ranges`, `state`, `comments`, `intraline` typed per the Interfaces. `tokenize` computes word-token `col/len` via `byteLen` so non-ASCII word chars (if WORD is ever widened) stay correct.
 - Tests:
   - Existing core tests pass unchanged.

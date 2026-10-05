@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "../core/diff.ts";
 import type { CommentRecord } from "../core/state.ts";
 import type { RepoPath } from "../core/types.ts";
+import { lnumAt } from "../core/types.ts";
 import { collectComments, resolveComments } from "./comments.ts";
 
 const patch = [
@@ -18,7 +19,7 @@ const patch = [
 function rec(text: string, lnum: number, id = 1): CommentRecord {
   return {
     id,
-    lnum,
+    lnum: lnumAt(lnum),
     content: [{ kind: "add", text }],
     text: "note",
     reply: undefined,

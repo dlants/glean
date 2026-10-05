@@ -5,17 +5,17 @@
  * post-image line it sat immediately before, so comment anchoring in the
  * post-image space is total.
  */
-import type { RepoPath } from "./types.ts";
+import { type Lnum, lnumAt, type RepoPath } from "./types.ts";
 
 export type DiffLine =
-  | { kind: "context"; text: string; oldLnum: number; newLnum: number }
-  | { kind: "add"; text: string; newLnum: number }
-  | { kind: "del"; text: string; oldLnum: number; newLnum: number };
+  | { kind: "context"; text: string; oldLnum: Lnum; newLnum: Lnum }
+  | { kind: "add"; text: string; newLnum: Lnum }
+  | { kind: "del"; text: string; oldLnum: Lnum; newLnum: Lnum };
 
 export type Hunk = {
-  oldStart: number;
+  oldStart: Lnum;
   oldCount: number;
-  newStart: number;
+  newStart: Lnum;
   newCount: number;
   header: string;
   lines: DiffLine[];
@@ -37,9 +37,9 @@ function parseHunkHeader(line: string): Hunk | undefined {
   if (!m) return undefined;
   // git omits a count of 1.
   return {
-    oldStart: Number(m[1]),
+    oldStart: lnumAt(Number(m[1])),
     oldCount: m[2] === "" ? 1 : Number(m[2]),
-    newStart: Number(m[3]),
+    newStart: lnumAt(Number(m[3])),
     newCount: m[4] === "" ? 1 : Number(m[4]),
     header: line,
     lines: [],
@@ -54,8 +54,8 @@ export function parse(text: string): FileEntry[] {
   const files: FileEntry[] = [];
   let file: FileEntry | undefined;
   let hunk: Hunk | undefined;
-  let oldLnum = 0;
-  let newLnum = 0;
+  let oldLnum = lnumAt(0);
+  let newLnum = lnumAt(0);
 
   const finishHunk = () => {
     if (file && hunk) file.hunks.push(hunk);
