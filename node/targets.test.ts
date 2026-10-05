@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { rowAt } from "./core/types.ts";
 import { Git, type GitRunner, type LogCommit, spawnRunner } from "./git/git.ts";
 import {
   clampPage,
@@ -244,12 +245,12 @@ describe("log view", () => {
     expect(frame.lines[1]).toContain("uncommitted changes");
     expect(frame.lines[2]).toBe("33333333  c3");
     expect(frame.lines.at(-1)).toContain("]p to load more");
-    expect(frame.rowMap.get(1)).toBe(0);
-    expect(frame.rowMap.get(2)).toBe(1);
+    expect(frame.rowMap.get(rowAt(1))).toBe(0);
+    expect(frame.rowMap.get(rowAt(2))).toBe(1);
   });
   it("maps selections to reviews", () => {
     const sel = (s: number, e: number) =>
-      logSelection(commits, frame.rowMap, s, e);
+      logSelection(commits, frame.rowMap, rowAt(s), rowAt(e));
     expect(sel(0, 0)).toEqual({ kind: "none" });
     expect(sel(1, 1)).toEqual({
       kind: "open",
@@ -308,11 +309,11 @@ describe("PR list view", () => {
     expect(p1.lines[0]).toContain("page 1/3");
     expect(p1.lines[1]).toBe("#101  author1  main ← feature-1  PR title 1");
     expect(p1.lines[2]).toContain("[draft]");
-    expect(p1.rowMap.get(1)).toBe(0);
+    expect(p1.rowMap.get(rowAt(1))).toBe(0);
     const p2 = renderPrs("/x/repo", prs, 2, 2);
     expect(p2.lines[0]).toContain("page 2/3");
     expect(p2.lines[1]).toContain("#103");
-    expect(p2.rowMap.get(1)).toBe(2);
+    expect(p2.rowMap.get(rowAt(1))).toBe(2);
     expect(clampPage(99, prs.length, 2)).toBe(3);
     expect(clampPage(0, prs.length, 2)).toBe(1);
     expect(renderPrs("/x/r", [], 1, 2).lines[1]).toBe("No open pull requests");

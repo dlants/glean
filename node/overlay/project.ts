@@ -6,7 +6,14 @@
  */
 import { fileProjection, locate } from "../core/comments.ts";
 import type { CommentRecord } from "../core/state.ts";
-import { clampLnum, type RepoPath } from "../core/types.ts";
+import {
+  clampLnum,
+  type Lnum,
+  type RepoPath,
+  type Row,
+  rowAt,
+  toRow,
+} from "../core/types.ts";
 
 const EOL_WIDTH = 60;
 export function firstLine(text: string): string {
@@ -20,7 +27,7 @@ export type OverlayEntry = {
   /** Rows the comment spans in the file (1 when outdated). */
   length: number;
 };
-export type OverlayGroup = { lnum: number; entries: OverlayEntry[] };
+export type OverlayGroup = { lnum: Lnum; entries: OverlayEntry[] };
 
 /**
  * Group `records` by the line they resolve to in `lines`, ordered by line. A
@@ -68,7 +75,7 @@ export function bodyLines(record: CommentRecord): BodyLine[] {
   return out;
 }
 
-export type Stamp = { row: number; opts: Record<string, unknown> };
+export type Stamp = { row: Row; opts: Record<string, unknown> };
 /** The extmarks (0-based rows) of one buffer, given its line count. */
 export function stamps(
   groups: readonly OverlayGroup[],
@@ -97,15 +104,18 @@ export function stamps(
       opts.virt_lines = entries.flatMap((e) =>
         bodyLines(e.record).map((l) => [[`  ${l.text}`, l.hl]]),
       );
-    out.push({ row: group.lnum - 1, opts });
+    out.push({ row: toRow(group.lnum), opts });
     // Make a multi-line comment's extent visible.
     if (length > 1)
       for (
-        let l = group.lnum;
-        l <= Math.min(group.lnum + length - 1, total);
-        l++
+        let r: number = toRow(group.lnum);
+        r < Math.min(group.lnum + length - 1, total);
+        r++
       )
-        out.push({ row: l - 1, opts: { line_hl_group: "GleanCommentLine" } });
+        out.push({
+          row: rowAt(r),
+          opts: { line_hl_group: "GleanCommentLine" },
+        });
   }
   return out;
 }
@@ -113,7 +123,7 @@ export function stamps(
 /** Every record resolving to `lnum`. */
 export function recordsAt(
   groups: readonly OverlayGroup[],
-  lnum: number,
+  lnum: Lnum,
 ): CommentRecord[] {
   return groups
     .filter((g) => g.lnum === lnum)
@@ -134,10 +144,10 @@ export function floatLines(records: readonly CommentRecord[]): BodyLine[] {
 /** The nearest commented line after (dir 1) or before (dir -1) `cur`. */
 export function jumpLnum(
   groups: readonly OverlayGroup[],
-  cur: number,
+  cur: Lnum,
   dir: 1 | -1,
-): number | undefined {
-  let best: number | undefined;
+): Lnum | undefined {
+  let best: Lnum | undefined;
   for (const { lnum } of groups) {
     if (dir > 0 && lnum > cur && (best === undefined || lnum < best))
       best = lnum;

@@ -8,7 +8,13 @@ import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { LiveReview } from "./api/api.ts";
 import { COMMENTS_ID } from "./core/state.ts";
-import { type RepoPath, toRepoPath, type WorktreeLnum } from "./core/types.ts";
+import {
+  type RepoPath,
+  type Row,
+  rowAt,
+  toRepoPath,
+  type WorktreeLnum,
+} from "./core/types.ts";
 import {
   Git,
   type GitRunner,
@@ -82,7 +88,7 @@ export type AppUi = {
   wipeBuffer(buf: number): Promise<void>;
   /** Clear a review buffer's text and decorations (`:e`). */
   blankBuffer(buf: number): Promise<void>;
-  setCursor(buf: number, row: number): Promise<void>;
+  setCursor(buf: number, row: Row): Promise<void>;
   openListBuffer(kind: "log" | "prs", root: string): Promise<number>;
   paintList(buf: number, frame: ListFrame): Promise<void>;
   notify(msg: string, level: NotifyLevel): Promise<void>;
@@ -106,7 +112,7 @@ export type Command =
   | { kind: "jump" };
 
 export type ListEvent =
-  | { kind: "open"; buf: number; srow: number; erow: number }
+  | { kind: "open"; buf: number; srow: Row; erow: Row }
   | { kind: "page"; buf: number; delta: number }
   | { kind: "reload"; buf: number }
   | { kind: "gone"; buf: number };
@@ -118,7 +124,7 @@ export function parseListEvent(v: unknown): ListEvent | undefined {
   switch (e.kind) {
     case "open":
       return typeof e.srow === "number" && typeof e.erow === "number"
-        ? { kind: "open", buf, srow: e.srow, erow: e.erow }
+        ? { kind: "open", buf, srow: rowAt(e.srow), erow: rowAt(e.erow) }
         : undefined;
     case "page":
       return typeof e.delta === "number"
@@ -422,7 +428,7 @@ export class App {
    * the options it was opened with in the same (blanked) buffer, keeping its id
    * and cursor row, so a wedged render or stale extmarks recover in place.
    */
-  private async reset(bufnr: number, row: number | undefined) {
+  private async reset(bufnr: number, row: Row | undefined) {
     const slot = this.current;
     if (!slot || slot.bufnr !== bufnr) return;
     this.stopView(slot);
@@ -569,7 +575,7 @@ export class App {
       st.page = page;
       st.frame = renderPrs(st.root, st.prs, page, PR_PAGE_SIZE);
       await this.ui.paintList(ev.buf, st.frame);
-      await this.ui.setCursor(ev.buf, 1);
+      await this.ui.setCursor(ev.buf, rowAt(1));
       return;
     }
     const idx = st.frame.rowMap.get(ev.srow);

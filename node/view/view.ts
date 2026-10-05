@@ -1,4 +1,12 @@
-import { COL0, ROW0, type Row, rowAt, toLnum } from "../core/types.ts";
+import {
+  type ByteCol,
+  COL0,
+  nextRow,
+  ROW0,
+  type Row,
+  rowAt,
+  toLnum,
+} from "../core/types.ts";
 /**
  * The nvim adapter for a review: implements `ReviewUi` on the scratch buffer.
  * Each frame is diffed against the previous one (common prefix/suffix) and
@@ -352,7 +360,7 @@ export class ReviewView implements ReviewUi {
     ]);
     return result;
   }
-  async openJump(target: ResolvedJump, col: number, isStale: IsStale) {
+  async openJump(target: ResolvedJump, col: ByteCol, isStale: IsStale) {
     await openJump(
       this.nvim,
       this.session.git,
@@ -571,9 +579,14 @@ export class ReviewView implements ReviewUi {
           [
             sbuf,
             this.nsSticky,
-            i,
-            0,
-            { end_row: i + 1, end_col: 0, hl_group: hl, hl_eol: true },
+            rowAt(i),
+            COL0,
+            {
+              end_row: nextRow(rowAt(i)),
+              end_col: COL0,
+              hl_group: hl,
+              hl_eol: true,
+            },
           ],
         ]);
     });

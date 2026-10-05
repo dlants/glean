@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type DiffLine, mapLnum, parse } from "./diff.ts";
+import { lnumAt } from "./types.ts";
 
 const j = (...l: string[]) => l.join("\n");
 const oldOf = (l: DiffLine) => (l.kind === "add" ? undefined : l.oldLnum);
@@ -194,14 +195,14 @@ describe("diff.mapLnum", () => {
         " k",
       ),
     )[0]!.hunks;
-    expect(mapLnum(hunks, 1)).toBe(1);
-    expect(mapLnum(hunks, 3)).toBe(3);
-    expect(mapLnum(hunks, 4)).toBeUndefined();
-    expect(mapLnum(hunks, 5)).toBe(6);
-    expect(mapLnum(hunks, 8)).toBe(9);
-    expect(mapLnum(hunks, 10)).toBeUndefined();
-    expect(mapLnum(hunks, 11)).toBe(11);
-    expect(mapLnum(hunks, 20)).toBe(20);
-    expect(mapLnum([], 7)).toBe(7);
+    expect(mapLnum(hunks, lnumAt(1))).toBe(1);
+    expect(mapLnum(hunks, lnumAt(3))).toBe(3);
+    expect(mapLnum(hunks, lnumAt(4))).toBeUndefined();
+    expect(mapLnum(hunks, lnumAt(5))).toBe(6);
+    expect(mapLnum(hunks, lnumAt(8))).toBe(9);
+    expect(mapLnum(hunks, lnumAt(10))).toBeUndefined();
+    expect(mapLnum(hunks, lnumAt(11))).toBe(11);
+    expect(mapLnum(hunks, lnumAt(20))).toBe(20);
+    expect(mapLnum([], lnumAt(7))).toBe(7);
   });
 });

@@ -1,9 +1,9 @@
 /** The nvim adapter for the comment overlay's `OverlayUi` port. */
 import {
   type BufNr,
+  endRow,
   ROW0,
   type Row,
-  rowAt,
   toRow,
   type WorktreeLnum,
 } from "../core/types.ts";
@@ -63,7 +63,7 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
     return this.getLines(buf, ROW0, -1);
   }
   range(buf: BufNr, r: { from: WorktreeLnum; to: WorktreeLnum }) {
-    return this.getLines(buf, toRow(r.from), rowAt(r.to));
+    return this.getLines(buf, toRow(r.from), endRow(r.to));
   }
   private async getLines(buf: BufNr, lo: Row, hi: Row | -1) {
     const l = await this.nvim.call("nvim_buf_get_lines", [buf, lo, hi, false]);
@@ -100,9 +100,9 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
 
   async park(buf: BufNr, lnum: WorktreeLnum) {
     await this.nvim.call("nvim_exec_lua", [
-      `local buf, row = ...
+      `local buf, lnum1 = ...
 if vim.api.nvim_get_current_buf() ~= buf then return end
-vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf)), 0 })`,
+vim.api.nvim_win_set_cursor(0, { math.min(lnum1, vim.api.nvim_buf_line_count(buf)), 0 })`,
       [buf, lnum],
     ]);
   }

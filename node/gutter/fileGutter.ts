@@ -7,7 +7,12 @@
  */
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import type { BufNr, RepoPath, WorktreeLnum } from "../core/types.ts";
+import {
+  type BufNr,
+  parseLnum,
+  type RepoPath,
+  type WorktreeLnum,
+} from "../core/types.ts";
 import type { SeenPlan } from "../render/actions.ts";
 import { splitLines } from "../session/model.ts";
 import type { Session } from "../session/session.ts";
@@ -24,14 +29,14 @@ import {
 
 export type GutterEvent =
   | { kind: "refresh"; buf: BufNr }
-  | { kind: "focus"; buf: BufNr; row: WorktreeLnum }
+  | { kind: "focus"; buf: BufNr; lnum: WorktreeLnum }
   | {
       kind: "toggle-mark";
       buf: BufNr;
       line1: WorktreeLnum;
       line2?: WorktreeLnum;
     }
-  | { kind: "goto-hunk"; buf: BufNr; row: WorktreeLnum; dir: 1 | -1 }
+  | { kind: "goto-hunk"; buf: BufNr; lnum: WorktreeLnum; dir: 1 | -1 }
   | { kind: "undo" | "redo"; buf: BufNr; seq: number }
   | { kind: "toggle"; buf: BufNr }
   | { kind: "wipe"; buf: BufNr };
@@ -44,15 +49,15 @@ export function parseGutterEvent(v: unknown): GutterEvent | undefined {
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
   // File-buffer rows are 1-based; the gutter only acts on buffers whose text
   // is the work tree, so they name work-tree lines.
-  const lnum = (k: string) => num(k) as WorktreeLnum | undefined;
+  const lnum = (k: string) => parseLnum(o[k]) as WorktreeLnum | undefined;
   switch (o.kind) {
     case "refresh":
     case "toggle":
     case "wipe":
       return { kind: o.kind, buf };
     case "focus": {
-      const row = lnum("row");
-      return row === undefined ? undefined : { kind: "focus", buf, row };
+      const at = lnum("lnum");
+      return at === undefined ? undefined : { kind: "focus", buf, lnum: at };
     }
     case "toggle-mark": {
       const line1 = lnum("line1");
@@ -63,11 +68,11 @@ export function parseGutterEvent(v: unknown): GutterEvent | undefined {
         : { kind: "toggle-mark", buf, line1, line2 };
     }
     case "goto-hunk": {
-      const row = lnum("row");
+      const at = lnum("lnum");
       const dir = o.dir === -1 ? -1 : o.dir === 1 ? 1 : undefined;
-      return row === undefined || dir === undefined
+      return at === undefined || dir === undefined
         ? undefined
-        : { kind: "goto-hunk", buf, row, dir };
+        : { kind: "goto-hunk", buf, lnum: at, dir };
     }
     case "undo":
     case "redo": {
@@ -229,7 +234,7 @@ export class FileGutter {
         const p = this.painted.get(ev.buf);
         const [info] = await this.ui.infos([ev.buf]);
         if (!p || !info) return;
-        const row = nextHunkRow(hunkStarts(p.marks, true), ev.row, ev.dir);
+        const row = nextHunkRow(hunkStarts(p.marks, true), ev.lnum, ev.dir);
         if (row === undefined || row > info.lines) return;
         await this.park(ev.buf, row);
         return;

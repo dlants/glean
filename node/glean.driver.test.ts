@@ -242,6 +242,59 @@ describe("seen extras and whitespace (driver)", () => {
       nvim,
       `vim.tbl_map(function(w) return vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false) end, vim.tbl_filter(function(w) return vim.api.nvim_win_get_config(w).relative ~= "" end, vim.api.nvim_list_wins()))`,
     );
+  it("highlight extmarks cover exactly their text on multibyte and tab lines", async () => {
+    const repo = makeRepo([
+      { files: { "m.txt": "héllo wörld\n\tcafé = 1;\nend\n" } },
+      { msg: "multi", files: { "m.txt": "héllo wörld\n\tcafé = 2;\nend\n" } },
+    ]);
+    await withNvim(async (nvim) => {
+      await setup(nvim, repo.root);
+      await nvim.call("nvim_command", [`Glean ${repo.shas[0]} HEAD`]);
+      await pollUntil(async () =>
+        (await lines(nvim)).some((l) => l.includes("café = 2"))
+          ? true
+          : undefined,
+      );
+      type Mark = {
+        row: number;
+        col: number;
+        erow: number;
+        ecol: number;
+        text: string;
+        line: string;
+      };
+      const marksIn = (ns: string) =>
+        luaEval<Mark[]>(
+          nvim,
+          `(function()
+  local out = {}
+  local ns = vim.api.nvim_create_namespace(${JSON.stringify(ns)})
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(0, ns, 0, -1, { details = true })) do
+    local d = m[4]
+    if d.hl_group and d.end_row then
+      local line = vim.api.nvim_buf_get_lines(0, m[2], m[2] + 1, false)[1]
+      local ok, t = pcall(vim.api.nvim_buf_get_text, 0, m[2], m[3], d.end_row, d.end_col or 0, {})
+      out[#out + 1] = { row = m[2], col = m[3], erow = d.end_row, ecol = d.end_col or 0,
+        text = ok and table.concat(t, "\\n") or "<invalid>", line = line }
+    end
+  end
+  return out
+end)()`,
+        );
+      const intra = await pollUntil(async () => {
+        const m = await marksIn("glean-review-intra");
+        return m.length > 0 ? m : undefined;
+      });
+      expect(intra.map((m) => m.text).sort()).toEqual(["1", "2"]);
+      for (const m of [...intra, ...(await marksIn("glean-review"))]) {
+        expect(m.text).not.toBe("<invalid>");
+        if (m.erow === m.row) {
+          expect(m.ecol).toBeGreaterThan(m.col);
+          expect(m.ecol).toBeLessThanOrEqual(Buffer.byteLength(m.line));
+        }
+      }
+    });
+  });
   it("the sticky float follows the topline and closes when the review is hidden", async () => {
     const base = Array.from({ length: 80 }, (_, i) => `line${i + 1}`);
     const edited = base.map((l, i) => (i >= 9 && i < 70 ? `${l}_Z` : l));

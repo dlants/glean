@@ -6,7 +6,14 @@
  */
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
-import type { Sha } from "./core/types.ts";
+import {
+  type ByteCol,
+  byteLen,
+  ROW0,
+  type Row,
+  rowAt,
+  type Sha,
+} from "./core/types.ts";
 import {
   DEFAULT_TIMEOUT_MS,
   type Git,
@@ -279,12 +286,12 @@ function parseJson(text: string, what: string): unknown {
 
 // ---- log view ----
 
-export type ListHighlight = { row: number; endCol: number | "eol" };
+export type ListHighlight = { row: Row; endCol: ByteCol | "eol" };
 export type ListFrame = {
   lines: string[];
   highlights: ListHighlight[];
   /** Row → selectable index (log: 0 = work tree, i = commits[i-1]). */
-  rowMap: Map<number, number>;
+  rowMap: Map<Row, number>;
 };
 
 export const LOG_PAGE_SIZE = 200;
@@ -298,14 +305,14 @@ export function renderLog(
     `Glean log — ${basename(repoRoot)}`,
     "dirty     uncommitted changes",
   ];
-  const rowMap = new Map<number, number>([[1, 0]]);
+  const rowMap = new Map<Row, number>([[rowAt(1), 0]]);
   const highlights: ListHighlight[] = [
-    { row: 0, endCol: "eol" },
-    { row: 1, endCol: 5 },
+    { row: ROW0, endCol: "eol" },
+    { row: rowAt(1), endCol: byteLen("dirty") },
   ];
   commits.forEach((c, i) => {
-    rowMap.set(lines.length, i + 1);
-    highlights.push({ row: lines.length, endCol: c.shortSha.length });
+    rowMap.set(rowAt(lines.length), i + 1);
+    highlights.push({ row: rowAt(lines.length), endCol: byteLen(c.shortSha) });
     lines.push(`${c.shortSha}  ${c.summary}`);
   });
   if (hasMore) lines.push("…         press ]p to load more history");
@@ -318,15 +325,15 @@ export type LogSelection = { kind: "none" } | { kind: "open"; spec: OpenSpec };
  * work tree; the base is the oldest selected commit's first parent. */
 export function logSelection(
   commits: readonly LogCommit[],
-  rowMap: ReadonlyMap<number, number>,
-  srow: number,
-  erow: number,
+  rowMap: ReadonlyMap<Row, number>,
+  srow: Row,
+  erow: Row,
 ): LogSelection {
   const [lo, hi] = srow <= erow ? [srow, erow] : [erow, srow];
   let first: number | undefined;
   let last: number | undefined;
   for (let row = lo; row <= hi; row++) {
-    const idx = rowMap.get(row);
+    const idx = rowMap.get(rowAt(row));
     if (idx === undefined) continue;
     first = Math.min(first ?? idx, idx);
     last = Math.max(last ?? idx, idx);
@@ -410,17 +417,17 @@ export function renderPrs(
   const lines = [
     `Glean prs — ${basename(repoRoot)} — page ${page}/${prPageCount(prs.length, pageSize)}`,
   ];
-  const highlights: ListHighlight[] = [{ row: 0, endCol: "eol" }];
-  const rowMap = new Map<number, number>();
+  const highlights: ListHighlight[] = [{ row: ROW0, endCol: "eol" }];
+  const rowMap = new Map<Row, number>();
   const first = (page - 1) * pageSize;
   const last = Math.min(prs.length, first + pageSize);
   for (let i = first; i < last; i++) {
     const pr = prs[i];
     if (!pr) continue;
-    rowMap.set(lines.length, i);
+    rowMap.set(rowAt(lines.length), i);
     highlights.push({
-      row: lines.length,
-      endCol: String(pr.number).length + 1,
+      row: rowAt(lines.length),
+      endCol: byteLen(`#${pr.number}`),
     });
     lines.push(
       `#${pr.number}  ${pr.author ?? "unknown"}  ${pr.baseRefName} ← ${pr.headRefName}  ${pr.title}${pr.isDraft ? " [draft]" : ""}`,

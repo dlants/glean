@@ -2,7 +2,7 @@
 import { basename } from "node:path";
 import type { AppUi } from "./app.ts";
 import { readOpenConfig } from "./config.ts";
-import type { WorktreeLnum } from "./core/types.ts";
+import { nextRow, toLnum, type WorktreeLnum } from "./core/types.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
 import type { Prompts } from "./view/prompts.ts";
 import { ReviewView } from "./view/view.ts";
@@ -51,11 +51,11 @@ vim.bo[buf].modifiable = false`,
     },
     async setCursor(buf, row) {
       await lua(
-        `local buf, row = ...
+        `local buf, lnum1 = ...
 for _, win in ipairs(vim.fn.win_findbuf(buf)) do
-  pcall(vim.api.nvim_win_set_cursor, win, { math.min(row + 1, vim.api.nvim_buf_line_count(buf)), 0 })
+  pcall(vim.api.nvim_win_set_cursor, win, { math.min(lnum1, vim.api.nvim_buf_line_count(buf)), 0 })
 end`,
-        [buf, row],
+        [buf, toLnum(row)],
       );
     },
     async openListBuffer(kind, root) {
@@ -66,7 +66,7 @@ end`,
     },
     async paintList(buf, frame) {
       await lua(
-        `local buf, lines, hls = ...
+        `local buf, lines, hls = ... -- hls: { row0, end_row0, end_col0 (-1 = eol) }
 local ns = vim.api.nvim_create_namespace("glean_list")
 vim.bo[buf].modifiable = true
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -74,10 +74,10 @@ vim.bo[buf].modifiable = false
 vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
 for i, h in ipairs(hls) do
   local group = (i == 1) and "GleanModeHeader" or "GleanCommitHeader"
-  if h[2] < 0 then
-    vim.api.nvim_buf_set_extmark(buf, ns, h[1], 0, { end_row = h[1] + 1, hl_group = group, hl_eol = true })
+  if h[3] < 0 then
+    vim.api.nvim_buf_set_extmark(buf, ns, h[1], 0, { end_row = h[2], hl_group = group, hl_eol = true })
   else
-    vim.api.nvim_buf_set_extmark(buf, ns, h[1], 0, { end_col = h[2], hl_group = group })
+    vim.api.nvim_buf_set_extmark(buf, ns, h[1], 0, { end_col = h[3], hl_group = group })
   end
 end`,
         [
@@ -85,6 +85,7 @@ end`,
           frame.lines,
           frame.highlights.map((h) => [
             h.row,
+            nextRow(h.row),
             h.endCol === "eol" ? -1 : h.endCol,
           ]),
         ],

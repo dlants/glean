@@ -12,7 +12,13 @@ import type {
   RepoPath,
   WorktreeLnum,
 } from "../core/types.ts";
-import { rowAt } from "../core/types.ts";
+import {
+  type ByteCol,
+  type Lnum,
+  lineAt,
+  rowAt,
+  toRow,
+} from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { DiffContext, JumpTarget, SourceRef } from "../render/nav.ts";
@@ -34,24 +40,25 @@ async function liveLnum(
   git: Git,
   sha: string,
   path: RepoPath,
-  lnum: number,
-): Promise<number | undefined> {
+  lnum: PostLnum,
+): Promise<WorktreeLnum | undefined> {
   const d = await git.diffToWorktree(sha, { path });
   if (d.kind !== "ok") return undefined;
   const file = d.value[0];
-  if (!file) return lnum;
+  // Diffing the commit against the work tree puts the result in work-tree space.
+  if (!file) return lnum as Lnum as WorktreeLnum;
   if (file.kind === "delete") return undefined;
-  return mapLnum(file.hunks, lnum);
+  return mapLnum(file.hunks, lnum) as WorktreeLnum | undefined;
 }
 
 /** Reads line `lnum` (1-based) of the work-tree file at `abs`. */
 export type LineReader = (
   abs: string,
-  lnum: number,
+  lnum: Lnum,
 ) => Promise<string | undefined>;
 export const diskLine: LineReader = async (abs, lnum) => {
   try {
-    return splitLines(await readFile(abs, "utf8"))[lnum - 1];
+    return lineAt(splitLines(await readFile(abs, "utf8")), lnum);
   } catch {
     return undefined;
   }
@@ -60,13 +67,13 @@ export const diskLine: LineReader = async (abs, lnum) => {
 export function bufferLine(nvim: Nvim): LineReader {
   return async (abs, lnum) => {
     const fromBuf = await nvim.call("nvim_exec_lua", [
-      `local abs, lnum = ...
+      `local abs, row0 = ...
 local b = vim.fn.bufnr(abs)
 if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
-  return { vim.api.nvim_buf_get_lines(b, lnum - 1, lnum, false)[1] or vim.NIL }
+  return { vim.api.nvim_buf_get_lines(b, row0, row0 + 1, false)[1] or vim.NIL }
 end
 return vim.NIL`,
-      [abs, lnum],
+      [abs, toRow(lnum)],
     ]);
     if (Array.isArray(fromBuf))
       return typeof fromBuf[0] === "string" ? fromBuf[0] : undefined;
@@ -174,7 +181,7 @@ export async function resolveJump(
       return {
         kind: "live",
         path: jt.path,
-        lnum: mapped as WorktreeLnum,
+        lnum: mapped,
         fallback: { rev, lnum: jt.lnum },
       };
   }
@@ -188,11 +195,11 @@ export async function openJump(
   git: Git,
   win: number,
   rj: ResolvedJump,
-  col: number,
+  col: ByteCol,
   isStale: IsStale,
 ): Promise<void> {
   if (isStale()) return;
-  let blob: { rev: string; lnum: number };
+  let blob: { rev: string; lnum: Lnum };
   if (rj.kind === "scratch") blob = rj;
   else {
     const ok = await nvim.call("nvim_exec_lua", [

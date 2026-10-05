@@ -31,7 +31,7 @@ end
 local suppressed = {}
 
 -- ── Keymaps ─────────────────────────────────────────────────────────────────
-local function row() return api.nvim_win_get_cursor(0)[1] end
+local function lnum() return api.nvim_win_get_cursor(0)[1] end
 
 function M.op()
   notify({ kind = "toggle-mark", buf = api.nvim_get_current_buf(),
@@ -63,12 +63,12 @@ end
 
 local function maps(buf)
   return {
-    { "n", "]c", function() notify({ kind = "goto-hunk", buf = buf, row = row(), dir = 1 }) end, "glean: next hunk" },
-    { "n", "[c", function() notify({ kind = "goto-hunk", buf = buf, row = row(), dir = -1 }) end, "glean: previous hunk" },
+    { "n", "]c", function() notify({ kind = "goto-hunk", buf = buf, lnum = lnum(), dir = 1 }) end, "glean: next hunk" },
+    { "n", "[c", function() notify({ kind = "goto-hunk", buf = buf, lnum = lnum(), dir = -1 }) end, "glean: previous hunk" },
     { "n", "gj", "<Cmd>Glean jump<CR>", "glean: jump to the review" },
     { "n", "gm", "<Cmd>set operatorfunc=v:lua.require'glean.gutter'.op<CR>g@", "glean: toggle mark over a motion" },
     { "n", "gmm", "<Cmd>set operatorfunc=v:lua.require'glean.gutter'.op<CR>g@_", "glean: toggle mark on this line" },
-    { "n", "gmc", function() notify({ kind = "toggle-mark", buf = buf, line1 = row() }) end, "glean: toggle mark on this hunk" },
+    { "n", "gmc", function() notify({ kind = "toggle-mark", buf = buf, line1 = lnum() }) end, "glean: toggle mark on this hunk" },
     { "x", "gm", function()
       local a, b = vim.fn.line("v"), vim.fn.line(".")
       api.nvim_feedkeys(api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
@@ -196,7 +196,7 @@ function M.bridge(group)
     group = group,
     callback = function(args)
       if mapped[args.buf] or suppressed[args.buf] then
-        notify({ kind = "focus", buf = args.buf, row = row() })
+        notify({ kind = "focus", buf = args.buf, lnum = lnum() })
       end
     end,
   })

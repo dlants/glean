@@ -143,6 +143,16 @@ Status: done.
 
 ## nvim adapters and RPC boundary
 
+Status: done.
+- New helpers in `core/types.ts`: `endRow(l)` (exclusive 0-based end of an inclusive 1-based range), `nextRow(r)`, `byteColAt(n)` (parse boundary).
+- RPC renames: `gutter.lua` `goto-hunk`/`focus` send `lnum` (was `row`); `fileGutter.ts` parses all lnums via `parseLnum`. Overlay events parse via `parseLnum`. List-buffer `srow/erow` were already 0-based; now branded `Row` in `parseListEvent`; `ListFrame.rowMap: Map<Row, number>`, `ListHighlight { row: Row; endCol: ByteCol | "eol" }` built with `byteLen` (PR tag end now `byteLen("#N")`, same value).
+- Lua snippets take suffix-named, node-converted args: gutter/overlay `park` (`lnum1`), app list `setCursor` (`lnum1` = `toLnum(row)`), `bufferLine` (`row0`), list highlights get an explicit `end_row` (`nextRow`) instead of `h[1] + 1` in Lua.
+- `overlay/project.ts`: `Stamp.row: Row`, `OverlayGroup.lnum: Lnum`, `recordsAt`/`jumpLnum` typed. `nvimOverlayUi.range` uses `endRow`. Gutter extmarks use `toRow`.
+- `view/jump.ts`: `liveLnum` returns `WorktreeLnum`, `LineReader` takes `Lnum` (`lineAt`), `col: ByteCol` end to end (branded in `parseAction`). `core/diff.ts` `mapLnum` typed `Lnum`.
+- `api.ts` `excerpt` srow/erow are 1-based: parsed with `parseLnum`, read via `lineAt`; add_comment slice via `toRow`/`endRow`.
+- Deviations: `nvim_call_atomic` sites still build untyped arrays (the `atomic()` builder rejects Glean highlight groups since `ExtmarkOptions.hl_group` is nvim's builtin `HLGroup` union) — rows are produced by helpers instead. `overlay.ts` keeps one `as WorktreeLnum` on the `jumpLnum` result (overlay groups are work-tree lines but typed `Lnum`). Lua `overlay.lua` float highlight `(i - 1, end_row = i)` left as is (pure Lua). Cursor round-trip driver tests not added beyond existing `]c`/jump/sticky driver tests, which already cover them.
+- Tests: new driver test in `glean.driver.test.ts` reads back highlight extmarks (review + intra namespaces) on multibyte/tab lines and asserts every range is valid within its line and intraline segments cover exactly the changed tokens. No off-by-one found.
+
 - Goal: `view/view.ts`, `view/jump.ts`, `view/review.ts` action parsing, `nvimAppUi.ts`, `gutter/*`, `overlay/*`, `api/api.ts`, `targets.ts` and the Lua senders typed and renamed per the RPC invariant; all `+ 1`/`- 1` replaced by helpers; Lua snippets receive pre-converted, suffix-named args. Remove the redundant `end_row` alongside `hl_eol` in the list highlight only if the driver test shows identical extmarks.
 - Tests:
   - Driver test (`view.driver.test.ts`): open a review over a fixture with multibyte and tab-containing lines, then read back `nvim_buf_get_extmarks(..., {details=true})` for the review namespace and assert each highlight extmark covers exactly the expected text (via `nvim_buf_get_text` over the extmark range), including intraline segments and the active-hunk / indent decor rows.

@@ -121,10 +121,10 @@ it("refuses a modified buffer or one out of date with the model", async () => {
 it("gmc marks the hunk and focus covers it", async () => {
   const t = await setup();
   t.buf(F).cursor = L(4);
-  await t.g.handle({ kind: "focus", buf: F, row: L(4) });
+  await t.g.handle({ kind: "focus", buf: F, lnum: L(4) });
   expect(t.rec.focus.get(F)).toBe("2:change 3:context+ 4:add 5:add");
   t.buf(F).cursor = L(3);
-  await t.g.handle({ kind: "focus", buf: F, row: L(3) });
+  await t.g.handle({ kind: "focus", buf: F, lnum: L(3) });
   expect(t.rec.focus.get(F)).toBe("");
   await t.g.handle({ kind: "toggle-mark", buf: F, line1: L(2) });
   await t.repaint();
@@ -144,14 +144,14 @@ it("uncommitted deletions mark and unmark", async () => {
 
 it("]c parks on hunk starts, wrapping, within the buffer", async () => {
   const t = await setup();
-  await t.g.handle({ kind: "goto-hunk", buf: F, row: L(1), dir: 1 });
+  await t.g.handle({ kind: "goto-hunk", buf: F, lnum: L(1), dir: 1 });
   expect(t.rec.parked.at(-1)).toEqual({ buf: F, row: 2 });
-  await t.g.handle({ kind: "goto-hunk", buf: F, row: L(5), dir: 1 });
+  await t.g.handle({ kind: "goto-hunk", buf: F, lnum: L(5), dir: 1 });
   expect(t.rec.parked.at(-1)).toEqual({ buf: F, row: 2 });
   // A model row past the buffer's end is not parked on.
   t.buf(F).lines = ["one"];
   const n = t.rec.parked.length;
-  await t.g.handle({ kind: "goto-hunk", buf: F, row: L(1), dir: 1 });
+  await t.g.handle({ kind: "goto-hunk", buf: F, lnum: L(1), dir: 1 });
   expect(t.rec.parked.length).toBe(n);
 });
 

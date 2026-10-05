@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import type { CommentRecord, NewComment, Store } from "../core/state.ts";
 import {
   type BufNr,
+  parseLnum,
   type RepoPath,
   type Sha,
   toSha,
@@ -42,7 +43,7 @@ export type OverlayEvent =
       lnum: WorktreeLnum;
     }
   | { kind: "add"; buf: BufNr; line1: WorktreeLnum; line2: WorktreeLnum }
-  | { kind: "jump"; buf: BufNr; lnum: number; dir: 1 | -1 }
+  | { kind: "jump"; buf: BufNr; lnum: WorktreeLnum; dir: 1 | -1 }
   | { kind: "quickfix"; buf: BufNr };
 export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
   if (typeof v !== "object" || v === null) return undefined;
@@ -60,12 +61,12 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
     case "edit":
     case "delete":
     case "reply": {
-      const lnum = num("lnum") as WorktreeLnum | undefined;
+      const lnum = parseLnum(o.lnum) as WorktreeLnum | undefined;
       return lnum === undefined ? undefined : { kind: o.kind, buf, lnum };
     }
     case "add": {
-      const line1 = num("line1");
-      const line2 = num("line2") ?? line1;
+      const line1 = parseLnum(o.line1);
+      const line2 = parseLnum(o.line2) ?? line1;
       if (line1 === undefined || line2 === undefined) return undefined;
       return {
         kind: "add",
@@ -75,7 +76,7 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
       };
     }
     case "jump": {
-      const lnum = num("lnum");
+      const lnum = parseLnum(o.lnum) as WorktreeLnum | undefined;
       const dir = o.dir === -1 ? -1 : o.dir === 1 ? 1 : undefined;
       return lnum === undefined || dir === undefined
         ? undefined
@@ -263,7 +264,7 @@ export class Overlay {
     await this.ui.stamp(buf, marks);
   }
 
-  private async show(buf: BufNr, lnum: number) {
+  private async show(buf: BufNr, lnum: WorktreeLnum) {
     const r = await this.resolve(buf);
     const records = r ? recordsAt(r.groups, lnum) : [];
     if (records.length === 0) return;

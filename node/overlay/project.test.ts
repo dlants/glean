@@ -97,12 +97,12 @@ describe("overlay projection (overlay_test)", () => {
   it("float carries the whole body and reply; inline toggles virt_lines", () => {
     const r = rec(1, [add("a")], "first\nsecond line", "agent says hi");
     const { groups } = resolveOverlay([r], ["a"]);
-    const text = floatLines(recordsAt(groups, 1))
+    const text = floatLines(recordsAt(groups, lnumAt(1)))
       .map((l) => l.text)
       .join("\n");
     expect(text).toContain("second line");
     expect(text).toContain("agent says hi");
-    expect(recordsAt(groups, 2)).toEqual([]);
+    expect(recordsAt(groups, lnumAt(2))).toEqual([]);
     expect(stamps(groups, true, 1)[0]!.opts.virt_lines).toBeDefined();
     expect(stamps(groups, false, 1)[0]!.opts.virt_lines).toBeUndefined();
   });
@@ -138,12 +138,12 @@ describe("overlay projection (overlay_test)", () => {
 
   it("jumps by resolved position and truncates labels", () => {
     const groups = [
-      { lnum: 3, entries: [] },
-      { lnum: 8, entries: [] },
+      { lnum: lnumAt(3), entries: [] },
+      { lnum: lnumAt(8), entries: [] },
     ];
-    expect(jumpLnum(groups, 3, 1)).toBe(8);
-    expect(jumpLnum(groups, 3, -1)).toBeUndefined();
-    expect(jumpLnum(groups, 9, -1)).toBe(8);
+    expect(jumpLnum(groups, lnumAt(3), 1)).toBe(8);
+    expect(jumpLnum(groups, lnumAt(3), -1)).toBeUndefined();
+    expect(jumpLnum(groups, lnumAt(9), -1)).toBe(8);
     expect(firstLine("x".repeat(80))).toHaveLength(60);
   });
 });

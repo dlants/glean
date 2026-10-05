@@ -1,5 +1,5 @@
 /** The nvim adapter for the file-buffer gutter's `GutterUi` port. */
-import { type BufNr, ROW0, type WorktreeLnum } from "../core/types.ts";
+import { type BufNr, ROW0, toRow, type WorktreeLnum } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { NotifyLevel } from "../view/review.ts";
 import { MAX_BATCH_CALLS } from "../view/view.ts";
@@ -93,7 +93,7 @@ export class NvimGutterUi implements GutterUi {
       const mark = (lnum: WorktreeLnum, opts: object) =>
         calls.push([
           "nvim_buf_set_extmark",
-          [p.buf, this.ns, lnum - 1, 0, opts],
+          [p.buf, this.ns, toRow(lnum), 0, opts],
         ]);
       if (st.kind === "stale")
         for (const lnum of st.lnums)
@@ -119,7 +119,7 @@ export class NvimGutterUi implements GutterUi {
         [
           buf,
           this.nsFocus,
-          s.lnum - 1,
+          toRow(s.lnum),
           0,
           {
             sign_text: FOCUS_GLYPH[s.kind],
@@ -139,13 +139,13 @@ export class NvimGutterUi implements GutterUi {
   async setUndoDepth(buf: BufNr, depth: UndoDepth) {
     await this.nvim.call("nvim_buf_set_var", [buf, "glean_undo", depth]);
   }
-  async park(buf: BufNr, row: WorktreeLnum) {
+  async park(buf: BufNr, lnum: WorktreeLnum) {
     await this.nvim.call("nvim_exec_lua", [
-      `local buf, row = ...
+      `local buf, lnum1 = ...
 if vim.api.nvim_get_current_buf() ~= buf then return end
 vim.cmd("normal! m'")
-vim.api.nvim_win_set_cursor(0, { math.min(row, vim.api.nvim_buf_line_count(buf)), 0 })`,
-      [buf, row],
+vim.api.nvim_win_set_cursor(0, { math.min(lnum1, vim.api.nvim_buf_line_count(buf)), 0 })`,
+      [buf, lnum],
     ]);
   }
   async notify(msg: string, level: NotifyLevel) {

@@ -11,7 +11,14 @@ import { diffProjection, fileProjection, locate } from "../core/comments.ts";
 import type { FileKind, Hunk } from "../core/diff.ts";
 import type { CommentOrigin, CommentRecord, Store } from "../core/state.ts";
 import type { LineId, RepoPath, Sha } from "../core/types.ts";
-import { lnumAt, WORKTREE } from "../core/types.ts";
+import {
+  endRow,
+  lineAt,
+  lnumAt,
+  parseLnum,
+  toRow,
+  WORKTREE,
+} from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import { resolveFile, type Sticky } from "../render/actions.ts";
 import type { Frame } from "../render/render.ts";
@@ -523,13 +530,13 @@ export class Api {
     const r = this.reviewArg(sessionArg);
     const { cls } = Api.snapshot(r);
     const frame = r.frame() ?? fail("the review has not rendered yet");
-    let lo = num(srowArg) ?? 1;
-    let hi = num(erowArg) ?? lo;
+    let lo = parseLnum(srowArg) ?? lnumAt(1);
+    let hi = parseLnum(erowArg) ?? lo;
     if (lo > hi) [lo, hi] = [hi, lo];
     const groups: { head: string; hunk: Hunk; lines: string[] }[] = [];
     const prefix = { add: "+", del: "-", context: " " } as const;
-    for (let row = lo; row <= hi; row++) {
-      const t = frame.rows[row - 1];
+    for (let l: number = lo; l <= hi; l++) {
+      const t = lineAt(frame.rows, lnumAt(l));
       if (t?.kind !== "line") continue;
       const res = resolveFile(cls, t.file);
       const hunk = res?.file.hunks[t.hunk];
@@ -584,7 +591,7 @@ export class Api {
     const rec = ctx.store.addCommentRecord(path, {
       lnum: lnumAt(first),
       content: lines
-        .slice(first - 1, last)
+        .slice(toRow(lnumAt(first)), endRow(lnumAt(last)))
         .map((t) => ({ kind: "add" as const, text: t })),
       text,
       reply: undefined,

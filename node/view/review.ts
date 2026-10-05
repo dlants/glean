@@ -7,6 +7,8 @@
 
 import type { CommentRecord } from "../core/state.ts";
 import {
+  type ByteCol,
+  byteColAt,
   type Layer,
   type LineId,
   type RepoPath,
@@ -65,7 +67,7 @@ export type Action =
   | { kind: "visual-mark"; srow: Row; erow: Row }
   | { kind: "toggle-fold"; row: Row }
   | { kind: "toggle-scope"; row: Row }
-  | { kind: "jump"; row: Row; col: number }
+  | { kind: "jump"; row: Row; col: ByteCol }
   | { kind: "diffsplit"; row: Row }
   | { kind: "delete-comments"; srow: Row; erow: Row }
   | { kind: "add-comment"; srow: Row; erow: Row }
@@ -124,7 +126,7 @@ export function parseAction(v: unknown): Action | undefined {
       const col = num("col");
       return row === undefined || col === undefined
         ? undefined
-        : { kind: "jump", row, col };
+        : { kind: "jump", row, col: byteColAt(col) };
     }
     case "reset":
       return { kind: "reset", row: row_("row") };
@@ -201,7 +203,7 @@ export type ReviewUi = {
   pick(items: string[]): Promise<number | undefined>;
   /** The work-tree line a jump compares against (unsaved edits included). */
   worktreeLine: LineReader;
-  openJump(target: ResolvedJump, col: number, isStale: IsStale): Promise<void>;
+  openJump(target: ResolvedJump, col: ByteCol, isStale: IsStale): Promise<void>;
   openDiffsplit(
     ctx: DiffContext,
     ignoreWhitespace: boolean,
@@ -334,7 +336,7 @@ export class ReviewController {
     return row;
   }
   /** `<CR>`: summary rows navigate within the review, diff rows open the source. */
-  private async jump(row: number, col: number) {
+  private async jump(row: Row, col: ByteCol) {
     const isStale = this.staleCheck();
     const snap = this.session.current;
     const frame = this.frame;

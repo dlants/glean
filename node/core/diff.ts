@@ -146,10 +146,7 @@ export function parse(text: string): FileEntry[] {
  * Map a pre-image line number through `hunks` to the post-image. Undefined when
  * the line did not survive (deleted or replaced).
  */
-export function mapLnum(
-  hunks: readonly Hunk[],
-  lnum: number,
-): number | undefined {
+export function mapLnum(hunks: readonly Hunk[], lnum: Lnum): Lnum | undefined {
   let shift = 0;
   for (const h of hunks) {
     if (lnum < h.oldStart) break;
@@ -163,5 +160,5 @@ export function mapLnum(
     }
     shift = h.newStart + h.newCount - (h.oldStart + h.oldCount);
   }
-  return lnum + shift;
+  return lnumAt(lnum + shift);
 }

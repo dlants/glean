@@ -19,6 +19,14 @@ export function toRow(l: Lnum): Row {
 export function toLnum(r: Row): Lnum {
   return (r + 1) as Lnum;
 }
+/** The exclusive 0-based end row of an inclusive range ending at 1-based `l` (same number). */
+export function endRow(l: Lnum): Row {
+  return l as number as Row;
+}
+/** The row after `r` (an exclusive end for the single row `r`). */
+export function nextRow(r: Row): Row {
+  return (r + 1) as Row;
+}
 /** Brands an array index or count-derived 0-based row. */
 export function rowAt(i: number): Row {
   return i as Row;
@@ -38,6 +46,10 @@ export function clampLnum(l: Lnum, max: number): Lnum {
   return Math.max(1, Math.min(l, max)) as Lnum;
 }
 const utf8 = new TextEncoder();
+/** Brands a parsed 0-based byte column (RPC/nvim return). */
+export function byteColAt(n: number): ByteCol {
+  return n as ByteCol;
+}
 export function byteLen(s: string): ByteCol {
   return utf8.encode(s).length as ByteCol;
 }
