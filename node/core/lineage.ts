@@ -10,6 +10,7 @@
  */
 import type { FileEntry, Hunk } from "./diff.ts";
 import type { Layer, PostLnum, PreLnum, RepoPath } from "./types.ts";
+import { lnumAt, postLnum, preLnum } from "./types.ts";
 
 export type Origin =
   | { kind: "base"; base: number }
@@ -30,7 +31,7 @@ export type Patch = { sha: Layer; files: readonly FileEntry[] };
 function originAt(s: Origin, off: number): Origin {
   return s.kind === "base"
     ? { kind: "base", base: s.base + off }
-    : { kind: "commit", sha: s.sha, lnum: (s.lnum + off) as PostLnum };
+    : { kind: "commit", sha: s.sha, lnum: postLnum(lnumAt(s.lnum + off)) };
 }
 
 function slice(s: Origin, off: number, n: SegLen): Segment {
@@ -149,7 +150,7 @@ export function apply(
     for (const b of blocksOf(hunk)) {
       const seg: Segment | undefined =
         b.adds > 0
-          ? { kind: "commit", sha, lnum: b.lnum as PostLnum, n: b.adds }
+          ? { kind: "commit", sha, lnum: postLnum(lnumAt(b.lnum)), n: b.adds }
           : undefined;
       const { segs, displaced } = splice(
         state.segs,
@@ -160,7 +161,10 @@ export function apply(
       state.segs = segs;
       displaced.forEach((origin, i) => {
         if (origin.kind === "base") {
-          state.delAttr.set(origin.base, { sha, lnum: (b.at + i) as PreLnum });
+          state.delAttr.set(origin.base, {
+            sha,
+            lnum: preLnum(lnumAt(b.at + i)),
+          });
         }
       });
       offset += b.adds - b.dels;
@@ -246,7 +250,7 @@ export function finish(states: States): Map<RepoPath, PathLineage> {
       if (s.n === "open") break;
       if (s.kind === "commit") {
         for (let i = 0; i < s.n; i++) {
-          prov.set(pos + i, { sha: s.sha, lnum: (s.lnum + i) as PostLnum });
+          prov.set(pos + i, { sha: s.sha, lnum: postLnum(lnumAt(s.lnum + i)) });
         }
       }
       pos += s.n;

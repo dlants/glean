@@ -11,7 +11,9 @@ import type {
   Store,
 } from "../core/state.ts";
 import {
+  lnumAt,
   type PostLnum,
+  postLnum,
   type RepoPath,
   type Row,
   rowAt,
@@ -41,8 +43,9 @@ function entryOf(dl: DiffLine): CommentEntry {
 }
 /** First non-del post-image line, else the slot the deleted text sat before. */
 function lnumOf(dls: readonly DiffLine[]): PostLnum {
-  return ((dls.find((d) => d.kind !== "del") ?? dls[0])?.newLnum ??
-    1) as PostLnum;
+  return postLnum(
+    (dls.find((d) => d.kind !== "del") ?? dls[0])?.newLnum ?? lnumAt(1),
+  );
 }
 /**
  * The exact-whitespace file a display file resolves in. Combined scope uses the

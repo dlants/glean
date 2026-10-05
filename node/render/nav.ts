@@ -7,6 +7,8 @@ import type { DiffLine } from "../core/diff.ts";
 import {
   type PostLnum,
   type PreLnum,
+  postLnum,
+  preLnum,
   type RepoPath,
   type Row,
   rowAt,
@@ -74,7 +76,7 @@ type LineRow = Extract<RowTarget, { kind: "line" | "marker-line" }>;
 function lineRowOf(t: RowTarget | undefined): LineRow | undefined {
   return t && (t.kind === "line" || t.kind === "marker-line") ? t : undefined;
 }
-const postOf = (dl: DiffLine) => dl.newLnum as PostLnum;
+const postOf = (dl: DiffLine) => postLnum(dl.newLnum);
 function diffLineOf(
   cls: Classifier,
   row: RowTarget | undefined,
@@ -127,7 +129,7 @@ export function jumpTarget(
       kind: "del",
       ref: d.pre,
       path: d.path,
-      lnum: d.dl.oldLnum as PreLnum,
+      lnum: preLnum(d.dl.oldLnum),
     };
   return {
     kind: "post",
@@ -162,11 +164,11 @@ export function diffContext(
     dl.kind === "add"
       ? { kind: "add", postLnum: postOf(dl) }
       : dl.kind === "del"
-        ? { kind: "del", preLnum: dl.oldLnum as PreLnum }
+        ? { kind: "del", preLnum: preLnum(dl.oldLnum) }
         : {
             kind: "context",
             postLnum: postOf(dl),
-            preLnum: dl.oldLnum as PreLnum,
+            preLnum: preLnum(dl.oldLnum),
           };
   return { path: d.path, post: d.post, pre: d.pre, lnums };
 }

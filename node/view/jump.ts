@@ -18,6 +18,7 @@ import {
   lineAt,
   rowAt,
   toRow,
+  worktreeLnum,
 } from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
@@ -165,7 +166,7 @@ export async function resolveJump(
     return {
       kind: "live",
       path: jt.path,
-      lnum: jt.lnum as number as WorktreeLnum,
+      lnum: worktreeLnum(jt.lnum),
       fallback: { rev, lnum: jt.lnum },
     };
   if (jt.kind === "post" && jt.ref.kind === "rev") {

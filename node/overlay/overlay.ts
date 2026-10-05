@@ -18,6 +18,7 @@ import {
   toSha,
   WORKTREE,
   type WorktreeLnum,
+  worktreeLnum,
 } from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { FileUndo } from "../gutter/fileGutter.ts";
@@ -72,8 +73,8 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
       return {
         kind: "add",
         buf,
-        line1: Math.min(line1, line2) as WorktreeLnum,
-        line2: Math.max(line1, line2) as WorktreeLnum,
+        line1: worktreeLnum(line1 < line2 ? line1 : line2),
+        line2: worktreeLnum(line1 < line2 ? line2 : line1),
       };
     }
     case "jump": {
@@ -205,8 +206,7 @@ export class Overlay {
       case "jump": {
         const r = await this.resolve(ev.buf);
         const lnum = r && jumpLnum(r.groups, ev.lnum, ev.dir);
-        if (lnum !== undefined)
-          await this.ui.park(ev.buf, lnum as WorktreeLnum);
+        if (lnum !== undefined) await this.ui.park(ev.buf, worktreeLnum(lnum));
         return;
       }
       case "add":
@@ -309,7 +309,7 @@ export class Overlay {
     if (!f || !t) return void (await this.ui.notify(NOT_A_REPO, "warn"));
     const got = await this.ui.range(buf, {
       from: line1,
-      to: line2 as WorktreeLnum,
+      to: worktreeLnum(line2),
     });
     if (got.length === 0) return;
     const content = got.map((text) => ({

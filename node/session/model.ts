@@ -14,14 +14,19 @@ import * as ranges from "../core/ranges.ts";
 import { contentHash, type Store } from "../core/state.ts";
 import {
   type HeadLnum,
+  headLnum,
   type Layer,
   type LineId,
+  type Lnum,
   type PostLnum,
   type PreLnum,
+  postLnum,
+  preLnum,
   type RepoPath,
   type Sha,
   WORKTREE,
   type WorktreeLnum,
+  worktreeLnum,
 } from "../core/types.ts";
 import type { CommitPatch, Git, Outcome } from "../git/git.ts";
 
@@ -227,14 +232,14 @@ export type Counts = {
 };
 
 /** `lnum` is the owning layer's post-image line (an add) or pre-image line (a del). */
-function layerOwner(sha: Layer, side: "add" | "del", lnum: number): LineOwner {
+function layerOwner(sha: Layer, side: "add" | "del", lnum: Lnum): LineOwner {
   if (sha === WORKTREE)
     return side === "add"
-      ? { kind: "worktree-add", lnum: lnum as WorktreeLnum }
-      : { kind: "worktree-del", lnum: lnum as HeadLnum };
+      ? { kind: "worktree-add", lnum: worktreeLnum(lnum) }
+      : { kind: "worktree-del", lnum: headLnum(lnum) };
   return side === "add"
-    ? { kind: "commit-add", sha, lnum: lnum as PostLnum }
-    : { kind: "commit-del", sha, lnum: lnum as PreLnum };
+    ? { kind: "commit-add", sha, lnum: postLnum(lnum) }
+    : { kind: "commit-del", sha, lnum: preLnum(lnum) };
 }
 
 /**

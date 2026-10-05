@@ -79,6 +79,11 @@ export type WorktreeLnum = Lnum & Brand<number, "WorktreeLnum">;
 export type PostLnum = Lnum & Brand<number, "PostLnum">;
 /** Line in a commit's pre-image. */
 export type PreLnum = Lnum & Brand<number, "PreLnum">;
+/** Names a generic 1-based line as one in a known space; the caller asserts the space. */
+export const headLnum = (l: Lnum): HeadLnum => l as HeadLnum;
+export const worktreeLnum = (l: Lnum): WorktreeLnum => l as WorktreeLnum;
+export const postLnum = (l: Lnum): PostLnum => l as PostLnum;
+export const preLnum = (l: Lnum): PreLnum => l as PreLnum;
 
 /** The pseudo-commit naming the uncommitted work-tree layer. */
 export const WORKTREE = "WORKTREE";

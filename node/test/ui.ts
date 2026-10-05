@@ -3,6 +3,7 @@
  * They implement glean's own narrow interfaces, not a fake nvim.
  */
 import type { BufNr, RepoPath, WorktreeLnum } from "../core/types.ts";
+import { lnumAt, worktreeLnum } from "../core/types.ts";
 import type { UndoDepth } from "../gutter/bufUndo.ts";
 import type { GutterSign, GutterUi } from "../gutter/fileGutter.ts";
 import type { BufFacts, OverlayUi } from "../overlay/overlay.ts";
@@ -231,7 +232,7 @@ export function recordGutterUi(buffers: Map<BufNr, GutterBuffer>) {
     async park(buf, row) {
       rec.parked.push({ buf, row });
       const b = buffers.get(buf);
-      if (b) b.cursor = Math.min(row, b.lines.length) as WorktreeLnum;
+      if (b) b.cursor = worktreeLnum(lnumAt(Math.min(row, b.lines.length)));
     },
     async notify(msg, level) {
       rec.notes.push({ msg, level });

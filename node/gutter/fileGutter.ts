@@ -9,9 +9,11 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   type BufNr,
+  lnumAt,
   parseWorktreeLnum,
   type RepoPath,
   type WorktreeLnum,
+  worktreeLnum,
 } from "../core/types.ts";
 import type { SeenPlan } from "../render/actions.ts";
 import { splitLines } from "../session/model.ts";
@@ -106,10 +108,7 @@ export function parseInfos(v: unknown): (BufInfo & { seq?: number })[] {
             name: x.name,
             modified: x.modified === true,
             lines: x.lines,
-            cursor:
-              typeof x.cursor === "number"
-                ? (x.cursor as WorktreeLnum)
-                : undefined,
+            cursor: parseWorktreeLnum(x.cursor),
             ...(typeof x.seq === "number" ? { seq: x.seq } : {}),
             focus: x.focus !== false,
           },
@@ -405,7 +404,7 @@ function focusSigns(info: BufInfo, p: Painted | undefined): GutterSign[] {
     l <= Math.min(range.hi, info.lines);
     l++
   ) {
-    const lnum = l as WorktreeLnum;
+    const lnum = worktreeLnum(lnumAt(l));
     const m = p.marks.get(lnum);
     if (m) out.push({ lnum, kind: m.kind, seen: m.seen });
   }

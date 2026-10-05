@@ -1,3 +1,4 @@
+import { lnumAt, worktreeLnum } from "../core/types.ts";
 /**
  * The review buffer's core: owns scope, the current frame and every decision
  * an action makes (planners, Session writes, cursor placement, prompts,
@@ -353,7 +354,7 @@ export class ReviewController {
         ?.entries.find((e) => e.record.id === t.commentId);
       // An off-diff comment has no review row: open the file at its line.
       if (entry?.state === "file" && entry.fileLnum !== undefined) {
-        await this.ui.openFileAt(t.path, entry.fileLnum as WorktreeLnum);
+        await this.ui.openFileAt(t.path, worktreeLnum(lnumAt(entry.fileLnum)));
         return;
       }
       // A comment hidden by ignore-whitespace has no row in this mode: go back

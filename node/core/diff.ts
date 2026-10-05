@@ -11,6 +11,7 @@ import {
   type PostLnum,
   type RepoPath,
   type WorktreeLnum,
+  worktreeLnum,
 } from "./types.ts";
 
 export type DiffLine =
@@ -157,7 +158,8 @@ export function postToWorktree(
   hunks: readonly Hunk[],
   lnum: PostLnum,
 ): WorktreeLnum | undefined {
-  return mapLnum(hunks, lnum) as WorktreeLnum | undefined;
+  const l = mapLnum(hunks, lnum);
+  return l === undefined ? undefined : worktreeLnum(l);
 }
 export function mapLnum(hunks: readonly Hunk[], lnum: Lnum): Lnum | undefined {
   let shift = 0;

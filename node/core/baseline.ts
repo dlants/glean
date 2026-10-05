@@ -10,6 +10,7 @@
  */
 import { alignLines, type LineOp } from "./linediff.ts";
 import type { Lnum, WorktreeLnum } from "./types.ts";
+import { worktreeLnum } from "./types.ts";
 
 export { alignLines as align, type LineOp };
 
@@ -41,7 +42,7 @@ export function unseenAdds(
 ): Set<WorktreeLnum> {
   const out = new Set<WorktreeLnum>();
   for (const op of alignLines(reviewed, worktree)) {
-    if (op.kind === "add") out.add(op.bLnum as WorktreeLnum);
+    if (op.kind === "add") out.add(worktreeLnum(op.bLnum));
   }
   return out;
 }

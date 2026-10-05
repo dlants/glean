@@ -2,7 +2,7 @@
 import { basename } from "node:path";
 import type { AppUi } from "./app.ts";
 import { readOpenConfig } from "./config.ts";
-import { nextRow, toLnum, type WorktreeLnum } from "./core/types.ts";
+import { lnumAt, nextRow, toLnum, worktreeLnum } from "./core/types.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
 import type { Prompts } from "./view/prompts.ts";
 import { ReviewView } from "./view/view.ts";
@@ -17,7 +17,7 @@ export function nvimAppUi(nvim: Nvim, prompts: Prompts): AppUi {
       const [name, lnum] = (await lua(
         `return { vim.api.nvim_buf_get_name(0), vim.api.nvim_win_get_cursor(0)[1] }`,
       )) as [string, number];
-      return { name, lnum: lnum as WorktreeLnum };
+      return { name, lnum: worktreeLnum(lnumAt(lnum)) };
     },
     async bufValid(buf) {
       return (await nvim.call("nvim_buf_is_valid", [buf])) as boolean;

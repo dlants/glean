@@ -7,6 +7,7 @@
 import type { DiffLine, Hunk } from "../core/diff.ts";
 import { pairLines } from "../core/intraline.ts";
 import type { WorktreeLnum } from "../core/types.ts";
+import { lnumAt, worktreeLnum } from "../core/types.ts";
 
 /** Coordinates within the file's hunk list (0-based), never line numbers. */
 export type GutterSource = { hunk: number; li: number };
@@ -28,7 +29,7 @@ export type GutterMark = {
 /** 1-based post-image line -> mark. */
 export type GutterMarks = Map<WorktreeLnum, GutterMark>;
 /** The gutter projects a work-tree diff, so its post-image is the work tree. */
-const wt = (n: number) => n as WorktreeLnum;
+const wt = (n: number) => worktreeLnum(lnumAt(n));
 type FoldUpdate =
   | { kind: "add" | "change" }
   | { kind: "del-below" }

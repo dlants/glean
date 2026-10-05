@@ -4,27 +4,16 @@ import { execSync } from "node:child_process";
 // Usage: coord-casts.mjs [files...] (defaults to all non-test node/**/*.ts).
 import { readFileSync } from "node:fs";
 
-const CAST =
-  /\bas (Row|Lnum|ByteCol|ByteCol1|StrIdx|HeadLnum|WorktreeLnum|PostLnum|PreLnum)\b/;
-// Base-brand helpers, RPC/nvim parsing boundaries, and the per-space narrowing
-// sites (generic Lnum -> HeadLnum/PostLnum/... where the space is known from context).
-const ALLOW = new Set([
-  "node/core/types.ts",
-  "node/core/diff.ts",
-  "node/core/lineage.ts",
-  "node/core/baseline.ts",
-  "node/session/model.ts",
-  "node/render/nav.ts",
-  "node/render/commentActions.ts",
-  "node/nvimAppUi.ts",
-  "node/gutter/project.ts",
-  "node/gutter/marking.ts",
-  "node/gutter/fileGutter.ts",
-  "node/overlay/overlay.ts",
-  "node/view/review.ts",
-  "node/view/jump.ts",
-  "node/test/ui.ts",
-]);
+const BRANDS =
+  "Row|Lnum|ByteCol|ByteCol1|StrIdx|HeadLnum|WorktreeLnum|PostLnum|PreLnum";
+// `as Brand` (also split across lines) and `<Brand>x` angle-bracket casts.
+const CAST = new RegExp(
+  `\\bas\\s+(${BRANDS})\\b|(?<![\\w$.])<(${BRANDS})>\\s*[\\w(]`,
+  "g",
+);
+// Only the minting helpers (toRow, lnumAt, worktreeLnum, ...) may cast; every
+// other file names the conversion through one of them.
+const ALLOW = new Set(["node/core/types.ts"]);
 const isTest = (f) => /\.(test|typetest)\.ts$/.test(f);
 
 const files = process.argv.slice(2).length
@@ -35,13 +24,11 @@ const files = process.argv.slice(2).length
 let bad = 0;
 for (const f of files) {
   if (ALLOW.has(f) || isTest(f)) continue;
-  readFileSync(f, "utf8")
-    .split("\n")
-    .forEach((line, i) => {
-      if (CAST.test(line)) {
-        console.error(`${f}:${i + 1}: coordinate-brand cast: ${line.trim()}`);
-        bad++;
-      }
-    });
+  const text = readFileSync(f, "utf8");
+  for (const m of text.matchAll(CAST)) {
+    const line = text.slice(0, m.index).split("\n").length;
+    console.error(`${f}:${line}: coordinate-brand cast: ${m[0].trim()}`);
+    bad++;
+  }
 }
 if (bad) process.exit(1);
