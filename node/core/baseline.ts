@@ -25,10 +25,7 @@ export function mapForward(
   return undefined;
 }
 
-export function mapBack(
-  ops: readonly LineOp[],
-  bLnum: Lnum,
-): Lnum | undefined {
+export function mapBack(ops: readonly LineOp[], bLnum: Lnum): Lnum | undefined {
   for (const op of ops) {
     if (op.kind !== "del" && op.bLnum === bLnum) {
       return op.kind === "context" ? op.aLnum : undefined;

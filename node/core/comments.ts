@@ -20,9 +20,9 @@ export function fileProjection(
 }
 
 export type Located =
-  | { kind: "found"; index: number; lnum: Lnum }
+  | { kind: "found"; index: Row; lnum: Lnum }
   /** `fallback` is the index whose lnum is nearest the record's hint, if any. */
-  | { kind: "outdated"; lnum: Lnum; fallback: number | undefined };
+  | { kind: "outdated"; lnum: Lnum; fallback: Row | undefined };
 
 /**
  * Resolve `record` in `lines` (0-based). `lnumOf` maps an index to a post-image
@@ -41,15 +41,16 @@ export function locate(
     return {
       kind: "found",
       index: start,
-      lnum: lnumOf(rowAt(start)) ?? record.lnum,
+      lnum: lnumOf(start) ?? record.lnum,
     };
   }
-  let best: { i: number; lnum: Lnum; dist: number } | undefined;
+  let best: { i: Row; lnum: Lnum; dist: number } | undefined;
   for (let i = 0; i < lines.length; i++) {
-    const l = lnumOf(rowAt(i));
+    const row = rowAt(i);
+    const l = lnumOf(row);
     if (l === undefined) continue;
     const dist = Math.abs(l - record.lnum);
-    if (!best || dist < best.dist) best = { i, lnum: l, dist };
+    if (!best || dist < best.dist) best = { i: row, lnum: l, dist };
   }
   return {
     kind: "outdated",

@@ -6,7 +6,7 @@
  */
 import { fileProjection, locate } from "../core/comments.ts";
 import type { CommentRecord } from "../core/state.ts";
-import { lnumAt, type RepoPath } from "../core/types.ts";
+import { clampLnum, type RepoPath } from "../core/types.ts";
 
 const EOL_WIDTH = 60;
 export function firstLine(text: string): string {
@@ -39,7 +39,7 @@ export function resolveOverlay(
     const run = fileProjection(record);
     if (run.length === 0) continue;
     const loc = locate(record, lines, undefined, "file");
-    const lnum = lnumAt(Math.max(1, Math.min(loc.lnum, last)));
+    const lnum = clampLnum(loc.lnum, last);
     if (record.lnum !== lnum) {
       record.lnum = lnum;
       moved = true;
@@ -167,9 +167,7 @@ export function quickfixItems(
       let outdated = true;
       if (lines && fileProjection(record).length > 0) {
         const loc = locate(record, lines, undefined, "file");
-        lnum = lnumAt(
-          Math.max(1, Math.min(loc.lnum, Math.max(lines.length, 1))),
-        );
+        lnum = clampLnum(loc.lnum, lines.length);
         outdated = loc.kind === "outdated";
       }
       return {

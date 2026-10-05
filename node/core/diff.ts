@@ -13,9 +13,13 @@ export type DiffLine =
   | { kind: "del"; text: string; oldLnum: Lnum; newLnum: Lnum };
 
 export type Hunk = {
-  oldStart: Lnum;
+  /**
+   * git's header start, not a line coordinate: the first line of that side, or
+   * when its count is 0 the line the empty side follows (0 = top of file).
+   */
+  oldStart: number;
   oldCount: number;
-  newStart: Lnum;
+  newStart: number;
   newCount: number;
   header: string;
   lines: DiffLine[];
@@ -37,9 +41,9 @@ function parseHunkHeader(line: string): Hunk | undefined {
   if (!m) return undefined;
   // git omits a count of 1.
   return {
-    oldStart: lnumAt(Number(m[1])),
+    oldStart: Number(m[1]),
     oldCount: m[2] === "" ? 1 : Number(m[2]),
-    newStart: lnumAt(Number(m[3])),
+    newStart: Number(m[3]),
     newCount: m[4] === "" ? 1 : Number(m[4]),
     header: line,
     lines: [],
@@ -54,8 +58,9 @@ export function parse(text: string): FileEntry[] {
   const files: FileEntry[] = [];
   let file: FileEntry | undefined;
   let hunk: Hunk | undefined;
-  let oldLnum = lnumAt(0);
-  let newLnum = lnumAt(0);
+  // Raw running counters from the hunk header; branded per emitted line.
+  let oldLnum = 0;
+  let newLnum = 0;
 
   const finishHunk = () => {
     if (file && hunk) file.hunks.push(hunk);
@@ -111,13 +116,23 @@ export function parse(text: string): FileEntry[] {
     const marker = line.charAt(0);
     const body = line.slice(1);
     if (marker === "+") {
-      hunk.lines.push({ kind: "add", text: body, newLnum });
+      hunk.lines.push({ kind: "add", text: body, newLnum: lnumAt(newLnum) });
       newLnum++;
     } else if (marker === "-") {
-      hunk.lines.push({ kind: "del", text: body, oldLnum, newLnum });
+      hunk.lines.push({
+        kind: "del",
+        text: body,
+        oldLnum: lnumAt(oldLnum),
+        newLnum: lnumAt(newLnum),
+      });
       oldLnum++;
     } else if (marker === " ") {
-      hunk.lines.push({ kind: "context", text: body, oldLnum, newLnum });
+      hunk.lines.push({
+        kind: "context",
+        text: body,
+        oldLnum: lnumAt(oldLnum),
+        newLnum: lnumAt(newLnum),
+      });
       oldLnum++;
       newLnum++;
     }

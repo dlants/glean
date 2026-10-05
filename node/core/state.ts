@@ -24,7 +24,7 @@ import type {
 } from "./types.ts";
 import {
   type Lnum,
-  lnumAt,
+  parseLnum,
   type Row,
   rowAt,
   toLnum,
@@ -51,11 +51,11 @@ export function resolve(
   needles: readonly string[],
   haystack: readonly string[],
   lnumOf: (i: Row) => Lnum | undefined = toLnum,
-  anchor: number = 0,
-): number | undefined {
+  anchor?: Lnum,
+): Row | undefined {
   const n = needles.length;
   if (n === 0) return undefined;
-  let best: number | undefined;
+  let best: Row | undefined;
   let bestDist = Infinity;
   for (let i = 0; i + n <= haystack.length; i++) {
     let match = true;
@@ -66,10 +66,16 @@ export function resolve(
       }
     }
     if (!match) continue;
-    const l = lnumOf(rowAt(i));
-    const dist = l === undefined ? Infinity : Math.abs(l - anchor);
+    const row = rowAt(i);
+    const l = lnumOf(row);
+    const dist =
+      l === undefined
+        ? Infinity
+        : anchor === undefined
+          ? 0
+          : Math.abs(l - anchor);
     if (best === undefined || dist < bestDist) {
-      best = i;
+      best = row;
       bestDist = dist;
     }
   }
@@ -130,12 +136,19 @@ function entries(v: Json): [string, Json][] {
 const isInt = (v: Json): v is number =>
   typeof v === "number" && Number.isInteger(v);
 
+/**
+ * The JSON key names the line space, so the caller picks `L`; the values are
+ * validated as positive 1-based lnums before being branded into it.
+ */
 function parseRanges<L extends Lnum>(v: Json): RangeSet<L> {
   if (!Array.isArray(v)) return [];
   const out: [L, L][] = [];
   for (const r of v) {
-    if (Array.isArray(r) && isInt(r[0]) && isInt(r[1]))
-      out.push([r[0] as L, r[1] as L]);
+    if (!Array.isArray(r)) continue;
+    const lo = parseLnum(r[0]);
+    const hi = parseLnum(r[1]);
+    if (lo !== undefined && hi !== undefined && lo <= hi)
+      out.push([lo as L, hi as L]);
   }
   return ranges.merge(out);
 }
@@ -145,8 +158,9 @@ function parseEntry(v: Json): CommentEntry | undefined {
   if (typeof v === "string") return { kind: "add", text: v };
   if (!isObj(v) || typeof v.text !== "string") return undefined;
   if (v.kind === "del") {
-    return isInt(v.old_lnum)
-      ? { kind: "del", text: v.text, oldLnum: lnumAt(v.old_lnum) }
+    const oldLnum = parseLnum(v.old_lnum);
+    return oldLnum !== undefined
+      ? { kind: "del", text: v.text, oldLnum }
       : undefined;
   }
   return { kind: v.kind === "context" ? "context" : "add", text: v.text };
@@ -160,7 +174,8 @@ function parseComment(
   const content = (Array.isArray(v.content) ? v.content : [])
     .map(parseEntry)
     .filter((e): e is CommentEntry => e !== undefined);
-  const lnum = lnumAt(isInt(v.lnum) ? v.lnum : isInt(v.anchor) ? v.anchor : 0);
+  const lnum = parseLnum(v.lnum) ?? parseLnum(v.anchor);
+  if (lnum === undefined) return undefined;
   const o = v.origin;
   return {
     id: isInt(v.id) ? v.id : undefined,

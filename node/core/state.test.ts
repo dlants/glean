@@ -53,25 +53,32 @@ describe("resolve", () => {
   const diff = ["alpha", "beta", "gamma", "beta", "delta"];
   it("closest consecutive block (indices 0-based, default lnum = index + 1)", () => {
     expect(
-      resolve(["}"], ["alpha", "}", "beta", "}", "gamma"], undefined, 4),
+      resolve(
+        ["}"],
+        ["alpha", "}", "beta", "}", "gamma"],
+        undefined,
+        lnumAt(4),
+      ),
     ).toBe(3);
-    expect(resolve(["gamma"], diff, undefined, 1)).toBe(2);
-    expect(resolve(["beta"], diff, undefined, 1)).toBe(1);
-    expect(resolve(["beta"], diff, undefined, 5)).toBe(3);
-    expect(resolve(["beta"], diff, undefined, 3)).toBe(1);
-    expect(resolve(["alpha", "beta"], diff, undefined, 1)).toBe(0);
-    expect(resolve(["alpha", "gamma"], diff, undefined, 1)).toBeUndefined();
+    expect(resolve(["gamma"], diff, undefined, lnumAt(1))).toBe(2);
+    expect(resolve(["beta"], diff, undefined, lnumAt(1))).toBe(1);
+    expect(resolve(["beta"], diff, undefined, lnumAt(5))).toBe(3);
+    expect(resolve(["beta"], diff, undefined, lnumAt(3))).toBe(1);
+    expect(resolve(["alpha", "beta"], diff, undefined, lnumAt(1))).toBe(0);
     expect(
-      resolve(["-removed"], ["ctx", "-removed", "ctx2"], undefined, 2),
+      resolve(["alpha", "gamma"], diff, undefined, lnumAt(1)),
+    ).toBeUndefined();
+    expect(
+      resolve(["-removed"], ["ctx", "-removed", "ctx2"], undefined, lnumAt(2)),
     ).toBe(1);
-    expect(resolve(["missing"], diff, undefined, 1)).toBeUndefined();
-    expect(resolve([], diff, undefined, 1)).toBeUndefined();
+    expect(resolve(["missing"], diff, undefined, lnumAt(1))).toBeUndefined();
+    expect(resolve([], diff, undefined, lnumAt(1))).toBeUndefined();
   });
   it("tiebreaks in lnumOf space", () => {
     const lnums = [100, 101, 5, 6].map(lnumAt);
     const dup = ["x", "y", "x", "y"];
     expect(resolve(["x"], dup, (i) => lnums[i], lnumAt(5))).toBe(2);
-    expect(resolve(["x"], dup, (i) => lnums[i], 99)).toBe(0);
+    expect(resolve(["x"], dup, (i) => lnums[i], lnumAt(99))).toBe(0);
   });
 });
 

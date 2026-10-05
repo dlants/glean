@@ -27,6 +27,16 @@ export function rowAt(i: number): Row {
 export function lnumAt(n: number): Lnum {
   return n as Lnum;
 }
+/** A positive integer as an Lnum, else undefined (load/RPC validation). */
+export function parseLnum(v: unknown): Lnum | undefined {
+  return typeof v === "number" && Number.isInteger(v) && v >= 1
+    ? (v as Lnum)
+    : undefined;
+}
+/** Clamp `l` into `1..max` (max >= 1). */
+export function clampLnum(l: Lnum, max: number): Lnum {
+  return Math.max(1, Math.min(l, max)) as Lnum;
+}
 const utf8 = new TextEncoder();
 export function byteLen(s: string): ByteCol {
   return utf8.encode(s).length as ByteCol;

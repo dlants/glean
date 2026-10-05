@@ -8,13 +8,7 @@ import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { type FileEntry, parse } from "../core/diff.ts";
-import {
-  lnumAt,
-  type RepoPath,
-  rowAt,
-  type Sha,
-  toLnum,
-} from "../core/types.ts";
+import { type RepoPath, rowAt, type Sha, toLnum } from "../core/types.ts";
 import { yieldToLoop } from "./scheduler.ts";
 
 export type GitResult =
@@ -392,9 +386,9 @@ export class Git {
           n > 0
             ? [
                 {
-                  oldStart: lnumAt(0),
+                  oldStart: 0,
                   oldCount: 0,
-                  newStart: lnumAt(1),
+                  newStart: 1,
                   newCount: n,
                   header: `@@ -0,0 +1,${n} @@`,
                   lines: lines.map((text, i) => ({
