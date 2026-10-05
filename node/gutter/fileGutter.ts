@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
   type BufNr,
-  parseLnum,
+  parseWorktreeLnum,
   type RepoPath,
   type WorktreeLnum,
 } from "../core/types.ts";
@@ -49,7 +49,7 @@ export function parseGutterEvent(v: unknown): GutterEvent | undefined {
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
   // File-buffer rows are 1-based; the gutter only acts on buffers whose text
   // is the work tree, so they name work-tree lines.
-  const lnum = (k: string) => parseLnum(o[k]) as WorktreeLnum | undefined;
+  const lnum = (k: string) => parseWorktreeLnum(o[k]);
   switch (o.kind) {
     case "refresh":
     case "toggle":

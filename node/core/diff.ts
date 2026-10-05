@@ -5,7 +5,13 @@
  * post-image line it sat immediately before, so comment anchoring in the
  * post-image space is total.
  */
-import { type Lnum, lnumAt, type RepoPath } from "./types.ts";
+import {
+  type Lnum,
+  lnumAt,
+  type PostLnum,
+  type RepoPath,
+  type WorktreeLnum,
+} from "./types.ts";
 
 export type DiffLine =
   | { kind: "context"; text: string; oldLnum: Lnum; newLnum: Lnum }
@@ -146,6 +152,13 @@ export function parse(text: string): FileEntry[] {
  * Map a pre-image line number through `hunks` to the post-image. Undefined when
  * the line did not survive (deleted or replaced).
  */
+/** `mapLnum` over hunks of a commit diffed against the work tree. */
+export function postToWorktree(
+  hunks: readonly Hunk[],
+  lnum: PostLnum,
+): WorktreeLnum | undefined {
+  return mapLnum(hunks, lnum) as WorktreeLnum | undefined;
+}
 export function mapLnum(hunks: readonly Hunk[], lnum: Lnum): Lnum | undefined {
   let shift = 0;
   for (const h of hunks) {

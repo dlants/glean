@@ -8,10 +8,12 @@ import { fileProjection, locate } from "../core/comments.ts";
 import type { CommentRecord } from "../core/state.ts";
 import {
   clampLnum,
+  endRow,
   type Lnum,
+  lnumAt,
+  nextRow,
   type RepoPath,
   type Row,
-  rowAt,
   toRow,
 } from "../core/types.ts";
 
@@ -108,12 +110,12 @@ export function stamps(
     // Make a multi-line comment's extent visible.
     if (length > 1)
       for (
-        let r: number = toRow(group.lnum);
-        r < Math.min(group.lnum + length - 1, total);
-        r++
+        let r = toRow(group.lnum);
+        r < endRow(clampLnum(lnumAt(group.lnum + length - 1), total));
+        r = nextRow(r)
       )
         out.push({
-          row: rowAt(r),
+          row: r,
           opts: { line_hl_group: "GleanCommentLine" },
         });
   }

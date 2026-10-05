@@ -41,6 +41,14 @@ export function parseLnum(v: unknown): Lnum | undefined {
     ? (v as Lnum)
     : undefined;
 }
+/** `parseLnum` for file-buffer lines whose text is the work tree. */
+export function parseWorktreeLnum(v: unknown): WorktreeLnum | undefined {
+  return parseLnum(v) as WorktreeLnum | undefined;
+}
+/** Every lnum in the inclusive range `lo..hi`. */
+export function* lnumRange<L extends Lnum>(lo: L, hi: L): Generator<L> {
+  for (let l: number = lo; l <= hi; l++) yield l as L;
+}
 /** Clamp `l` into `1..max` (max >= 1). */
 export function clampLnum(l: Lnum, max: number): Lnum {
   return Math.max(1, Math.min(l, max)) as Lnum;

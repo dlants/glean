@@ -12,6 +12,7 @@ import type { CommentRecord, NewComment, Store } from "../core/state.ts";
 import {
   type BufNr,
   parseLnum,
+  parseWorktreeLnum,
   type RepoPath,
   type Sha,
   toSha,
@@ -61,7 +62,7 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
     case "edit":
     case "delete":
     case "reply": {
-      const lnum = parseLnum(o.lnum) as WorktreeLnum | undefined;
+      const lnum = parseWorktreeLnum(o.lnum);
       return lnum === undefined ? undefined : { kind: o.kind, buf, lnum };
     }
     case "add": {
@@ -76,7 +77,7 @@ export function parseOverlayEvent(v: unknown): OverlayEvent | undefined {
       };
     }
     case "jump": {
-      const lnum = parseLnum(o.lnum) as WorktreeLnum | undefined;
+      const lnum = parseWorktreeLnum(o.lnum);
       const dir = o.dir === -1 ? -1 : o.dir === 1 ? 1 : undefined;
       return lnum === undefined || dir === undefined
         ? undefined

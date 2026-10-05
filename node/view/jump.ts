@@ -5,7 +5,7 @@
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { mapLnum } from "../core/diff.ts";
+import { postToWorktree } from "../core/diff.ts";
 import type {
   PostLnum,
   PreLnum,
@@ -46,9 +46,9 @@ async function liveLnum(
   if (d.kind !== "ok") return undefined;
   const file = d.value[0];
   // Diffing the commit against the work tree puts the result in work-tree space.
-  if (!file) return lnum as Lnum as WorktreeLnum;
+  if (!file) return postToWorktree([], lnum);
   if (file.kind === "delete") return undefined;
-  return mapLnum(file.hunks, lnum) as WorktreeLnum | undefined;
+  return postToWorktree(file.hunks, lnum);
 }
 
 /** Reads line `lnum` (1-based) of the work-tree file at `abs`. */

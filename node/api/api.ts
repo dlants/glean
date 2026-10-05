@@ -15,6 +15,7 @@ import {
   endRow,
   lineAt,
   lnumAt,
+  lnumRange,
   parseLnum,
   toRow,
   WORKTREE,
@@ -535,8 +536,8 @@ export class Api {
     if (lo > hi) [lo, hi] = [hi, lo];
     const groups: { head: string; hunk: Hunk; lines: string[] }[] = [];
     const prefix = { add: "+", del: "-", context: " " } as const;
-    for (let l: number = lo; l <= hi; l++) {
-      const t = lineAt(frame.rows, lnumAt(l));
+    for (const l of lnumRange(lo, hi)) {
+      const t = lineAt(frame.rows, l);
       if (t?.kind !== "line") continue;
       const res = resolveFile(cls, t.file);
       const hunk = res?.file.hunks[t.hunk];
@@ -569,13 +570,13 @@ export class Api {
     const lines =
       (await readLines(ctx.root, path)) ??
       fail(`${path} is not a readable file in ${ctx.root}`);
-    let first = num(o.lnum) ?? 1;
-    let last = num(o.end_lnum) ?? first;
-    if (first > last) [first, last] = [last, first];
-    if (first < 1 || last > lines.length)
-      fail(
-        `lines ${first}..${last} are outside ${path} (${lines.length} lines)`,
-      );
+    let lo = num(o.lnum) ?? 1;
+    let hi = num(o.end_lnum) ?? lo;
+    if (lo > hi) [lo, hi] = [hi, lo];
+    if (lo < 1 || hi > lines.length)
+      fail(`lines ${lo}..${hi} are outside ${path} (${lines.length} lines)`);
+    const first = lnumAt(lo);
+    const last = lnumAt(hi);
     const [head, status] = await Promise.all([
       ctx.git.revParse("HEAD"),
       ctx.git.run(["status", "--porcelain", "--", path]),
@@ -589,9 +590,9 @@ export class Api {
           }
         : undefined;
     const rec = ctx.store.addCommentRecord(path, {
-      lnum: lnumAt(first),
+      lnum: first,
       content: lines
-        .slice(toRow(lnumAt(first)), endRow(lnumAt(last)))
+        .slice(toRow(first), endRow(last))
         .map((t) => ({ kind: "add" as const, text: t })),
       text,
       reply: undefined,
