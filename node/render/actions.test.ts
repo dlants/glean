@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
+import { rowAt } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import { buildModel, Classifier, loadWorktreeSeen } from "../session/model.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -53,7 +54,13 @@ describe("actions", () => {
     const [first, second] = lines.filter((i) => f.lines[i] !== undefined);
     if (first === undefined || second === undefined) throw new Error("rows");
     // Partially mark the first hunk (its del), then M from its add row.
-    const part = planVisualMark(cls(), "commits", f.rows, first, first);
+    const part = planVisualMark(
+      cls(),
+      "commits",
+      f.rows,
+      rowAt(first),
+      rowAt(first),
+    );
     store.mark(part?.ids ?? []);
     const g = render({
       ...base,
@@ -110,7 +117,7 @@ describe("actions", () => {
     expect(plan?.op).toBe("mark");
     expect(plan?.ids).toHaveLength(2);
     expect(plan?.sticky).toHaveLength(2);
-    const dest = nextUnseenHunk(f, row);
+    const dest = nextUnseenHunk(f, rowAt(row));
     store.mark(plan?.ids ?? []);
     const g = render({
       ...base,
@@ -130,8 +137,8 @@ describe("actions", () => {
     expect(hp?.ids).toHaveLength(2);
     const destRow = dest === undefined ? -1 : (rowOfHunk(g, dest) ?? -1);
     // No seen hunk header is visible after it: land on the file's first unseen hunk.
-    expect(reviveDest(g, destRow)).toBe(dest);
-    expect(reviveDest(g, header)).toBeUndefined();
+    expect(reviveDest(g, rowAt(destRow))).toBe(dest);
+    expect(reviveDest(g, rowAt(header))).toBeUndefined();
   });
   it("visual m marks only the selected changed lines", async () => {
     const { store, cls } = await setup();
@@ -144,13 +151,27 @@ describe("actions", () => {
     });
     const lineRows = f.rows.flatMap((t, i) => (t.kind === "line" ? [i] : []));
     const first = lineRows[0] ?? -1;
-    const plan = planVisualMark(c, "combined", f.rows, first + 3, first);
+    const plan = planVisualMark(
+      c,
+      "combined",
+      f.rows,
+      rowAt(first + 3),
+      rowAt(first),
+    );
     expect(plan?.op).toBe("mark");
     expect(plan?.ids).toHaveLength(2);
     store.mark(plan?.ids ?? []);
-    const again = planVisualMark(cls(), "commits", f.rows, first, first + 3);
+    const again = planVisualMark(
+      cls(),
+      "commits",
+      f.rows,
+      rowAt(first),
+      rowAt(first + 3),
+    );
     expect(again).toBeUndefined();
-    expect(planVisualMark(c, "combined", f.rows, 0, 0)).toBeUndefined();
+    expect(
+      planVisualMark(c, "combined", f.rows, rowAt(0), rowAt(0)),
+    ).toBeUndefined();
   });
   it("collapse toggles flip the effective default", async () => {
     const { cls } = await setup();

@@ -4,11 +4,38 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
 import type { RepoPath } from "../core/types.ts";
-import { lnumAt } from "../core/types.ts";
+import { byteLen, lnumAt } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import { buildModel, Classifier, loadWorktreeSeen } from "../session/model.ts";
 import { makeRepo } from "../test/repo.ts";
-import { type CollapseKey, keys, render } from "./render.ts";
+import {
+  type CollapseKey,
+  type Frame,
+  keys,
+  type RenderInput,
+  render as renderFrame,
+} from "./render.ts";
+
+function spanText(f: Frame, h: Frame["highlights"][number]): string {
+  if (h.kind !== "span") throw new Error("not a span");
+  return Buffer.from(f.lines[h.row] ?? "")
+    .subarray(h.startCol, h.endCol)
+    .toString();
+}
+/** Renders and asserts every highlight lies inside its row's bytes. */
+function render(input: RenderInput): Frame {
+  const f = renderFrame(input);
+  for (const h of f.highlights) {
+    expect(h.row).toBeGreaterThanOrEqual(0);
+    expect(h.row).toBeLessThan(f.lines.length);
+    if (h.kind === "span") {
+      expect(h.startCol).toBeGreaterThanOrEqual(0);
+      expect(h.startCol).toBeLessThan(h.endCol);
+      expect(h.endCol).toBeLessThanOrEqual(byteLen(f.lines[h.row] ?? ""));
+    }
+  }
+  return f;
+}
 
 function ok<T>(o: Outcome<T>): T {
   if (o.kind !== "ok") throw new Error(o.message);
@@ -106,5 +133,29 @@ describe("render", () => {
     });
     expect(f.rows[1]).toEqual({ kind: "commit-header", commit: 0 });
     expect(f.lines[1]).toMatch(/^▼ ● [0-9a-f]{8} one$/);
+  });
+  it("span highlights cover exactly their text after multibyte prefixes", async () => {
+    const { cls } = await setup();
+    const record = {
+      id: 7,
+      lnum: lnumAt(2),
+      content: [],
+      text: "ünïcødé ✓",
+      reply: undefined,
+      origin: undefined,
+    };
+    const f = render({
+      ...base,
+      scope: "combined",
+      cls: cls(),
+      collapse: new Map(),
+      comments: () => new Map([[1, [{ record, outdated: true }]]]),
+    });
+    const spans = f.highlights.filter((h) => h.kind === "span");
+    expect(spans.map((h) => [h.hl, spanText(f, h)])).toEqual([
+      ["GleanAddText", "+2"],
+      ["GleanDelText", "-2"],
+      ["GleanCommentId", "[7] "],
+    ]);
   });
 });

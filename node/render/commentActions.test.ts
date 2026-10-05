@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
 import type { RepoPath } from "../core/types.ts";
-import { lnumAt, WORKTREE } from "../core/types.ts";
+import { lnumAt, rowAt, WORKTREE } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import { buildModel, Classifier, loadWorktreeSeen } from "../session/model.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -59,7 +59,14 @@ describe("comment authoring targets", () => {
     const { repo, cls, frame } = await setup();
     const f = frame("commits");
     const row = f.lines.indexOf("TWO");
-    const ct = commentTarget(cls, "commits", f.rows, row, row, false);
+    const ct = commentTarget(
+      cls,
+      "commits",
+      f.rows,
+      rowAt(row),
+      rowAt(row),
+      false,
+    );
     expect(ct).toEqual({
       path: P,
       lnum: 2,
@@ -67,14 +74,23 @@ describe("comment authoring targets", () => {
       origin: { sha: repo.shas[1], dirty: false },
     });
     // Decoration rows are not commentable.
-    expect(commentTarget(cls, "commits", f.rows, 0, 0, false)).toBeUndefined();
+    expect(
+      commentTarget(cls, "commits", f.rows, rowAt(0), rowAt(0), false),
+    ).toBeUndefined();
   });
   it("visual span from the hunk header captures the contiguous diff-line run", async () => {
     const { repo, cls, frame } = await setup();
     const f = frame("combined");
     const hdr = f.lines.findIndex((l) => l.startsWith("--- @@"));
     const two = f.lines.indexOf("TWO");
-    const ct = commentTarget(cls, "combined", f.rows, hdr, two, false);
+    const ct = commentTarget(
+      cls,
+      "combined",
+      f.rows,
+      rowAt(hdr),
+      rowAt(two),
+      false,
+    );
     expect(ct?.content.length).toBeGreaterThanOrEqual(2);
     expect(ct?.content.some((e) => e.text.includes("@@"))).toBe(false);
     expect(ct?.content.at(-1)).toEqual({ kind: "add", text: "TWO" });
@@ -82,7 +98,9 @@ describe("comment authoring targets", () => {
     expect(ct?.origin).toEqual({ sha: repo.shas[2], dirty: false });
     // A del-only selection keeps its pre-image line and post-image slot.
     const del = f.lines.indexOf("two");
-    expect(commentTarget(cls, "combined", f.rows, del, del, false)).toEqual(
+    expect(
+      commentTarget(cls, "combined", f.rows, rowAt(del), rowAt(del), false),
+    ).toEqual(
       expect.objectContaining({
         lnum: 2,
         content: [{ kind: "del", text: "two", oldLnum: 2 }],
@@ -105,7 +123,7 @@ describe("comment authoring targets", () => {
     ];
     expect(commentUnder(cls, store, rows[0])?.record.id).toBe(a.id);
     expect(commentUnder(cls, store, rows[2])).toBeUndefined();
-    expect(summaryCommentsIn(store, rows, 2, 0)).toEqual([
+    expect(summaryCommentsIn(store, rows, rowAt(2), rowAt(0))).toEqual([
       { path: P, record: a },
     ]);
   });
@@ -127,7 +145,14 @@ describe("comment authoring targets", () => {
     const f = frame("combined");
     const a = f.lines.indexOf("A");
     const b = f.lines.indexOf("B");
-    const ct = commentTarget(cls, "combined", f.rows, a, b, false);
+    const ct = commentTarget(
+      cls,
+      "combined",
+      f.rows,
+      rowAt(a),
+      rowAt(b),
+      false,
+    );
     expect(ct?.path).toBe("a.txt");
     expect(ct?.content.map((e) => e.text)).not.toContain("B");
     expect(ct?.content.at(-1)).toEqual({ kind: "add", text: "A" });
@@ -159,7 +184,8 @@ describe("comment authoring targets", () => {
     const f = frame("combined");
     const four = f.lines.indexOf("four");
     expect(
-      commentTarget(cls, "combined", f.rows, four, four, true)?.origin,
+      commentTarget(cls, "combined", f.rows, rowAt(four), rowAt(four), true)
+        ?.origin,
     ).toEqual({ sha: repo.shas[2], dirty: true });
     expect(
       commentOrigin(

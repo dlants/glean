@@ -6,7 +6,13 @@
  * file, then the file header.
  */
 import type { DiffLine } from "../core/diff.ts";
-import type { Layer, LineId, RepoPath } from "../core/types.ts";
+import {
+  type Layer,
+  type LineId,
+  type RepoPath,
+  type Row,
+  rowAt,
+} from "../core/types.ts";
 import type { Classifier } from "../session/model.ts";
 import { resolveFile } from "./actions.ts";
 import type { Frame, RowTarget } from "./render.ts";
@@ -86,21 +92,23 @@ export function restoreAnchor(
   cls: Classifier,
   frame: Frame,
   anchor: CursorAnchor,
-): number | undefined {
-  let header: number | undefined;
-  frame.rows.forEach((t, row) => {
+): Row | undefined {
+  let header: Row | undefined;
+  frame.rows.forEach((t, i) => {
+    const row = rowAt(i);
     if (header !== undefined || t.kind !== "file-header") return;
     if (resolveFile(cls, t.file)?.file.path === anchor.path) header = row;
   });
   if (anchor.kind === "header") return header;
-  type Best = { row: number; score: number } | undefined;
-  const better = (b: Best, row: number, score: number): Best =>
+  type Best = { row: Row; score: number } | undefined;
+  const better = (b: Best, row: Row, score: number): Best =>
     !b || score < b.score ? { row, score } : b;
   let exact: Best;
   let owner: Best;
   let best: Best;
   const key = anchor.id && idKey(anchor.id);
-  frame.rows.forEach((t, row) => {
+  frame.rows.forEach((t, i) => {
+    const row = rowAt(i);
     if (t.kind !== "line") return;
     const l = rowLine(cls, t);
     if (!l || l.r.file.path !== anchor.path) return;

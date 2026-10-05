@@ -430,7 +430,7 @@ export class ReviewView implements ReviewUi {
       await this.closeSticky();
       return;
     }
-    await this.paintHunk(frame, info.row);
+    await this.paintHunk(frame, rowAt(info.row));
     await this.paintSticky(frame, info);
   }
   /**
@@ -438,7 +438,7 @@ export class ReviewView implements ReviewUi {
    * every row, and after `hunkIndentDelayMs` its body shifted right by
    * `hunkIndent` columns of inline virtual text (display-only).
    */
-  private async paintHunk(frame: Frame, row: number) {
+  private async paintHunk(frame: Frame, row: Row) {
     const r = hunkRange(frame, row);
     const k = this.hunkKey;
     if (r && k && k.lo === r.lo && k.hi === r.hi && k.frame === frame) return;

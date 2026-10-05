@@ -13,6 +13,8 @@ import type {
 import {
   type PostLnum,
   type RepoPath,
+  type Row,
+  rowAt,
   type Sha,
   WORKTREE,
 } from "../core/types.ts";
@@ -110,8 +112,8 @@ export function commentTarget(
   cls: Classifier,
   scope: Scope,
   rows: readonly RowTarget[],
-  srow: number,
-  erow: number,
+  srow: Row,
+  erow: Row,
   worktree: boolean,
 ): CommentTarget | undefined {
   let first: { ref: FileRef; path: RepoPath } | undefined;
@@ -124,7 +126,7 @@ export function commentTarget(
     if (!m) ordCache.set(file, (m = ordinals(file)));
     return m.get(lineKey(dl));
   };
-  for (let row = srow; row <= erow; row++) {
+  for (let row = srow; row <= erow; row = rowAt(row + 1)) {
     const t = lineRow(rows[row]);
     if (!t) continue;
     const l = lineAt(cls, t);
@@ -183,11 +185,11 @@ export function commentsAtLine(
 export function summaryCommentsIn(
   store: Store,
   rows: readonly RowTarget[],
-  srow: number,
-  erow: number,
+  srow: Row,
+  erow: Row,
 ): { path: RepoPath; record: CommentRecord }[] {
-  const lo = Math.min(srow, erow);
-  const hi = Math.max(srow, erow);
+  const lo = rowAt(Math.min(srow, erow));
+  const hi = rowAt(Math.max(srow, erow));
   const out: { path: RepoPath; record: CommentRecord }[] = [];
   const seen = new Set<string>();
   for (const t of rows.slice(lo, hi + 1)) {

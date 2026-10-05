@@ -8,6 +8,8 @@ import {
   type PostLnum,
   type PreLnum,
   type RepoPath,
+  type Row,
+  rowAt,
   WORKTREE,
   type WorktreeLnum,
 } from "../core/types.ts";
@@ -20,14 +22,14 @@ export type NavUnit = "hunk" | "file";
 /** Nearest visible hunk header / file header strictly past `cur`. */
 export function navRow(
   frame: Frame,
-  cur: number,
+  cur: Row,
   unit: NavUnit,
   forward: boolean,
-): number | undefined {
+): Row | undefined {
   const want = unit === "hunk" ? "hunk-header" : "file-header";
   const step = forward ? 1 : -1;
   for (let r = cur + step; r >= 0 && r < frame.rows.length; r += step)
-    if (frame.rows[r]?.kind === want) return r;
+    if (frame.rows[r]?.kind === want) return rowAt(r);
   return undefined;
 }
 
@@ -49,17 +51,17 @@ function sameHunk(a: HunkRow, b: HunkRow): boolean {
 /** First and last row of the hunk under `row` (header, lines, markers, comments). */
 export function hunkRange(
   frame: Frame,
-  row: number,
-): { lo: number; hi: number } | undefined {
+  row: Row,
+): { lo: Row; hi: Row } | undefined {
   const t = hunkOf(frame.rows[row]);
   if (!t) return undefined;
-  let lo = row;
-  let hi = row;
+  let lo: Row = row;
+  let hi: Row = row;
   frame.rows.forEach((o, r) => {
     const h = hunkOf(o);
     if (!h || !sameHunk(h, t)) return;
-    lo = Math.min(lo, r);
-    hi = Math.max(hi, r);
+    lo = rowAt(Math.min(lo, r));
+    hi = rowAt(Math.max(hi, r));
   });
   return { lo, hi };
 }
@@ -189,12 +191,12 @@ export function fileHeaderRow(
   cls: Classifier,
   frame: Frame,
   path: RepoPath,
-): number | undefined {
+): Row | undefined {
   const r = frame.rows.findIndex(
     (t) =>
       t.kind === "file-header" && resolveFile(cls, t.file)?.file.path === path,
   );
-  return r < 0 ? undefined : r;
+  return r < 0 ? undefined : rowAt(r);
 }
 
 /** The row showing post-image `lnum` of `path`, else the nearest one, else the file header. */
@@ -204,15 +206,15 @@ export function sourceLineRow(
   path: RepoPath,
   /** A file-buffer line; matched to the nearest post-image line by number. */
   lnum: WorktreeLnum,
-): number | undefined {
-  let best: number | undefined;
+): Row | undefined {
+  let best: Row | undefined;
   let bestScore = Number.POSITIVE_INFINITY;
   frame.rows.forEach((t, r) => {
     const p = rowPostLnum(cls, t);
     if (!p || p.path !== path) return;
     const score = Math.abs(p.lnum - lnum);
     if (score < bestScore) {
-      best = r;
+      best = rowAt(r);
       bestScore = score;
     }
   });

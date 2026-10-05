@@ -128,6 +128,13 @@ Status: done.
 
 ## render frame rows and highlights
 
+Status: done.
+- `Highlight` (`row: Row`, `startCol/endCol: ByteCol`), `Section.lo/hi` (hi exclusive), `IntraBlock` rows, `emit()` returns `Row`. `span(row, at: ByteCol, text, hl)` now takes the highlighted text and computes `endCol = at + byteLen(text)`, so every span (comment id tag, add/del counts, summary tag) is byte-correct by construction.
+- Row params typed `Row`: `planVisualMark`, `nextUnseenHunk`, `rowOfHunk`, `reviveDest` (actions), `commentTarget`/`summaryCommentsIn` (commentActions), `navRow`, `hunkRange`, `fileHeaderRow`, `sourceLineRow` (nav), `restoreAnchor` (anchor). `ReviewView.paintHunk(row: Row)`.
+- Temporary `rowAt(..)` at `view/review.ts` action/query call sites and `view/view.ts` `paintHunk(frame, rowAt(info.row))`; stage 4 removes them by branding at action parsing / `CursorInfo.row`.
+- Deviation: `MarkerRun.lo/hi` stay `number` — they index `hunk.lines` (the `li` space shared with `RowTarget.li`, placement keys), not frame rows.
+- Tests: `render.test.ts` wraps `render` with a bounds assertion on every highlight; new multibyte test checks span bytes equal `+2`, `-2`, `[7] ` behind `──`/`💬 (outdated) ` prefixes. No off-by-one found.
+
 - Goal: `render/*.ts` typed: `Highlight`, `IntraBlock`, `Section`, `MarkerRun`, all row params; spans built only from `ByteCol`s.
 - Tests:
   - render test: a file whose path / comment body / header contains multibyte chars produces highlights whose byte ranges, applied to `frame.lines[row]` via `Buffer.from(...).subarray(startCol, endCol)`, exactly equal the intended substring (comment id tag, add/del counts, path). This is the generic check for every `span()` and catches any off-by-one in a highlight.

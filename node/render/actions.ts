@@ -9,6 +9,8 @@ import {
   type Layer,
   type LineId,
   type RepoPath,
+  type Row,
+  rowAt,
   WORKTREE,
 } from "../core/types.ts";
 import type { Classifier, OwnerFn, Scope } from "../session/model.ts";
@@ -236,13 +238,13 @@ export function planVisualMark(
   cls: Classifier,
   scope: Scope,
   rows: readonly RowTarget[],
-  srow: number,
-  erow: number,
+  srow: Row,
+  erow: Row,
 ): SeenPlan | undefined {
   const [lo, hi] = srow <= erow ? [srow, erow] : [erow, srow];
   const ids: LineId[] = [];
   const sticky: Sticky[] = [];
-  for (let row = lo; row <= hi; row++) {
+  for (let row = lo; row <= hi; row = rowAt(row + 1)) {
     const t = rows[row];
     if (t?.kind !== "line") continue;
     const r = resolveFile(cls, t.file);
@@ -328,7 +330,7 @@ export function hunkKey(t: RowTarget): string | undefined {
 }
 
 /** Next still-unseen hunk header after `row`, other than the row's own hunk. */
-export function nextUnseenHunk(frame: Frame, row: number): string | undefined {
+export function nextUnseenHunk(frame: Frame, row: Row): string | undefined {
   const cur = frame.rows[row] && hunkKey(frame.rows[row]);
   for (let r = row + 1; r < frame.rows.length; r++) {
     const t = frame.rows[r];
@@ -338,11 +340,11 @@ export function nextUnseenHunk(frame: Frame, row: number): string | undefined {
   return undefined;
 }
 
-export function rowOfHunk(frame: Frame, key: string): number | undefined {
+export function rowOfHunk(frame: Frame, key: string): Row | undefined {
   const r = frame.rows.findIndex(
     (t) => t.kind === "hunk-header" && hunkKey(t) === key,
   );
-  return r < 0 ? undefined : r;
+  return r < 0 ? undefined : rowAt(r);
 }
 
 function sameFile(a: FileRef, b: FileRef): boolean {
@@ -356,7 +358,7 @@ function sameFile(a: FileRef, b: FileRef): boolean {
  * same file after it, else the file's first unseen hunk, else the hunk itself.
  * Captured before the unmark because the revived hunk's rows relocate.
  */
-export function reviveDest(frame: Frame, row: number): string | undefined {
+export function reviveDest(frame: Frame, row: Row): string | undefined {
   const target = frame.rows[row];
   if (!target || (target.kind !== "hunk-header" && target.kind !== "line"))
     return undefined;

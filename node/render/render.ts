@@ -7,7 +7,15 @@
 
 import type { DiffLine, FileEntry, Hunk } from "../core/diff.ts";
 import { dirLayout } from "../core/dirtree.ts";
-import type { LineId, RepoPath } from "../core/types.ts";
+import {
+  addBytes,
+  type ByteCol,
+  byteLen,
+  type LineId,
+  type RepoPath,
+  type Row,
+  rowAt,
+} from "../core/types.ts";
 import type {
   Classifier,
   ModelCommit,
@@ -93,13 +101,21 @@ export type RowTarget =
     };
 
 export type Highlight =
-  | { kind: "line"; row: number; hl: string; sign?: "+" | "-" | " " }
-  | { kind: "span"; row: number; hl: string; startCol: number; endCol: number };
+  | { kind: "line"; row: Row; hl: string; sign?: "+" | "-" | " " }
+  | {
+      kind: "span";
+      row: Row;
+      hl: string;
+      /** Inclusive start, exclusive end. */
+      startCol: ByteCol;
+      endCol: ByteCol;
+    };
 
-export type Section = { key: string; lo: number; hi: number };
+/** Rows `lo` (inclusive) to `hi` (exclusive). */
+export type Section = { key: string; lo: Row; hi: Row };
 export type IntraBlock = {
-  dels: { row: number; text: string }[];
-  adds: { row: number; text: string }[];
+  dels: { row: Row; text: string }[];
+  adds: { row: Row; text: string }[];
 };
 
 export type Frame = {
@@ -172,20 +188,20 @@ export function render(input: RenderInput): Frame {
     intraBlocks: [],
   };
   const section = (key: string, fn: () => void) => {
-    const lo = f.lines.length;
+    const lo = rowAt(f.lines.length);
     fn();
-    f.sections.push({ key, lo, hi: f.lines.length });
+    f.sections.push({ key, lo, hi: rowAt(f.lines.length) });
   };
   const emit = (
     text: string,
     target: RowTarget,
     hl?: string,
     s?: "+" | "-" | " ",
-  ): number => {
+  ): Row => {
     // Every row must be a single buffer line.
     f.lines.push(text.replace(/[\r\n]/g, " "));
     f.rows.push(target);
-    const row = f.lines.length - 1;
+    const row = rowAt(f.lines.length - 1);
     if (hl !== undefined) {
       f.highlights.push(
         s === undefined
@@ -195,8 +211,15 @@ export function render(input: RenderInput): Frame {
     }
     return row;
   };
-  const span = (row: number, startCol: number, endCol: number, hl: string) =>
-    f.highlights.push({ kind: "span", row, hl, startCol, endCol });
+  /** Highlights the bytes of `text` starting at byte `at` of `row`. */
+  const span = (row: Row, at: ByteCol, text: string, hl: string) =>
+    f.highlights.push({
+      kind: "span",
+      row,
+      hl,
+      startCol: at,
+      endCol: addBytes(at, byteLen(text)),
+    });
   const isCollapsed = (key: CollapseKey, dflt: boolean) =>
     collapse.get(key) ?? dflt;
 
@@ -244,8 +267,7 @@ export function render(input: RenderInput): Frame {
         pc.record.text.split("\n").forEach((part, i) => {
           const row = emit(lead + (i === 0 ? tag : "") + part, target, hl);
           if (i === 0) {
-            const at = Buffer.byteLength(lead);
-            span(row, at, at + tag.length, "GleanCommentId");
+            span(row, byteLen(lead), tag, "GleanCommentId");
           }
         });
         if (pc.record.reply !== undefined)
@@ -379,10 +401,9 @@ export function render(input: RenderInput): Frame {
       "GleanModeHeader",
     );
     // Byte offsets: the prefix holds multibyte box-drawing characters.
-    const astart = Buffer.byteLength(head) + 1;
-    const dstart = astart + a.length + 3;
-    span(row, astart, astart + a.length, "GleanAddText");
-    span(row, dstart, dstart + d.length, "GleanDelText");
+    const astart = byteLen(`${head}[`);
+    span(row, astart, a, "GleanAddText");
+    span(row, addBytes(astart, byteLen(`${a} / `)), d, "GleanDelText");
   });
 
   if (scope === "commits") {
@@ -496,7 +517,7 @@ export function render(input: RenderInput): Frame {
             target,
             e.state === "outdated" || e.hidden ? "GleanSeen" : "GleanContext",
           );
-          span(row, 2, 2 + tag.length, "GleanCommentId");
+          span(row, byteLen("  "), tag, "GleanCommentId");
           for (const l of wrapText(r.text, "      💬 ", "         "))
             emit(l, target, "GleanComment");
           if (r.reply !== undefined)

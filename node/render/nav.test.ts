@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
 import type { RepoPath, WorktreeLnum } from "../core/types.ts";
+import { rowAt } from "../core/types.ts";
 import { Git, type Outcome, spawnRunner } from "../git/git.ts";
 import {
   buildModel,
@@ -155,18 +156,18 @@ describe("navigation", () => {
       t.kind === "file-header" ? [i] : [],
     );
     expect(hunks.length).toBeGreaterThan(1);
-    expect(navRow(f, 0, "hunk", true)).toBe(hunks[0]);
-    expect(navRow(f, hunks[0] ?? 0, "hunk", true)).toBe(hunks[1]);
-    expect(navRow(f, hunks[1] ?? 0, "hunk", false)).toBe(hunks[0]);
-    expect(navRow(f, 0, "hunk", false)).toBeUndefined();
-    expect(navRow(f, files[0] ?? 0, "file", true)).toBe(files[1]);
-    expect(navRow(f, files[1] ?? 0, "file", false)).toBe(files[0]);
+    expect(navRow(f, rowAt(0), "hunk", true)).toBe(hunks[0]);
+    expect(navRow(f, rowAt(hunks[0] ?? 0), "hunk", true)).toBe(hunks[1]);
+    expect(navRow(f, rowAt(hunks[1] ?? 0), "hunk", false)).toBe(hunks[0]);
+    expect(navRow(f, rowAt(0), "hunk", false)).toBeUndefined();
+    expect(navRow(f, rowAt(files[0] ?? 0), "file", true)).toBe(files[1]);
+    expect(navRow(f, rowAt(files[1] ?? 0), "file", false)).toBe(files[0]);
   });
   it("hunkRange spans the header and every line of the hunk", async () => {
     const { frame } = await setup();
     const f = frame("combined");
     const row = lineRow(f, "TWO");
-    const r = hunkRange(f, row);
+    const r = hunkRange(f, rowAt(row));
     if (!r) throw new Error("no range");
     expect(f.rows[r.lo]?.kind).toBe("hunk-header");
     expect(r.lo).toBeLessThan(row);
@@ -176,7 +177,7 @@ describe("navigation", () => {
       after?.kind === "line" &&
         after.hunk === (f.rows[row] as { hunk: number }).hunk,
     ).toBe(false);
-    expect(hunkRange(f, 0)).toBeUndefined();
+    expect(hunkRange(f, rowAt(0))).toBeUndefined();
   });
 });
 

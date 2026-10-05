@@ -274,10 +274,10 @@ export class ReviewController {
     const frame = this.frame;
     if (!frame) return undefined;
     if (q.kind === "hunk-range") {
-      const r = hunkRange(frame, q.row);
+      const r = hunkRange(frame, rowAt(q.row));
       return r && [r.lo, r.hi];
     }
-    const row = navRow(frame, q.row, q.unit, q.forward);
+    const row = navRow(frame, rowAt(q.row), q.unit, q.forward);
     if (row === undefined) return undefined;
     return [row, q.unit === "hunk" ? (hunkRange(frame, row)?.hi ?? row) : row];
   }
@@ -408,7 +408,9 @@ export class ReviewController {
   private async markAndAdvance(plan: SeenPlan, row: number) {
     const before = this.frame;
     const next =
-      plan.op === "mark" && before ? nextUnseenHunk(before, row) : undefined;
+      plan.op === "mark" && before
+        ? nextUnseenHunk(before, rowAt(row))
+        : undefined;
     await this.session.perform({ kind: "seen", plan, cursor: row });
     await this.redraw();
     const frame = this.frame;
@@ -471,8 +473,8 @@ export class ReviewController {
           snap.cls,
           this.scope,
           frame.rows,
-          a.srow,
-          a.erow,
+          rowAt(a.srow),
+          rowAt(a.erow),
         );
         if (plan) await this.markAndAdvance(plan, a.srow);
         return;
@@ -531,8 +533,8 @@ export class ReviewController {
         const removed = summaryCommentsIn(
           snap.store,
           frame.rows,
-          a.srow,
-          a.erow,
+          rowAt(a.srow),
+          rowAt(a.erow),
         );
         if (removed.length === 0) return;
         await this.session.perform({
@@ -549,8 +551,8 @@ export class ReviewController {
           snap.cls,
           this.scope,
           frame.rows,
-          lo,
-          Math.max(a.srow, a.erow),
+          rowAt(lo),
+          rowAt(Math.max(a.srow, a.erow)),
           this.session.worktree,
         );
         if (!ct) {
