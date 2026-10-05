@@ -1,3 +1,4 @@
+import { COL0, ROW0, rowAt, toLnum } from "../core/types.ts";
 /**
  * The nvim adapter for a review: implements `ReviewUi` on the scratch buffer.
  * Each frame is diffed against the previous one (common prefix/suffix) and
@@ -205,7 +206,13 @@ export class ReviewView implements ReviewUi {
       );
       do {
         const chunk = lines.slice(i, i + MAX_BATCH_LINES);
-        await this.nvim.call("nvim_buf_set_lines", [b, at, end, false, chunk]);
+        await this.nvim.call("nvim_buf_set_lines", [
+          b,
+          rowAt(at),
+          rowAt(end),
+          false,
+          chunk,
+        ]);
         at += chunk.length;
         end = at;
         i += MAX_BATCH_LINES;
@@ -221,7 +228,12 @@ export class ReviewView implements ReviewUi {
     const lo = edit?.start ?? 0;
     const hi = edit ? edit.start + edit.lines.length : 0;
     if (edit)
-      await this.nvim.call("nvim_buf_clear_namespace", [b, this.ns, lo, hi]);
+      await this.nvim.call("nvim_buf_clear_namespace", [
+        b,
+        this.ns,
+        rowAt(lo),
+        rowAt(hi),
+      ]);
     for (const h of frame.highlights) {
       if (h.row < lo || h.row >= hi) continue;
       calls.push(
@@ -248,7 +260,12 @@ export class ReviewView implements ReviewUi {
       ]);
     void this.decorate().catch(() => undefined);
     if (!this.intraGuard.isCurrent(gen)) return;
-    await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsIntra, 0, -1]);
+    await this.nvim.call("nvim_buf_clear_namespace", [
+      b,
+      this.nsIntra,
+      ROW0,
+      -1,
+    ]);
     this.intraDone = runRefine(
       this.intraGuard,
       gen,
@@ -323,7 +340,10 @@ export class ReviewView implements ReviewUi {
   async setCursor(row: number) {
     const win = await this.win();
     if (win > 0)
-      await this.nvim.call("nvim_win_set_cursor", [win, [row + 1, 0]]);
+      await this.nvim.call("nvim_win_set_cursor", [
+        win,
+        [toLnum(rowAt(row)), COL0],
+      ]);
   }
   async notify(msg: string, level: NotifyLevel) {
     const n = level === "error" ? 4 : level === "warn" ? 3 : 2;
@@ -440,8 +460,18 @@ export class ReviewView implements ReviewUi {
     this.hunkKey = r && { lo: r.lo, hi: r.hi, frame };
     const gen = this.indentGuard.bump();
     const b = this.bufnr;
-    await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsCursor, 0, -1]);
-    await this.nvim.call("nvim_buf_clear_namespace", [b, this.nsIndent, 0, -1]);
+    await this.nvim.call("nvim_buf_clear_namespace", [
+      b,
+      this.nsCursor,
+      ROW0,
+      -1,
+    ]);
+    await this.nvim.call("nvim_buf_clear_namespace", [
+      b,
+      this.nsIndent,
+      ROW0,
+      -1,
+    ]);
     if (!r) return;
     const { signs } = this.decorOf(frame);
     const calls: unknown[] = [];
@@ -545,7 +575,7 @@ export class ReviewView implements ReviewUi {
         "nvim_buf_set_lines",
         [sbuf, 0, -1, false, pinned.map((r) => frame.lines[r] ?? "")],
       ],
-      ["nvim_buf_clear_namespace", [sbuf, this.nsSticky, 0, -1]],
+      ["nvim_buf_clear_namespace", [sbuf, this.nsSticky, ROW0, -1]],
     ];
     pinned.forEach((row, i) => {
       const hl = lineHl.get(row);

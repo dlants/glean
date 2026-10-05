@@ -1,6 +1,14 @@
 /* eslint @typescript-eslint/no-invalid-void-type: 0 */
 
+import type { ByteCol, Lnum, Row } from "../../core/types.ts";
 import type { EventsMap } from "./types.ts";
+
+/** Extmark opts with typed coordinates; ends are exclusive. */
+export type ExtmarkOpts = {
+  end_row?: Row;
+  end_col?: ByteCol;
+  [key: string]: unknown;
+};
 
 type ui_options = [
   "rgb",
@@ -71,8 +79,8 @@ export type NeovimApi<
     nvim_buf_get_lines: {
       parameters: [
         buffer: number,
-        start: number,
-        end: number,
+        start: Row,
+        end: Row | -1,
         strict_indexing: boolean,
       ];
       return_type: string[];
@@ -80,8 +88,8 @@ export type NeovimApi<
     nvim_buf_set_lines: {
       parameters: [
         buffer: number,
-        start: number,
-        end: number,
+        start: Row,
+        end: Row | -1,
         strict_indexing: boolean,
         replacement: string[],
       ];
@@ -90,10 +98,10 @@ export type NeovimApi<
     nvim_buf_set_text: {
       parameters: [
         buffer: number,
-        start_row: number,
-        start_col: number,
-        end_row: number,
-        end_col: number,
+        start_row: Row,
+        start_col: ByteCol,
+        end_row: Row,
+        end_col: ByteCol,
         replacement: string[],
       ];
       return_type: undefined;
@@ -101,10 +109,10 @@ export type NeovimApi<
     nvim_buf_get_text: {
       parameters: [
         buffer: number,
-        start_row: number,
-        start_col: number,
-        end_row: number,
-        end_col: number,
+        start_row: Row,
+        start_col: ByteCol,
+        end_row: Row,
+        end_col: ByteCol,
         opts: Record<string, unknown>,
       ];
       return_type: string[];
@@ -175,8 +183,8 @@ export type NeovimApi<
       parameters: [
         buffer: number,
         name: string,
-        line: number,
-        col: number,
+        line: Lnum,
+        col: ByteCol,
         opts: Record<string, unknown>,
       ];
       return_type: boolean;
@@ -265,9 +273,9 @@ export type NeovimApi<
       parameters: [
         buffer: number,
         ns_id: number,
-        line: number,
-        col: number,
-        opts: Record<string, unknown>,
+        line: Row,
+        col: ByteCol,
+        opts: ExtmarkOpts,
       ];
       return_type: number;
     };
@@ -290,8 +298,8 @@ export type NeovimApi<
       parameters: [
         buffer: number,
         ns_id: number,
-        line_start: number,
-        line_end: number,
+        line_start: Row,
+        line_end: Row | -1,
       ];
       return_type: undefined;
     };
@@ -746,10 +754,10 @@ export type NeovimApi<
     };
     nvim_win_get_cursor: {
       parameters: [window: number];
-      return_type: [number, number];
+      return_type: [Lnum, ByteCol];
     };
     nvim_win_set_cursor: {
-      parameters: [window: number, pos: [number, number]];
+      parameters: [window: number, pos: [Lnum, ByteCol]];
       return_type: undefined;
     };
     nvim_win_get_height: {

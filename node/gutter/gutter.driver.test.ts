@@ -2,6 +2,7 @@ import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { COL0, lnumAt, ROW0, rowAt } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import {
   luaEval,
@@ -78,7 +79,7 @@ const input = async (nvim: Nvim, keys: string) => {
   await nvim.call("nvim_input", [keys]);
 };
 const cursor = (nvim: Nvim, row: number) =>
-  nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
+  nvim.call("nvim_win_set_cursor", [0, [lnumAt(row), COL0]]);
 
 describe("file-buffer gutter (driver)", () => {
   // One nvim and backend for the tests that leave both running; each wipes
@@ -99,7 +100,13 @@ describe("file-buffer gutter (driver)", () => {
   it("paints, goes stale on edit, and repaints on revert", async () => {
     await withShared(async (nvim) => {
       await openFile(nvim);
-      await nvim.call("nvim_buf_set_lines", [0, 0, 1, false, ["ONE"]]);
+      await nvim.call("nvim_buf_set_lines", [
+        0,
+        ROW0,
+        rowAt(1),
+        false,
+        ["ONE"],
+      ]);
       await nvim.call("nvim_exec_autocmds", ["TextChanged", { buffer: 0 }]);
       await waitSigns(
         nvim,

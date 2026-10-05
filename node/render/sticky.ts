@@ -3,17 +3,17 @@
  * hunk header rows, and which of them to pin above a given topline. Ports the
  * Lua `compute_ancestry`/`compute_pinned`.
  */
-import type { BufRow } from "../core/types.ts";
+import type { Row } from "../core/types.ts";
 import type { RowTarget } from "./render.ts";
 /** A seen-section or hunk header only exists under a file header. */
-export type FileAncestry = { row: BufRow; sec?: BufRow; hunk?: BufRow };
-export type Ancestry = { commit?: BufRow; file?: FileAncestry };
+export type FileAncestry = { row: Row; sec?: Row; hunk?: Row };
+export type Ancestry = { commit?: Row; file?: FileAncestry };
 /** A shallower header clears the deeper levels below it. */
 export function computeAncestry(rows: readonly RowTarget[]): Ancestry[] {
   const out: Ancestry[] = [];
   let cur: Ancestry = {};
   rows.forEach((t, i) => {
-    const row = i as BufRow;
+    const row = i as Row;
     const f = cur.file;
     if (t.kind === "commit-header") cur = { commit: row };
     else if (t.kind === "file-header")
@@ -36,10 +36,10 @@ export function computeAncestry(rows: readonly RowTarget[]): Ancestry[] {
 export function computePinned(
   ancestry: readonly Ancestry[],
   w0: number,
-): BufRow[] {
+): Row[] {
   const a = ancestry[w0];
   if (!a) return [];
-  const pinned: BufRow[] = w0 > 0 ? [0 as BufRow] : [];
+  const pinned: Row[] = w0 > 0 ? [0 as Row] : [];
   for (const row of [a.commit, a.file?.row, a.file?.sec, a.file?.hunk])
     if (row !== undefined && row < w0) pinned.push(row);
   return pinned;

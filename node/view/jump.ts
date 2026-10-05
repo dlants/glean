@@ -12,6 +12,7 @@ import type {
   RepoPath,
   WorktreeLnum,
 } from "../core/types.ts";
+import { rowAt } from "../core/types.ts";
 import type { Git } from "../git/git.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { DiffContext, JumpTarget, SourceRef } from "../render/nav.ts";
@@ -115,8 +116,8 @@ async function scratchBuf(
     { buf: made.buf },
   ]);
   for (let i = 0; i < lines.length; i += MAX_BATCH_LINES) {
-    const start = i === 0 ? 0 : i;
-    const end = i === 0 ? -1 : i;
+    const start = rowAt(i);
+    const end = i === 0 ? -1 : rowAt(i);
     await nvim.call("nvim_buf_set_lines", [
       made.buf,
       start,

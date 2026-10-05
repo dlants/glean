@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { COL0, lnumAt, ROW0 } from "./core/types.ts";
 import type { Nvim } from "./nvim/nvim-node/index.ts";
 import { luaEval, pollUntil, startBackend, withNvim } from "./test/driver.ts";
 import { makeRepo } from "./test/repo.ts";
@@ -78,7 +79,7 @@ describe("review targets (driver)", () => {
         `Glean:${basename(repo.root)} log`,
       );
       // Row 4 is c1: its review contains only a.txt.
-      await nvim.call("nvim_win_set_cursor", [0, [4, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(4), COL0]]);
       await nvim.call("nvim_input", ["<CR>"]);
       const body = await pollUntil(async () => {
         const l = await lines(nvim);
@@ -116,7 +117,7 @@ describe("navigation and jump (driver)", () => {
         return l.includes("J") ? l : undefined;
       });
       // ]c from the top lands on the first hunk header, again on the second.
-      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(1), COL0]]);
       await nvim.call("nvim_input", ["]c"]);
       const h1 = await pollUntil(async () => {
         const r = await cursor(nvim);
@@ -165,7 +166,7 @@ describe("navigation and jump (driver)", () => {
       );
       // <CR> on the +J row opens the live file at line 10.
       const jRow = body.indexOf("J") + 1;
-      await nvim.call("nvim_win_set_cursor", [0, [jRow, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(jRow), COL0]]);
       await nvim.call("nvim_input", ["<CR>"]);
       const name = await pollUntil(async () => {
         const n = await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)");
@@ -174,7 +175,7 @@ describe("navigation and jump (driver)", () => {
       expect(name.startsWith("glean://")).toBe(false);
       expect(await cursor(nvim)).toBe(10);
       // Back from the file: the review cursor lands on the same line.
-      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(2), COL0]]);
       await nvim.call("nvim_command", ["Glean jump"]);
       await pollUntil(async () =>
         (await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()")) ===
@@ -203,7 +204,10 @@ describe("navigation and jump (driver)", () => {
         const l = await lines(nvim);
         return l.includes("J") ? l : undefined;
       });
-      await nvim.call("nvim_win_set_cursor", [0, [body.indexOf("b") + 1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [
+        0,
+        [lnumAt(body.indexOf("b") + 1), COL0],
+      ]);
       // D opens base on the left, the live file on the right, both in diff mode.
       await nvim.call("nvim_input", ["D"]);
       const wins = await pollUntil(async () => {
@@ -256,7 +260,7 @@ describe("seen extras and whitespace (driver)", () => {
       const fileRow = body.findIndex((l) => l.includes("s.txt"));
       await luaEval(nvim, `(function() vim.wo.scrolloff = 0 end)()`);
       await nvim.call("nvim_win_set_height", [0, 10]);
-      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(1), COL0]]);
       await nvim.call("nvim_input", ["j"]);
       await pollUntil(async () =>
         (await floats(nvim)).length === 0 ? true : undefined,
@@ -327,9 +331,9 @@ describe("seen extras and whitespace (driver)", () => {
       });
       const a = body.indexOf("l4_Z");
       const b = body.indexOf("l31_Z");
-      await nvim.call("nvim_win_set_cursor", [0, [a + 1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(a + 1), COL0]]);
       await new Promise((r) => setTimeout(r, 20));
-      await nvim.call("nvim_win_set_cursor", [0, [b + 1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(b + 1), COL0]]);
       const rows = () =>
         luaEval<number[]>(
           nvim,
@@ -366,7 +370,7 @@ describe("seen extras and whitespace (driver)", () => {
       const buf = await luaEval<number>(nvim, "vim.api.nvim_get_current_buf()");
       // m on the file header marks everything; U brings it all back.
       const header = (await lines(nvim)).findIndex((l) => l.includes("w.txt"));
-      await nvim.call("nvim_win_set_cursor", [0, [header + 1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(header + 1), COL0]]);
       await nvim.call("nvim_input", ["m"]);
       await pollUntil(async () =>
         (await lines(nvim)).includes("D") ? undefined : true,
@@ -420,7 +424,7 @@ describe("whitespace-hidden comments (driver)", () => {
           : undefined;
       });
       const row = ignored.findIndex((l) => l.includes("space note"));
-      await nvim.call("nvim_win_set_cursor", [0, [row + 1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(row + 1), COL0]]);
       await nvim.call("nvim_input", ["<CR>"]);
       await pollUntil(async () => {
         const l = await lines();
@@ -474,7 +478,10 @@ describe("comment editor (driver)", () => {
         await nvim.call("nvim_set_current_win", [review]);
         const row = (await lines()).findIndex(pred);
         expect(row).toBeGreaterThanOrEqual(0);
-        await nvim.call("nvim_win_set_cursor", [review, [row + 1, 0]]);
+        await nvim.call("nvim_win_set_cursor", [
+          review,
+          [lnumAt(row + 1), COL0],
+        ]);
       };
       const inEditor = async (text: string[]) => {
         await pollUntil(async () =>
@@ -485,7 +492,7 @@ describe("comment editor (driver)", () => {
             : undefined,
         );
         await nvim.call("nvim_input", ["<Esc>"]);
-        await nvim.call("nvim_buf_set_lines", [0, 0, -1, false, text]);
+        await nvim.call("nvim_buf_set_lines", [0, ROW0, -1, false, text]);
         await nvim.call("nvim_command", ["write"]);
       };
       await until((l) => l.includes("TWO"));

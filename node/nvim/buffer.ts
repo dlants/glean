@@ -1,3 +1,4 @@
+import { ROW0 } from "../core/types.ts";
 import type { ExtmarkId, ExtmarkOptions } from "./extmarks.ts";
 import type { Nvim } from "./nvim-node/index.ts";
 import type {
@@ -245,7 +246,7 @@ end`,
     await this.nvim.call("nvim_buf_clear_namespace", [
       this.id,
       namespaceId,
-      0, // start line
+      ROW0, // start line
       -1, // end line (-1 means end of buffer)
     ]);
   }

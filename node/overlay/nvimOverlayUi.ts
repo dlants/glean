@@ -1,5 +1,12 @@
 /** The nvim adapter for the comment overlay's `OverlayUi` port. */
-import type { BufNr, WorktreeLnum } from "../core/types.ts";
+import {
+  type BufNr,
+  ROW0,
+  type Row,
+  rowAt,
+  toRow,
+  type WorktreeLnum,
+} from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { Prompts } from "../view/prompts.ts";
 import type { NotifyLevel } from "../view/review.ts";
@@ -53,12 +60,12 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
   }
 
   allLines(buf: BufNr) {
-    return this.getLines(buf, 0, -1);
+    return this.getLines(buf, ROW0, -1);
   }
   range(buf: BufNr, r: { from: WorktreeLnum; to: WorktreeLnum }) {
-    return this.getLines(buf, r.from - 1, r.to);
+    return this.getLines(buf, toRow(r.from), rowAt(r.to));
   }
-  private async getLines(buf: BufNr, lo: number, hi: number) {
+  private async getLines(buf: BufNr, lo: Row, hi: Row | -1) {
     const l = await this.nvim.call("nvim_buf_get_lines", [buf, lo, hi, false]);
     return Array.isArray(l)
       ? l.filter((t): t is string => typeof t === "string")

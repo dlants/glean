@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { COL0, lnumAt, ROW0 } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import { luaEval, pollUntil, startBackend, startNvim } from "../test/driver.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -64,7 +65,7 @@ async function author(nvim: Nvim, text: string) {
     ),
   );
   await nvim.call("nvim_input", ["<Esc>"]);
-  await nvim.call("nvim_buf_set_lines", [0, 0, -1, false, text.split("\n")]);
+  await nvim.call("nvim_buf_set_lines", [0, ROW0, -1, false, text.split("\n")]);
   await nvim.call("nvim_command", ["write"]);
   await waitFor(
     async () =>
@@ -150,7 +151,7 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       await waitFor(async () => (await recs())[0]?.lnum === 4);
 
       // A user edit + write moves it the same way.
-      await nvim.call("nvim_buf_set_lines", [0, 0, 0, false, ["extra"]]);
+      await nvim.call("nvim_buf_set_lines", [0, ROW0, ROW0, false, ["extra"]]);
       await nvim.call("nvim_command", ["write"]);
       await waitFor(async () => (await recs())[0]?.lnum === 5);
     });
@@ -164,7 +165,7 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       await nvim.call("nvim_command", ["edit f.txt"]);
       await waitFor(async () => (await signs(nvim)).length === 1);
       // Float: whole body.
-      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(2), COL0]]);
       await nvim.call("nvim_input", ["<Plug>(glean-comment-show)"]);
       const float = await waitFor(() =>
         luaEval<string | null>(
@@ -183,7 +184,7 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       expect(await signs(nvim)).toHaveLength(1);
 
       // Next/prev jump by resolved position.
-      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(1), COL0]]);
       await nvim.call("nvim_input", ["<Plug>(glean-comment-next)"]);
       await waitFor(
         async () =>
@@ -217,7 +218,7 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
         );
       await nvim.call("nvim_command", ["edit author.txt"]);
       await waitFor(() => mapped(nvim, "u"));
-      await nvim.call("nvim_win_set_cursor", [0, [1, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(1), COL0]]);
       await nvim.call("nvim_command", ["Glean comment"]);
       await waitFor(async () =>
         (await luaEval<string>(nvim, "vim.api.nvim_buf_get_name(0)")).includes(
@@ -235,9 +236,9 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
         nvim,
         `(function() vim.ui.select = function(_, _, cb) cb(nil, nil) end end)()`,
       );
-      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(2), COL0]]);
       await nvim.call("nvim_input", ["<Plug>(glean-comment-delete)"]);
-      await nvim.call("nvim_win_set_cursor", [0, [3, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(3), COL0]]);
       await nvim.call("nvim_command", ["Glean comment"]);
       await author(nvim, "after cancel");
       await waitFor(() => has("after cancel"));
@@ -264,7 +265,7 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
   for i, c in ipairs(choices) do if c == "second on two" then return cb(c, i) end end
   cb(nil, nil) end end)()`,
       );
-      await nvim.call("nvim_win_set_cursor", [0, [2, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(2), COL0]]);
       await nvim.call("nvim_input", ["<Plug>(glean-comment-delete)"]);
       await waitFor(async () => !(await has("second on two")));
       expect(await luaEval<number>(nvim, "vim.g.picked_n")).toBe(2);
@@ -272,12 +273,12 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
       await undoDepth(nvim, 1);
 
       // u restores it without touching text; <C-r> removes it again.
-      const text = await nvim.call("nvim_buf_get_lines", [0, 0, -1, false]);
+      const text = await nvim.call("nvim_buf_get_lines", [0, ROW0, -1, false]);
       await nvim.call("nvim_input", ["u"]);
       await waitFor(() => has("second on two"));
-      expect(await nvim.call("nvim_buf_get_lines", [0, 0, -1, false])).toEqual(
-        text,
-      );
+      expect(
+        await nvim.call("nvim_buf_get_lines", [0, ROW0, -1, false]),
+      ).toEqual(text);
       await undoDepth(nvim, 0, 1);
       await nvim.call("nvim_input", ["<C-r>"]);
       await waitFor(async () => !(await has("second on two")));

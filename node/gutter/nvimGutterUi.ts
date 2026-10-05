@@ -1,5 +1,5 @@
 /** The nvim adapter for the file-buffer gutter's `GutterUi` port. */
-import type { BufNr, WorktreeLnum } from "../core/types.ts";
+import { type BufNr, ROW0, type WorktreeLnum } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { NotifyLevel } from "../view/review.ts";
 import { MAX_BATCH_CALLS } from "../view/view.ts";
@@ -74,7 +74,7 @@ export class NvimGutterUi implements GutterUi {
   async lines(buf: BufNr): Promise<string[]> {
     const l = (await this.nvim.call("nvim_buf_get_lines", [
       buf,
-      0,
+      ROW0,
       -1,
       false,
     ])) as unknown;

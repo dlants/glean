@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Store } from "../core/state.ts";
 import type { RepoPath } from "../core/types.ts";
+import { COL0, lnumAt } from "../core/types.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import { luaEval, pollUntil, startBackend, startNvim } from "../test/driver.ts";
 import { makeRepo } from "../test/repo.ts";
@@ -46,7 +47,7 @@ describe("review view (driver)", () => {
       });
       expect(first[0]).toContain("unreviewed: 1 file");
       const row = first.findIndex((s) => s.includes("@@")) + 1;
-      await nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(row), COL0]]);
       await nvim.call("nvim_input", ["m"]);
       await pollUntil(async () => {
         const l = await lines();
@@ -96,7 +97,7 @@ describe("review view (driver)", () => {
       );
       const row = lines.indexOf("alpha BETA gamma") + 1;
       expect(row).toBeGreaterThan(0);
-      await nvim.call("nvim_win_set_cursor", [0, [row, 0]]);
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(row), COL0]]);
       await nvim.call("nvim_input", ["S"]);
       await pollUntil(async () => {
         const cur = await luaEval<string>(
@@ -149,7 +150,7 @@ describe("review view (driver)", () => {
           return hits(l).length === 2 ? l : undefined;
         });
         const [inline, summary] = hits(first) as [number, number];
-        await nvim.call("nvim_win_set_cursor", [0, [summary, 0]]);
+        await nvim.call("nvim_win_set_cursor", [0, [lnumAt(summary), COL0]]);
         await nvim.call("nvim_input", ["<CR>"]);
         await pollUntil(async () => {
           const [cur] = await luaEval<[number, number]>(
@@ -158,7 +159,7 @@ describe("review view (driver)", () => {
           );
           return cur === inline ? true : undefined;
         });
-        await nvim.call("nvim_win_set_cursor", [0, [summary, 0]]);
+        await nvim.call("nvim_win_set_cursor", [0, [lnumAt(summary), COL0]]);
         await nvim.call("nvim_input", ["Vd"]);
         await pollUntil(async () =>
           hits(await lines()).length === 0 ? true : undefined,

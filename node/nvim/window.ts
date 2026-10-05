@@ -1,14 +1,15 @@
+import type { ByteCol, Lnum, Row, StrIdx } from "../core/types.ts";
 import { type BufNr, NvimBuffer } from "./buffer.ts";
 import type { Nvim } from "./nvim-node/index.ts";
 
-export type Row0Indexed = number & { __row0Indexed: true };
-export type Row1Indexed = number & { __row1Indexed: true };
-export type ByteIdx = number & { __byteIdx: true };
+export type Row0Indexed = Row;
+export type Row1Indexed = Lnum;
+export type ByteIdx = ByteCol;
 export type ByteIdx1Indexed = number & { __byteIdx1Indexed: true };
 
 /** A coordinate in a js string, which are utf-16 encoded by default. This is the coordinate that lsp clients typically expect.
  */
-export type StringIdx = number & { __charIdx: true };
+export type StringIdx = StrIdx;
 
 export type PositionString = {
   row: Row0Indexed;
