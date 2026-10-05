@@ -133,6 +133,7 @@ Status: done.
 - Row params typed `Row`: `planVisualMark`, `nextUnseenHunk`, `rowOfHunk`, `reviveDest` (actions), `commentTarget`/`summaryCommentsIn` (commentActions), `navRow`, `hunkRange`, `fileHeaderRow`, `sourceLineRow` (nav), `restoreAnchor` (anchor). `ReviewView.paintHunk(row: Row)`.
 - Temporary `rowAt(..)` at `view/review.ts` action/query call sites and `view/view.ts` `paintHunk(frame, rowAt(info.row))`; stage 4 removes them by branding at action parsing / `CursorInfo.row`.
 - Deviation: `MarkerRun.lo/hi` stay `number` — they index `hunk.lines` (the `li` space shared with `RowTarget.li`, placement keys), not frame rows.
+- Review follow-ups: `Action`/`Query` row fields are `Row`, branded once in `parseAction`/`parseQuery` (the RPC boundary); controller `rowAt` calls removed except array-index results (`findIndex`, clamps). Session action `cursor?: Row`. `CursorInfo.row: Row` branded in `parseCursorInfo`. `review.test.ts` dispatches through `parseAction`.
 - Tests: `render.test.ts` wraps `render` with a bounds assertion on every highlight; new multibyte test checks span bytes equal `+2`, `-2`, `[7] ` behind `──`/`💬 (outdated) ` prefixes. No off-by-one found.
 
 - Goal: `render/*.ts` typed: `Highlight`, `IntraBlock`, `Section`, `MarkerRun`, all row params; spans built only from `ByteCol`s.

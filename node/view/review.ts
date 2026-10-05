@@ -61,35 +61,42 @@ import {
 
 /** Everything the Lua keymaps can send. Rows are 0-based. */
 export type Action =
-  | { kind: "toggle-seen"; row: number }
-  | { kind: "visual-mark"; srow: number; erow: number }
-  | { kind: "toggle-fold"; row: number }
-  | { kind: "toggle-scope"; row: number }
-  | { kind: "jump"; row: number; col: number }
-  | { kind: "diffsplit"; row: number }
-  | { kind: "delete-comments"; srow: number; erow: number }
-  | { kind: "add-comment"; srow: number; erow: number }
-  | { kind: "edit-comment"; row: number }
-  | { kind: "delete-comment"; row: number }
-  | { kind: "delete-comment-at"; row: number }
+  | { kind: "toggle-seen"; row: Row }
+  | { kind: "visual-mark"; srow: Row; erow: Row }
+  | { kind: "toggle-fold"; row: Row }
+  | { kind: "toggle-scope"; row: Row }
+  | { kind: "jump"; row: Row; col: number }
+  | { kind: "diffsplit"; row: Row }
+  | { kind: "delete-comments"; srow: Row; erow: Row }
+  | { kind: "add-comment"; srow: Row; erow: Row }
+  | { kind: "edit-comment"; row: Row }
+  | { kind: "delete-comment"; row: Row }
+  | { kind: "delete-comment-at"; row: Row }
   /** A comment editor / picker opened by node returned (no value: dismissed). */
   | { kind: "undo" }
   | { kind: "redo" }
-  | { kind: "unmark-hunk"; row: number }
+  | { kind: "unmark-hunk"; row: Row }
   | { kind: "unmark-all" }
-  | { kind: "toggle-whitespace"; row: number }
+  | { kind: "toggle-whitespace"; row: Row }
   /** Cursor moved / scrolled / window layout changed: repaint the cursor decor. */
   | { kind: "cursor" }
   | { kind: "sticky-close" }
   | { kind: "visibility"; visible: boolean }
   /** Registry-level (not the view): the buffer was wiped, or `:e` hard reset. */
   | { kind: "gone" }
-  | { kind: "reset"; row: number | undefined };
+  | { kind: "reset"; row: Row | undefined };
+
+const minRow = (a: Row, b: Row): Row => (a < b ? a : b);
+const maxRow = (a: Row, b: Row): Row => (a > b ? a : b);
 
 export function parseAction(v: unknown): Action | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
   const num = (k: string) => (typeof o[k] === "number" ? o[k] : undefined);
+  const row_ = (k: string) => {
+    const n = num(k);
+    return n === undefined ? undefined : rowAt(n);
+  };
   switch (o.kind) {
     case "toggle-seen":
     case "toggle-scope":
@@ -100,27 +107,27 @@ export function parseAction(v: unknown): Action | undefined {
     case "delete-comment":
     case "delete-comment-at":
     case "diffsplit": {
-      const row = num("row");
+      const row = row_("row");
       return row === undefined ? undefined : { kind: o.kind, row };
     }
     case "visual-mark":
     case "add-comment":
     case "delete-comments": {
-      const srow = num("srow");
-      const erow = num("erow");
+      const srow = row_("srow");
+      const erow = row_("erow");
       return srow === undefined || erow === undefined
         ? undefined
         : { kind: o.kind, srow, erow };
     }
     case "jump": {
-      const row = num("row");
+      const row = row_("row");
       const col = num("col");
       return row === undefined || col === undefined
         ? undefined
         : { kind: "jump", row, col };
     }
     case "reset":
-      return { kind: "reset", row: num("row") };
+      return { kind: "reset", row: row_("row") };
     case "visibility":
       return typeof o.visible === "boolean"
         ? { kind: "visibility", visible: o.visible }
@@ -138,19 +145,19 @@ export function parseAction(v: unknown): Action | undefined {
 }
 
 export type Query =
-  | { kind: "hunk-range"; row: number }
-  | { kind: "nav"; row: number; unit: NavUnit; forward: boolean };
+  | { kind: "hunk-range"; row: Row }
+  | { kind: "nav"; row: Row; unit: NavUnit; forward: boolean };
 export function parseQuery(v: unknown): Query | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
   if (typeof o.row !== "number") return undefined;
-  if (o.kind === "hunk-range") return { kind: "hunk-range", row: o.row };
+  if (o.kind === "hunk-range") return { kind: "hunk-range", row: rowAt(o.row) };
   if (
     o.kind === "nav" &&
     (o.unit === "hunk" || o.unit === "file") &&
     typeof o.forward === "boolean"
   )
-    return { kind: "nav", row: o.row, unit: o.unit, forward: o.forward };
+    return { kind: "nav", row: rowAt(o.row), unit: o.unit, forward: o.forward };
   return undefined;
 }
 
@@ -274,10 +281,10 @@ export class ReviewController {
     const frame = this.frame;
     if (!frame) return undefined;
     if (q.kind === "hunk-range") {
-      const r = hunkRange(frame, rowAt(q.row));
+      const r = hunkRange(frame, q.row);
       return r && [r.lo, r.hi];
     }
-    const row = navRow(frame, rowAt(q.row), q.unit, q.forward);
+    const row = navRow(frame, q.row, q.unit, q.forward);
     if (row === undefined) return undefined;
     return [row, q.unit === "hunk" ? (hunkRange(frame, row)?.hi ?? row) : row];
   }
@@ -323,7 +330,7 @@ export class ReviewController {
     if (isStale()) return undefined;
     const cls = this.session.current?.cls ?? snap.cls;
     const row = this.frame && sourceLineRow(cls, this.frame, path, lnum);
-    if (row !== undefined) await this.ui.setCursor(rowAt(row));
+    if (row !== undefined) await this.ui.setCursor(row);
     return row;
   }
   /** `<CR>`: summary rows navigate within the review, diff rows open the source. */
@@ -335,7 +342,7 @@ export class ReviewController {
     const t = frame.rows[row];
     if (t?.kind === "summary-file") {
       const r = fileHeaderRow(snap.cls, frame, t.path);
-      if (r !== undefined) await this.ui.setCursor(rowAt(r));
+      if (r !== undefined) await this.ui.setCursor(r);
       return;
     }
     if (t?.kind === "summary-comment") {
@@ -391,11 +398,7 @@ export class ReviewController {
     }
     if (row >= 0 && !isStale()) await this.ui.setCursor(rowAt(row));
   }
-  private async dropComment(
-    path: RepoPath,
-    before: CommentRecord,
-    row: number,
-  ) {
+  private async dropComment(path: RepoPath, before: CommentRecord, row: Row) {
     await this.session.perform({
       kind: "comment",
       path,
@@ -405,12 +408,10 @@ export class ReviewController {
     await this.redraw();
   }
   /** After marking, land on the next unseen hunk below the cursor. */
-  private async markAndAdvance(plan: SeenPlan, row: number) {
+  private async markAndAdvance(plan: SeenPlan, row: Row) {
     const before = this.frame;
     const next =
-      plan.op === "mark" && before
-        ? nextUnseenHunk(before, rowAt(row))
-        : undefined;
+      plan.op === "mark" && before ? nextUnseenHunk(before, row) : undefined;
     await this.session.perform({ kind: "seen", plan, cursor: row });
     await this.redraw();
     const frame = this.frame;
@@ -435,7 +436,7 @@ export class ReviewController {
     const next = this.frame;
     const cls = this.session.current?.cls;
     const dest = anchor && next && cls && restoreAnchor(cls, next, anchor);
-    if (dest !== undefined) await this.ui.setCursor(rowAt(dest));
+    if (dest !== undefined) await this.ui.setCursor(dest);
   }
   /** Every review action except the display-only ones (`cursor`,
    * `sticky-close`, `visibility`) and prompt results, which the adapter routes. */
@@ -473,8 +474,8 @@ export class ReviewController {
           snap.cls,
           this.scope,
           frame.rows,
-          rowAt(a.srow),
-          rowAt(a.erow),
+          a.srow,
+          a.erow,
         );
         if (plan) await this.markAndAdvance(plan, a.srow);
         return;
@@ -508,7 +509,7 @@ export class ReviewController {
         const next = this.frame;
         const cls = this.session.current?.cls ?? snap.cls;
         const row = anchor && next && restoreAnchor(cls, next, anchor);
-        if (row !== undefined) await this.ui.setCursor(rowAt(row));
+        if (row !== undefined) await this.ui.setCursor(row);
         return;
       }
       case "jump":
@@ -533,26 +534,26 @@ export class ReviewController {
         const removed = summaryCommentsIn(
           snap.store,
           frame.rows,
-          rowAt(a.srow),
-          rowAt(a.erow),
+          a.srow,
+          a.erow,
         );
         if (removed.length === 0) return;
         await this.session.perform({
           kind: "comments",
           removed,
-          cursor: Math.min(a.srow, a.erow),
+          cursor: minRow(a.srow, a.erow),
         });
         await this.redraw();
         return;
       }
       case "add-comment": {
-        const lo = Math.min(a.srow, a.erow);
+        const lo = minRow(a.srow, a.erow);
         const ct = commentTarget(
           snap.cls,
           this.scope,
           frame.rows,
-          rowAt(lo),
-          rowAt(Math.max(a.srow, a.erow)),
+          lo,
+          maxRow(a.srow, a.erow),
           this.session.worktree,
         );
         if (!ct) {

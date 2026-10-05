@@ -90,7 +90,7 @@ export function frameRowKeys(frame: Frame): string[] {
 /** Where the review is displayed, as read by `glean.node.cursor_info`. */
 type CursorInfo = {
   win: number;
-  row: number;
+  row: Row;
   top: Row;
   width: number;
   textoff: number;
@@ -112,7 +112,7 @@ function parseCursorInfo(v: unknown): CursorInfo | undefined {
     textoff === undefined
   )
     return undefined;
-  return { win, row, top: rowAt(top), width, textoff };
+  return { win, row: rowAt(row), top: rowAt(top), width, textoff };
 }
 export class ReviewView implements ReviewUi {
   readonly controller: ReviewController;
@@ -430,7 +430,7 @@ export class ReviewView implements ReviewUi {
       await this.closeSticky();
       return;
     }
-    await this.paintHunk(frame, rowAt(info.row));
+    await this.paintHunk(frame, info.row);
     await this.paintSticky(frame, info);
   }
   /**

@@ -7,7 +7,13 @@ import { Git, spawnRunner } from "../git/git.ts";
 import { Session } from "../session/session.ts";
 import { type CommitSpec, makeRepo } from "../test/repo.ts";
 import { recordReviewUi } from "../test/ui.ts";
-import { ReviewController } from "./review.ts";
+import { parseAction, ReviewController } from "./review.ts";
+
+const act = (h: { c: ReviewController }, a: unknown) => {
+  const parsed = parseAction(a);
+  if (!parsed) throw new Error(`bad action ${JSON.stringify(a)}`);
+  return h.c.dispatch(parsed);
+};
 
 async function open(spec: CommitSpec[], edit?: Record<string, string>) {
   const repo = makeRepo(spec);
@@ -44,11 +50,11 @@ describe("ReviewController", () => {
   it("m marks a hunk and lands on the next unseen hunk; the last clamps", async () => {
     const h = await open(twoFiles);
     const [first] = h.hunks();
-    await h.c.dispatch({ kind: "toggle-seen", row: first ?? 0 });
+    await act(h, { kind: "toggle-seen", row: first ?? 0 });
     expect(h.hunks()).toHaveLength(1);
     expect(h.rec.cursor).toBe(h.hunks()[0]);
     const last = h.hunks()[0] ?? 0;
-    await h.c.dispatch({ kind: "toggle-seen", row: last });
+    await act(h, { kind: "toggle-seen", row: last });
     expect(h.hunks()).toHaveLength(0);
     expect(h.rec.cursor).toBeLessThan(h.rec.lines().length);
     expect(h.rec.cursor).toBe(Math.min(last, h.rec.lines().length - 1));
@@ -57,30 +63,30 @@ describe("ReviewController", () => {
   it("visual mark, unmark-hunk, U and u/<C-r>", async () => {
     const h = await open(twoFiles);
     const n = h.rec.lines().length;
-    await h.c.dispatch({ kind: "visual-mark", srow: 0, erow: n - 1 });
+    await act(h, { kind: "visual-mark", srow: 0, erow: n - 1 });
     expect(h.hunks()).toHaveLength(0);
-    await h.c.dispatch({ kind: "undo" });
+    await act(h, { kind: "undo" });
     expect(h.hunks()).toHaveLength(2);
     expect(h.rec.cursor).toBe(0);
-    await h.c.dispatch({ kind: "redo" });
+    await act(h, { kind: "redo" });
     expect(h.hunks()).toHaveLength(0);
-    await h.c.dispatch({ kind: "unmark-all" });
+    await act(h, { kind: "unmark-all" });
     expect(h.hunks()).toHaveLength(2);
-    await h.c.dispatch({ kind: "toggle-seen", row: h.hunks()[0] ?? 0 });
+    await act(h, { kind: "toggle-seen", row: h.hunks()[0] ?? 0 });
     // The marked hunk collapses into its file's seen section; expand and unmark it.
     const seen = h.row((l) => l.includes("seen ("));
-    await h.c.dispatch({ kind: "toggle-fold", row: seen });
+    await act(h, { kind: "toggle-fold", row: seen });
     const back = h.row("A");
-    await h.c.dispatch({ kind: "unmark-hunk", row: back });
+    await act(h, { kind: "unmark-hunk", row: back });
     expect(h.hunks()).toHaveLength(2);
   });
 
   it("= collapses and expands a file", async () => {
     const h = await open(twoFiles);
     const header = h.row((l) => l.includes("a.txt"));
-    await h.c.dispatch({ kind: "toggle-fold", row: header });
+    await act(h, { kind: "toggle-fold", row: header });
     expect(h.rec.lines()).not.toContain("A");
-    await h.c.dispatch({
+    await act(h, {
       kind: "toggle-fold",
       row: h.row((l) => l.includes("a.txt")),
     });
@@ -92,15 +98,15 @@ describe("ReviewController", () => {
       { files: { "a.txt": "keep\n" } },
       { msg: "edit", files: { "a.txt": "keep\nadded line\n" } },
     ]);
-    await h.c.dispatch({
+    await act(h, {
       kind: "toggle-fold",
       row: h.row((l) => l.includes("a.txt")),
     });
     expect(h.rec.lines()).not.toContain("added line");
-    await h.c.dispatch({ kind: "toggle-scope", row: 0 });
+    await act(h, { kind: "toggle-scope", row: 0 });
     expect(h.c.scope).toBe("commits");
     const r = h.row("added line");
-    await h.c.dispatch({ kind: "toggle-scope", row: r });
+    await act(h, { kind: "toggle-scope", row: r });
     expect(h.c.scope).toBe("combined");
     expect(h.rec.lines()[h.rec.cursor ?? -1]).toBe("added line");
   });
@@ -111,10 +117,10 @@ describe("ReviewController", () => {
       { msg: "e", files: { "a.txt": "a \nb\nNEW\n" } },
     ]);
     const r = h.row("NEW");
-    await h.c.dispatch({ kind: "toggle-whitespace", row: r });
+    await act(h, { kind: "toggle-whitespace", row: r });
     expect(h.session.ignoreWhitespace).toBe(true);
     expect(h.rec.lines()[h.rec.cursor ?? -1]).toBe("NEW");
-    await h.c.dispatch({ kind: "toggle-whitespace", row: h.rec.cursor ?? 0 });
+    await act(h, { kind: "toggle-whitespace", row: h.rec.cursor ?? 0 });
     expect(h.session.ignoreWhitespace).toBe(false);
     expect(h.rec.lines()[h.rec.cursor ?? -1]).toBe("NEW");
   });
@@ -123,17 +129,17 @@ describe("ReviewController", () => {
     const h = await open(twoFiles);
     const r = h.row("A");
     h.rec.answer(undefined);
-    await h.c.dispatch({ kind: "add-comment", srow: r, erow: r });
+    await act(h, { kind: "add-comment", srow: r, erow: r });
     expect(h.rec.lines().join("\n")).not.toContain("hello");
     h.rec.answer("hello");
-    await h.c.dispatch({ kind: "add-comment", srow: r, erow: r });
+    await act(h, { kind: "add-comment", srow: r, erow: r });
     expect(h.rec.editors).toEqual([[], []]);
     expect(h.rec.lines().filter((l) => l.includes("hello"))).toHaveLength(2);
   });
 
   it("c on an uncommentable row notifies", async () => {
     const h = await open(twoFiles);
-    await h.c.dispatch({ kind: "add-comment", srow: 0, erow: 0 });
+    await act(h, { kind: "add-comment", srow: 0, erow: 0 });
     expect(h.rec.notes).toEqual([
       { msg: "glean: cannot comment here", level: "warn" },
     ]);
@@ -143,22 +149,22 @@ describe("ReviewController", () => {
     const h = await open(twoFiles);
     const r = h.row("A");
     h.rec.answer("note");
-    await h.c.dispatch({ kind: "add-comment", srow: r, erow: r });
+    await act(h, { kind: "add-comment", srow: r, erow: r });
     const inline = h.row((l) => l.includes("note"));
     h.rec.answer("note");
-    await h.c.dispatch({ kind: "edit-comment", row: inline });
+    await act(h, { kind: "edit-comment", row: inline });
     expect(h.rec.editors[1]).toEqual(["note"]);
     // The only undo entry is the add.
-    await h.c.dispatch({ kind: "undo" });
+    await act(h, { kind: "undo" });
     expect(h.rec.lines().join("\n")).not.toContain("note");
-    await h.c.dispatch({ kind: "redo" });
+    await act(h, { kind: "redo" });
     h.rec.answer("changed");
-    await h.c.dispatch({
+    await act(h, {
       kind: "edit-comment",
       row: h.row((l) => l.includes("note")),
     });
     expect(h.rec.lines().join("\n")).toContain("changed");
-    await h.c.dispatch({
+    await act(h, {
       kind: "delete-comment",
       row: h.row((l) => l.includes("changed")),
     });
@@ -169,22 +175,22 @@ describe("ReviewController", () => {
     const h = await open(twoFiles);
     const r = h.row("A");
     h.rec.answer("first");
-    await h.c.dispatch({ kind: "add-comment", srow: r, erow: r });
+    await act(h, { kind: "add-comment", srow: r, erow: r });
     h.rec.answer("second");
-    await h.c.dispatch({ kind: "add-comment", srow: r, erow: r });
+    await act(h, { kind: "add-comment", srow: r, erow: r });
     h.rec.answer(1);
-    await h.c.dispatch({ kind: "delete-comment-at", row: h.row("A") });
+    await act(h, { kind: "delete-comment-at", row: h.row("A") });
     expect(h.rec.picks).toEqual([["first", "second"]]);
     const text = () => h.rec.lines().join("\n");
     expect(text()).toContain("first");
     expect(text()).not.toContain("second");
-    await h.c.dispatch({ kind: "undo" });
+    await act(h, { kind: "undo" });
     expect(text()).toContain("second");
     const n = h.rec.lines().length;
-    await h.c.dispatch({ kind: "delete-comments", srow: 0, erow: n - 1 });
+    await act(h, { kind: "delete-comments", srow: 0, erow: n - 1 });
     expect(text()).not.toContain("first");
     expect(text()).not.toContain("second");
-    await h.c.dispatch({ kind: "undo" });
+    await act(h, { kind: "undo" });
     expect(text()).toContain("first");
     expect(text()).toContain("second");
   });
@@ -193,13 +199,13 @@ describe("ReviewController", () => {
     const h = await open(twoFiles);
     const r = h.row("B");
     h.rec.answer("why B");
-    await h.c.dispatch({ kind: "add-comment", srow: r, erow: r });
+    await act(h, { kind: "add-comment", srow: r, erow: r });
     // Mark b.txt so it collapses into the seen section.
-    await h.c.dispatch({ kind: "toggle-seen", row: h.row("B") - 1 });
+    await act(h, { kind: "toggle-seen", row: h.row("B") - 1 });
     const hits = () =>
       h.rec.lines().flatMap((l, i) => (l.includes("why B") ? [i] : []));
     const [summary] = hits();
-    await h.c.dispatch({ kind: "jump", row: summary ?? 0, col: 0 });
+    await act(h, { kind: "jump", row: summary ?? 0, col: 0 });
     const cur = h.rec.cursor ?? -1;
     expect(h.rec.lines()[cur]).toContain("why B");
     expect(cur).not.toBe(summary);
@@ -208,7 +214,7 @@ describe("ReviewController", () => {
         (t) => t.kind === "summary-file" && t.path === "b.txt",
       ) ?? -1;
     expect(fileRow).toBeGreaterThanOrEqual(0);
-    await h.c.dispatch({ kind: "jump", row: fileRow, col: 0 });
+    await act(h, { kind: "jump", row: fileRow, col: 0 });
     const header = h.rec.cursor ?? -1;
     expect(header).not.toBe(fileRow);
     expect(h.rec.lines()[header]).toContain("b.txt");
@@ -217,7 +223,7 @@ describe("ReviewController", () => {
   it("<CR>/D on diff rows open the resolved target; a superseded jump never opens", async () => {
     const h = await open(twoFiles);
     const r = h.row("A");
-    await h.c.dispatch({ kind: "jump", row: r, col: 3 });
+    await act(h, { kind: "jump", row: r, col: 3 });
     expect(h.rec.jumps).toEqual([
       {
         target: {
@@ -230,18 +236,18 @@ describe("ReviewController", () => {
       },
     ]);
     await Promise.all([
-      h.c.dispatch({ kind: "jump", row: r, col: 0 }),
-      h.c.dispatch({ kind: "jump", row: r, col: 1 }),
+      act(h, { kind: "jump", row: r, col: 0 }),
+      act(h, { kind: "jump", row: r, col: 1 }),
     ]);
     expect(h.rec.jumps.map((j) => j.col)).toEqual([3, 1]);
-    await h.c.dispatch({ kind: "diffsplit", row: r });
+    await act(h, { kind: "diffsplit", row: r });
     expect(h.rec.diffsplits).toHaveLength(1);
     expect(h.rec.diffsplits[0]?.ctx.path).toBe("a.txt");
   });
 
   it("gotoSource reveals a line of a collapsed seen file", async () => {
     const h = await open(twoFiles);
-    await h.c.dispatch({ kind: "toggle-seen", row: h.row("A") - 1 });
+    await act(h, { kind: "toggle-seen", row: h.row("A") - 1 });
     expect(h.rec.lines()).not.toContain("A");
     const row = await h.c.gotoSource("a.txt" as RepoPath, 1 as WorktreeLnum);
     expect(row).toBeDefined();

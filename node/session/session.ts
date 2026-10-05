@@ -14,6 +14,7 @@ import type {
   HeadLnum,
   LineId,
   RepoPath,
+  Row,
   WorktreeLnum,
 } from "../core/types.ts";
 import { type Git, type Outcome, Poller } from "../git/git.ts";
@@ -55,25 +56,25 @@ export type CommentChange =
   | { op: "edit"; before: CommentRecord; after: CommentRecord };
 /** An undoable user action. `cursor` is the row to restore on undo. */
 export type Undoable =
-  | { kind: "seen"; plan: SeenPlan; cursor?: number }
+  | { kind: "seen"; plan: SeenPlan; cursor?: Row }
   | {
       kind: "comment";
       path: RepoPath;
       change: CommentChange;
-      cursor?: number;
+      cursor?: Row;
     }
   /** Visual `d`: several comments removed as one undo step. */
   | {
       kind: "comments";
       removed: { path: RepoPath; record: CommentRecord }[];
-      cursor?: number;
+      cursor?: Row;
     }
   | {
       kind: "collapse";
       key: CollapseKey;
       value: boolean | undefined;
       prev: boolean | undefined;
-      cursor?: number;
+      cursor?: Row;
     };
 
 export type RefreshResult =
