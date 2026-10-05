@@ -161,5 +161,10 @@ Status: done.
 
 ## lint guard and bug fixes
 
+Status: done.
+- `hooks/coord-casts.mjs` (run from `hooks/checks.mjs`) flags `as <coordinate brand>` in non-test `node/**/*.ts` outside a file allowlist. Deviation: the allowlist also covers the per-space narrowing sites (generic `Lnum` → `PostLnum`/`PreLnum`/`HeadLnum`/`WorktreeLnum` in lineage, diff, baseline, session/model, render/nav, commentActions, gutter, overlay, view/review, view/jump, nvimAppUi, test/ui), since the space is known from context there; test files are exempt.
+- No off-by-ones were exposed by the earlier stages' driver tests, so no behaviour fixes. The known whole-file-deletion `newLnum` 0 case (stage 2) is left as-is.
+- Tests: `node/coordCasts.test.ts` (repo passes; a stray cast in a temp file fails).
+
 - Goal: `hooks/checks.mjs` fails on `as (Row|Lnum|ByteCol|StrIdx|HeadLnum|WorktreeLnum|PostLnum|PreLnum)\b` outside an allowlist (`core/types.ts`, RPC parsers, nvim return parsing). Fix any off-by-ones the driver tests from earlier stages exposed and record each in the commit.
 - Tests: the check script run against a file with a stray cast fails; full `npx tsc -p .`, `npx vitest run`, `npx biome check .` green.

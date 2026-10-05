@@ -37,6 +37,7 @@ async function main() {
   const checks = [
     { name: "typecheck", command: "npx tsc -b" },
     { name: "biome", command: "npx biome check --write ." },
+    { name: "coord-casts", command: "node hooks/coord-casts.mjs" },
   ];
 
   function runCheck(check) {
