@@ -174,6 +174,16 @@ describe("file-buffer comment overlay (driver, overlay_test)", () => {
         ).then((t) => t ?? undefined),
       );
       expect(float).toContain("second line");
+      // Each float line carries its own group: row0 for the id, then the body.
+      const floatHls = await luaEval<[number, number, string][]>(
+        nvim,
+        `(function() for _, w in ipairs(vim.api.nvim_list_wins()) do if vim.w[w].glean_overlay_float then local out = {} for _, m in ipairs(vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(w), -1, 0, -1, { details = true })) do table.insert(out, { m[2], m[4].end_row, m[4].hl_group }) end return out end end end)()`,
+      );
+      expect(floatHls).toEqual([
+        [0, 1, "GleanCommentId"],
+        [1, 2, "GleanComment"],
+        [2, 3, "GleanComment"],
+      ]);
 
       // Toggle: inline bodies come and go, the sign stays.
       await nvim.call("nvim_input", ["<Plug>(glean-comment-toggle)"]);

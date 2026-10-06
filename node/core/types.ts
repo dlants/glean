@@ -46,6 +46,10 @@ export function parseWorktreeLnum(v: unknown): WorktreeLnum | undefined {
   return parseLnum(v) as WorktreeLnum | undefined;
 }
 /** Every lnum in the inclusive range `lo..hi`. */
+/** Inclusive `lo..hi`. */
+export function* rowRange(lo: Row, hi: Row): Generator<Row> {
+  for (let r = lo; r <= hi; r = nextRow(r)) yield r;
+}
 export function* lnumRange<L extends Lnum>(lo: L, hi: L): Generator<L> {
   for (let l: number = lo; l <= hi; l++) yield l as L;
 }

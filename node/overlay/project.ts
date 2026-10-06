@@ -4,6 +4,7 @@
  * quickfix entries that show them. A comment's position is never tracked; it
  * is re-resolved by content on every event that can change the text.
  */
+
 import { fileProjection, locate } from "../core/comments.ts";
 import type { CommentRecord } from "../core/state.ts";
 import {
@@ -16,6 +17,7 @@ import {
   type Row,
   toRow,
 } from "../core/types.ts";
+import type { ExtmarkOptions, HLGroup } from "../nvim/extmarks.ts";
 
 const EOL_WIDTH = 60;
 export function firstLine(text: string): string {
@@ -65,7 +67,7 @@ export function resolveOverlay(
   return { groups, moved };
 }
 
-export type BodyLine = { text: string; hl: string };
+export type BodyLine = { text: string; hl?: HLGroup };
 /** The body (and any agent reply) of a record, as display lines. */
 export function bodyLines(record: CommentRecord): BodyLine[] {
   const out: BodyLine[] = record.text
@@ -77,7 +79,7 @@ export function bodyLines(record: CommentRecord): BodyLine[] {
   return out;
 }
 
-export type Stamp = { row: Row; opts: Record<string, unknown> };
+export type Stamp = { row: Row; opts: ExtmarkOptions };
 /** The extmarks (0-based rows) of one buffer, given its line count. */
 export function stamps(
   groups: readonly OverlayGroup[],
@@ -91,11 +93,11 @@ export function stamps(
     if (!head) continue;
     const allOutdated = entries.every((e) => e.outdated);
     const length = Math.max(1, ...entries.map((e) => e.length));
-    const hl = allOutdated ? "GleanCommentOutdated" : "GleanComment";
+    const hl: HLGroup = allOutdated ? "GleanCommentOutdated" : "GleanComment";
     let label = `#${head.record.id} ${firstLine(head.record.text)}`;
     if (entries.length > 1) label += ` (+${entries.length - 1} more)`;
     if (allOutdated) label += " (outdated)";
-    const opts: Record<string, unknown> = {
+    const opts: ExtmarkOptions = {
       sign_text: "💬",
       sign_hl_group: hl,
       virt_text: [[` ${label}`, hl]],
@@ -104,7 +106,9 @@ export function stamps(
     };
     if (inline)
       opts.virt_lines = entries.flatMap((e) =>
-        bodyLines(e.record).map((l) => [[`  ${l.text}`, l.hl]]),
+        bodyLines(e.record).map((l): [string, HLGroup][] => [
+          [`  ${l.text}`, l.hl ?? "Normal"],
+        ]),
       );
     out.push({ row: toRow(group.lnum), opts });
     // Make a multi-line comment's extent visible.
@@ -136,7 +140,7 @@ export function recordsAt(
 export function floatLines(records: readonly CommentRecord[]): BodyLine[] {
   const out: BodyLine[] = [];
   for (const record of records) {
-    if (out.length > 0) out.push({ text: "", hl: "" });
+    if (out.length > 0) out.push({ text: "" });
     out.push({ text: `#${record.id}`, hl: "GleanCommentId" });
     out.push(...bodyLines(record));
   }

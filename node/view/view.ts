@@ -1,10 +1,12 @@
 import {
   type ByteCol,
+  byteLen,
   COL0,
   nextRow,
   ROW0,
   type Row,
   rowAt,
+  rowRange,
   toLnum,
 } from "../core/types.ts";
 /**
@@ -29,6 +31,8 @@ import {
   RefineCache,
   runRefine,
 } from "../git/scheduler.ts";
+import { type AtomicCall, atomic } from "../nvim/atomic.ts";
+import type { HLGroup } from "../nvim/extmarks.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import { type DiffContext, hunkRange } from "../render/nav.ts";
 import type { Frame, IntraBlock } from "../render/render.ts";
@@ -226,7 +230,7 @@ export class ReviewView implements ReviewUi {
       { buf: b },
     ]);
     this.shown = rowKeys;
-    const calls: unknown[] = [];
+    const calls: AtomicCall[] = [];
     const lo = edit?.start ?? ROW0;
     const hi = edit ? rowAt(edit.start + edit.lines.length) : ROW0;
     if (edit)
@@ -235,20 +239,20 @@ export class ReviewView implements ReviewUi {
       if (h.row < lo || h.row >= hi) continue;
       calls.push(
         h.kind === "line"
-          ? [
-              "nvim_buf_set_extmark",
-              [b, this.ns, h.row, 0, { line_hl_group: h.hl }],
-            ]
-          : [
-              "nvim_buf_set_extmark",
-              [
-                b,
-                this.ns,
-                h.row,
-                h.startCol,
-                { end_col: h.endCol, hl_group: h.hl },
-              ],
-            ],
+          ? atomic("nvim_buf_set_extmark", [
+              b,
+              this.ns,
+              h.row,
+              COL0,
+              { line_hl_group: h.hl },
+            ])
+          : atomic("nvim_buf_set_extmark", [
+              b,
+              this.ns,
+              h.row,
+              h.startCol,
+              { end_col: h.endCol, hl_group: h.hl },
+            ]),
       );
     }
     for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS)
@@ -272,7 +276,7 @@ export class ReviewView implements ReviewUi {
         adds: blk.adds.map((a) => a.text),
       })),
       ({ blk }, refined) => {
-        const out: unknown[] = [];
+        const out: AtomicCall[] = [];
         for (const r of refined) {
           const d = blk.dels[r.di];
           const a = blk.adds[r.ai];
@@ -298,31 +302,35 @@ export class ReviewView implements ReviewUi {
    * background.
    */
   private intraCalls(
-    out: unknown[],
+    out: AtomicCall[],
     line: IntraBlock["dels"][number],
-    segs: readonly { startCol: number; endCol: number }[],
-    textHl: string,
-    emphHl: string,
+    segs: readonly { startCol: ByteCol; endCol: ByteCol }[],
+    textHl: HLGroup,
+    emphHl: HLGroup,
   ) {
     const b = this.bufnr;
-    const len = Buffer.byteLength(line.text);
-    out.push([
-      "nvim_buf_set_extmark",
-      [b, this.nsIntra, line.row, 0, { line_hl_group: textHl, priority: 4100 }],
-    ]);
+    const len = byteLen(line.text);
+    out.push(
+      atomic("nvim_buf_set_extmark", [
+        b,
+        this.nsIntra,
+        line.row,
+        COL0,
+        { line_hl_group: textHl, priority: 4100 },
+      ]),
+    );
     for (const s of segs) {
-      const e = Math.min(s.endCol, len);
+      const e = s.endCol < len ? s.endCol : len;
       if (e > s.startCol)
-        out.push([
-          "nvim_buf_set_extmark",
-          [
+        out.push(
+          atomic("nvim_buf_set_extmark", [
             b,
             this.nsIntra,
             line.row,
             s.startCol,
             { end_col: e, hl_group: emphHl, priority: 4200 },
-          ],
-        ]);
+          ]),
+        );
     }
   }
 
@@ -406,7 +414,7 @@ export class ReviewView implements ReviewUi {
     return d;
   }
   /** Sends extmark calls in `MAX_BATCH_CALLS` chunks, stopping once `live()` fails. */
-  private async sendChunked(calls: unknown[], live: () => boolean) {
+  private async sendChunked(calls: AtomicCall[], live: () => boolean) {
     for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS) {
       if (!live()) return;
       await this.nvim.call("nvim_call_atomic", [
@@ -468,16 +476,15 @@ export class ReviewView implements ReviewUi {
     ]);
     if (!r) return;
     const { signs } = this.decorOf(frame);
-    const calls: unknown[] = [];
-    for (let row = r.lo; row <= r.hi; row++) {
+    const calls: AtomicCall[] = [];
+    for (const row of rowRange(r.lo, r.hi)) {
       const s = signs.get(row);
-      calls.push([
-        "nvim_buf_set_extmark",
-        [
+      calls.push(
+        atomic("nvim_buf_set_extmark", [
           b,
           this.nsCursor,
           row,
-          0,
+          COL0,
           {
             sign_text: s ?? "▌",
             sign_hl_group:
@@ -488,8 +495,8 @@ export class ReviewView implements ReviewUi {
                   : "GleanCurrentHunk",
             priority: 100,
           },
-        ],
-      ]);
+        ]),
+      );
     }
     const live = () => this.indentGuard.isCurrent(gen) && this.frame === frame;
     await this.sendChunked(calls, live);
@@ -509,30 +516,29 @@ export class ReviewView implements ReviewUi {
   indentDone: Promise<unknown> = Promise.resolve();
   private async paintIndent(
     frame: Frame,
-    r: { lo: number; hi: number },
+    r: { lo: Row; hi: Row },
     indent: number,
     gen: Generation,
   ) {
     const live = () => this.indentGuard.isCurrent(gen) && this.frame === frame;
     if (!live()) return;
     const b = this.bufnr;
-    const body: unknown[] = [];
-    for (let row = r.lo; row <= r.hi; row++) {
+    const body: AtomicCall[] = [];
+    for (const row of rowRange(r.lo, r.hi)) {
       if (frame.rows[row]?.kind === "hunk-header") continue;
-      body.push([
-        "nvim_buf_set_extmark",
-        [
+      body.push(
+        atomic("nvim_buf_set_extmark", [
           b,
           this.nsIndent,
           row,
-          0,
+          COL0,
           {
             virt_text: [[" ".repeat(indent), "Normal"]],
             virt_text_pos: "inline",
             priority: 4200,
           },
-        ],
-      ]);
+        ]),
+      );
     }
     await this.sendChunked(body, live);
   }
@@ -564,19 +570,21 @@ export class ReviewView implements ReviewUi {
       );
     const sbuf = this.stickyBuf;
     const { lineHl } = this.decorOf(frame);
-    const calls: unknown[] = [
-      [
-        "nvim_buf_set_lines",
-        [sbuf, 0, -1, false, pinned.map((r) => frame.lines[r] ?? "")],
-      ],
-      ["nvim_buf_clear_namespace", [sbuf, this.nsSticky, ROW0, -1]],
+    const calls: AtomicCall[] = [
+      atomic("nvim_buf_set_lines", [
+        sbuf,
+        ROW0,
+        -1,
+        false,
+        pinned.map((r) => frame.lines[r] ?? ""),
+      ]),
+      atomic("nvim_buf_clear_namespace", [sbuf, this.nsSticky, ROW0, -1]),
     ];
     pinned.forEach((row, i) => {
       const hl = lineHl.get(row);
       if (hl)
-        calls.push([
-          "nvim_buf_set_extmark",
-          [
+        calls.push(
+          atomic("nvim_buf_set_extmark", [
             sbuf,
             this.nsSticky,
             rowAt(i),
@@ -587,8 +595,8 @@ export class ReviewView implements ReviewUi {
               hl_group: hl,
               hl_eol: true,
             },
-          ],
-        ]);
+          ]),
+        );
     });
     await this.nvim.call("nvim_call_atomic", [calls]);
     const cfg = {
@@ -677,12 +685,12 @@ export class ReviewView implements ReviewUi {
 
 type FrameDecor = {
   signs: Map<number, "+" | "-">;
-  lineHl: Map<number, string>;
+  lineHl: Map<Row, HLGroup>;
   ancestry: Ancestry[];
 };
 function frameDecor(frame: Frame): FrameDecor {
   const signs = new Map<number, "+" | "-">();
-  const lineHl = new Map<number, string>();
+  const lineHl = new Map<Row, HLGroup>();
   for (const h of frame.highlights) {
     if (h.kind !== "line") continue;
     if (h.sign === "+" || h.sign === "-") signs.set(h.row, h.sign);

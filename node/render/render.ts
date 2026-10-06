@@ -16,6 +16,7 @@ import {
   type Row,
   rowAt,
 } from "../core/types.ts";
+import type { HLGroup } from "../nvim/extmarks.ts";
 import type {
   Classifier,
   ModelCommit,
@@ -101,11 +102,11 @@ export type RowTarget =
     };
 
 export type Highlight =
-  | { kind: "line"; row: Row; hl: string; sign?: "+" | "-" | " " }
+  | { kind: "line"; row: Row; hl: HLGroup; sign?: "+" | "-" | " " }
   | {
       kind: "span";
       row: Row;
-      hl: string;
+      hl: HLGroup;
       /** Inclusive start, exclusive end. */
       startCol: ByteCol;
       endCol: ByteCol;
@@ -195,7 +196,7 @@ export function render(input: RenderInput): Frame {
   const emit = (
     text: string,
     target: RowTarget,
-    hl?: string,
+    hl?: HLGroup,
     s?: "+" | "-" | " ",
   ): Row => {
     // Every row must be a single buffer line.
@@ -212,7 +213,7 @@ export function render(input: RenderInput): Frame {
     return row;
   };
   /** Highlights the bytes of `text` starting at byte `at` of `row`. */
-  const span = (row: Row, at: ByteCol, text: string, hl: string) =>
+  const span = (row: Row, at: ByteCol, text: string, hl: HLGroup) =>
     f.highlights.push({
       kind: "span",
       row,

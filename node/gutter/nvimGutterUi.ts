@@ -1,5 +1,13 @@
 /** The nvim adapter for the file-buffer gutter's `GutterUi` port. */
-import { type BufNr, ROW0, toRow, type WorktreeLnum } from "../core/types.ts";
+import {
+  type BufNr,
+  COL0,
+  ROW0,
+  toRow,
+  type WorktreeLnum,
+} from "../core/types.ts";
+import { type AtomicCall, atomic } from "../nvim/atomic.ts";
+import type { ExtmarkOptions, HLGroup } from "../nvim/extmarks.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { NotifyLevel } from "../view/review.ts";
 import { MAX_BATCH_CALLS } from "../view/view.ts";
@@ -29,7 +37,7 @@ const FOCUS_GLYPH: Record<GutterKind, string> = {
   del: "▄",
   context: "▎",
 };
-const GROUP: Record<GutterKind, string> = {
+const GROUP: Record<GutterKind, `Glean${string}`> = {
   add: "GleanGutterAdd",
   change: "GleanGutterChange",
   del: "GleanGutterDelete",
@@ -81,20 +89,29 @@ export class NvimGutterUi implements GutterUi {
     return Array.isArray(l) ? l.filter((x) => typeof x === "string") : [];
   }
   async paint(paints: GutterPaint[]) {
-    const calls: unknown[] = [];
+    const calls: AtomicCall[] = [];
     for (const p of paints) {
       if (p.member)
-        calls.push([
-          "nvim_exec_lua",
-          [`require("glean.gutter").${p.member}(...)`, [p.buf]],
-        ]);
-      calls.push(["nvim_buf_clear_namespace", [p.buf, this.ns, 0, -1]]);
+        calls.push(
+          atomic("nvim_exec_lua", [
+            `require("glean.gutter").${p.member}(...)`,
+            [p.buf],
+          ]),
+        );
+      calls.push(
+        atomic("nvim_buf_clear_namespace", [p.buf, this.ns, ROW0, -1]),
+      );
       const st = p.state;
-      const mark = (lnum: WorktreeLnum, opts: object) =>
-        calls.push([
-          "nvim_buf_set_extmark",
-          [p.buf, this.ns, toRow(lnum), 0, opts],
-        ]);
+      const mark = (lnum: WorktreeLnum, opts: ExtmarkOptions) =>
+        calls.push(
+          atomic("nvim_buf_set_extmark", [
+            p.buf,
+            this.ns,
+            toRow(lnum),
+            COL0,
+            opts,
+          ]),
+        );
       if (st.kind === "stale")
         for (const lnum of st.lnums)
           mark(lnum, {
@@ -111,26 +128,25 @@ export class NvimGutterUi implements GutterUi {
   focus(buf: BufNr, signs: GutterSign[]) {
     return this.atomic(this.focusCalls(buf, signs));
   }
-  private focusCalls(buf: BufNr, signs: GutterSign[]): unknown[] {
+  private focusCalls(buf: BufNr, signs: GutterSign[]): AtomicCall[] {
     return [
-      ["nvim_buf_clear_namespace", [buf, this.nsFocus, 0, -1]],
-      ...signs.map((s) => [
-        "nvim_buf_set_extmark",
-        [
+      atomic("nvim_buf_clear_namespace", [buf, this.nsFocus, ROW0, -1]),
+      ...signs.map((s) =>
+        atomic("nvim_buf_set_extmark", [
           buf,
           this.nsFocus,
           toRow(s.lnum),
-          0,
+          COL0,
           {
             sign_text: FOCUS_GLYPH[s.kind],
             sign_hl_group: group(s),
             priority: FOCUS_PRIORITY,
           },
-        ],
-      ]),
+        ]),
+      ),
     ];
   }
-  private async atomic(calls: unknown[]) {
+  private async atomic(calls: AtomicCall[]) {
     for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS)
       await this.nvim.call("nvim_call_atomic", [
         calls.slice(i, i + MAX_BATCH_CALLS),
@@ -153,6 +169,6 @@ vim.api.nvim_win_set_cursor(0, { math.min(lnum1, vim.api.nvim_buf_line_count(buf
   }
 }
 
-function group(s: GutterSign) {
-  return GROUP[s.kind] + (s.seen ? "Seen" : "");
+function group(s: GutterSign): HLGroup {
+  return `${GROUP[s.kind]}${s.seen ? "Seen" : ""}`;
 }

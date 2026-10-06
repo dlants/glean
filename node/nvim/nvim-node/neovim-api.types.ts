@@ -1,6 +1,7 @@
 /* eslint @typescript-eslint/no-invalid-void-type: 0 */
 
 import type { ByteCol, Lnum, Row } from "../../core/types.ts";
+import type { AtomicCall } from "../atomic.ts";
 import type { ExtmarkOptions } from "../extmarks.ts";
 import type { EventsMap } from "./types.ts";
 
@@ -671,7 +672,7 @@ export type NeovimApi<
       return_type: unknown[];
     };
     nvim_call_atomic: {
-      parameters: [calls: unknown[]];
+      parameters: [calls: readonly AtomicCall[]];
       return_type: unknown[];
     };
     nvim_list_uis: {

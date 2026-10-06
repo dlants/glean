@@ -83,12 +83,13 @@ function M.bridge(group)
   })
 end
 --- The comment float at the cursor; closes on the next move. Returns its window.
-function M.float(lines, hls)
+--- `marks` are `{ row0, end_row0, hl_group }`, converted on the node side.
+function M.float(lines, marks)
   local ns = api.nvim_create_namespace("glean_overlay")
   local fbuf = api.nvim_create_buf(false, true)
   api.nvim_buf_set_lines(fbuf, 0, -1, false, lines)
-  for i, hl in ipairs(hls) do
-    if hl ~= "" then api.nvim_buf_set_extmark(fbuf, ns, i - 1, 0, { end_row = i, hl_group = hl }) end
+  for _, m in ipairs(marks) do
+    api.nvim_buf_set_extmark(fbuf, ns, m[1], 0, { end_row = m[2], hl_group = m[3] })
   end
   vim.bo[fbuf].modifiable = false
   vim.bo[fbuf].bufhidden = "wipe"

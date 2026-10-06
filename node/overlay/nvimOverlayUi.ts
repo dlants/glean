@@ -1,12 +1,17 @@
 /** The nvim adapter for the comment overlay's `OverlayUi` port. */
 import {
   type BufNr,
+  COL0,
   endRow,
+  nextRow,
   ROW0,
   type Row,
+  rowAt,
   toRow,
   type WorktreeLnum,
 } from "../core/types.ts";
+import { type AtomicCall, atomic } from "../nvim/atomic.ts";
+import type { HLGroup } from "../nvim/extmarks.ts";
 import type { Nvim } from "../nvim/nvim-node/index.ts";
 import type { Prompts } from "../view/prompts.ts";
 import type { NotifyLevel } from "../view/review.ts";
@@ -80,11 +85,13 @@ return { vim.api.nvim_buf_get_name(b), vim.bo[b].buftype, vim.bo[b].modified,
   }
 
   async stamp(buf: BufNr, stamps: Parameters<OverlayUi["stamp"]>[1]) {
-    const calls: unknown[] = [
-      ["nvim_buf_clear_namespace", [buf, this.ns, 0, -1]],
+    const calls: AtomicCall[] = [
+      atomic("nvim_buf_clear_namespace", [buf, this.ns, ROW0, -1]),
     ];
     for (const s of stamps)
-      calls.push(["nvim_buf_set_extmark", [buf, this.ns, s.row, 0, s.opts]]);
+      calls.push(
+        atomic("nvim_buf_set_extmark", [buf, this.ns, s.row, COL0, s.opts]),
+      );
     for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS)
       await this.nvim.call("nvim_call_atomic", [
         calls.slice(i, i + MAX_BATCH_CALLS),
@@ -110,7 +117,7 @@ vim.api.nvim_win_set_cursor(0, { math.min(lnum1, vim.api.nvim_buf_line_count(buf
   async float(lines: Parameters<OverlayUi["float"]>[0]) {
     await this.nvim.call("nvim_exec_lua", [
       `return require("glean.overlay").float(...)`,
-      [lines.map((l) => l.text), lines.map((l) => l.hl)],
+      [lines.map((l) => l.text), floatMarks(lines)],
     ]);
   }
 
@@ -144,4 +151,14 @@ vim.cmd("copen")`,
     ]);
     return result;
   }
+}
+/** `[row0, end_row0, hl_group]` per highlighted float line, so the Lua side does no index arithmetic. */
+function floatMarks(
+  lines: Parameters<OverlayUi["float"]>[0],
+): [Row, Row, HLGroup][] {
+  const out: [Row, Row, HLGroup][] = [];
+  lines.forEach((l, i) => {
+    if (l.hl) out.push([rowAt(i), nextRow(rowAt(i)), l.hl]);
+  });
+  return out;
 }

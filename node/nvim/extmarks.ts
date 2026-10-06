@@ -1,4 +1,3 @@
-import type { ByteCol } from "../core/types.ts";
 /**
  * Union type of all available highlight groups for type safety.
  * Includes standard Neovim groups, Treesitter groups, LSP semantic tokens, and dynamic groups.
@@ -64,7 +63,7 @@ export const HL_GROUPS = [
  * Union type of all available highlight groups for type safety.
  * Includes both predefined groups and custom highlight groups (strings).
  */
-export type HLGroup = (typeof HL_GROUPS)[number];
+export type HLGroup = (typeof HL_GROUPS)[number] | `Glean${string}`;
 
 /**
  * Custom color styling when semantic groups aren't sufficient.
@@ -104,7 +103,8 @@ export type ExtmarkOptions = {
   // Virtual text
   virt_text?: Array<[string, HLGroup]>;
   virt_text_pos?: "overlay" | "eol" | "right_align" | "inline";
-  virt_text_win_col?: ByteCol;
+  /** Screen cells from the window's left edge, not a byte column. */
+  virt_text_win_col?: number;
   virt_text_hide?: boolean;
   virt_text_repeat_linebreak?: boolean;
 
