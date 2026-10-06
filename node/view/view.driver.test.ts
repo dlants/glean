@@ -56,6 +56,40 @@ describe("review view (driver)", () => {
     });
   });
 
+  it("collapsing a file leaves no stale highlights on the following rows", async () => {
+    const repo = makeRepo([
+      { files: { "a.txt": "1\n2\n3\n", "b.txt": "x\n" } },
+      { msg: "one", files: { "a.txt": "1\nA\nB\nC\n3\n", "b.txt": "y\n" } },
+    ]);
+    await withShared(repo.root, async (nvim) => {
+      await nvim.call("nvim_command", [`Glean open ${repo.shas[0]}`]);
+      const lines = () =>
+        luaEval<string[]>(nvim, "vim.api.nvim_buf_get_lines(0, 0, -1, false)");
+      const before = await pollUntil(async () => {
+        const l = await lines();
+        return l.some((s) => s.includes("b.txt")) ? l : undefined;
+      });
+      const header = before.findIndex((s) => s.includes("a.txt")) + 1;
+      await nvim.call("nvim_win_set_cursor", [0, [lnumAt(header), COL0]]);
+      await nvim.call("nvim_input", ["="]);
+      await pollUntil(async () =>
+        (await lines()).length < before.length ? true : undefined,
+      );
+      const perRow = await luaEval<Record<string, number>>(
+        nvim,
+        `(function()
+  local ns = vim.api.nvim_create_namespace("glean-review")
+  local out = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(0, ns, 0, -1, { details = true })) do
+    if m[4].line_hl_group then local k = tostring(m[2]); out[k] = (out[k] or 0) + 1 end
+  end
+  return out
+end)()`,
+      );
+      for (const n of Object.values(perRow)) expect(n).toBe(1);
+    });
+  });
+
   it("toggle-scope re-renders in the commits scope", async () => {
     const repo = makeRepo([
       { files: { "a.txt": "1\n" } },

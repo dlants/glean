@@ -195,46 +195,38 @@ export class ReviewView implements ReviewUi {
   /** Called by the controller in frame order (its draw chain serializes it),
    * so `lineEdit` always diffs against what the buffer shows. */
   async paint(frame: Frame) {
-    this.frame = frame;
     const gen = this.intraGuard.bump();
     // Diff on text plus that row's highlights: extmarks outside the edited
     // span ride along with their unchanged lines, so only the span is repainted.
     const rowKeys = frameRowKeys(frame);
     const edit = lineEdit(this.shown, rowKeys);
     const b = this.bufnr;
-    await this.nvim.call("nvim_set_option_value", [
-      "modifiable",
-      true,
-      { buf: b },
-    ]);
+    const calls: AtomicCall[] = [
+      atomic("nvim_set_option_value", ["modifiable", true, { buf: b }]),
+    ];
+    const lo = edit?.start ?? ROW0;
+    const hi = edit ? rowAt(edit.start + edit.lines.length) : ROW0;
     if (edit) {
-      // Replace the old span with the first batch, then append the rest.
+      // Clear the old span first: set_lines moves the extmarks of deleted rows
+      // onto the next surviving row instead of dropping them.
+      calls.push(
+        atomic("nvim_buf_clear_namespace", [b, this.ns, edit.start, edit.end]),
+      );
+      const lines = frame.lines.slice(lo, hi);
       let at = edit.start;
       let end = edit.end;
       let i = 0;
-      const lines = frame.lines.slice(
-        edit.start,
-        edit.start + edit.lines.length,
-      );
       do {
         const chunk = lines.slice(i, i + MAX_BATCH_LINES);
-        await this.nvim.call("nvim_buf_set_lines", [b, at, end, false, chunk]);
+        calls.push(atomic("nvim_buf_set_lines", [b, at, end, false, chunk]));
         at = rowAt(at + chunk.length);
         end = at;
         i += MAX_BATCH_LINES;
-      } while (i < edit.lines.length);
+      } while (i < lines.length);
     }
-    await this.nvim.call("nvim_set_option_value", [
-      "modifiable",
-      false,
-      { buf: b },
-    ]);
-    this.shown = rowKeys;
-    const calls: AtomicCall[] = [];
-    const lo = edit?.start ?? ROW0;
-    const hi = edit ? rowAt(edit.start + edit.lines.length) : ROW0;
-    if (edit)
-      await this.nvim.call("nvim_buf_clear_namespace", [b, this.ns, lo, hi]);
+    calls.push(
+      atomic("nvim_set_option_value", ["modifiable", false, { buf: b }]),
+    );
     for (const h of frame.highlights) {
       if (h.row < lo || h.row >= hi) continue;
       calls.push(
@@ -255,10 +247,15 @@ export class ReviewView implements ReviewUi {
             ]),
       );
     }
+    // One atomic batch when it fits, so nvim never redraws or fires
+    // CursorMoved between the text and its highlights.
     for (let i = 0; i < calls.length; i += MAX_BATCH_CALLS)
       await this.nvim.call("nvim_call_atomic", [
         calls.slice(i, i + MAX_BATCH_CALLS),
       ]);
+    this.shown = rowKeys;
+    // Only now does the buffer show `frame`; decor reads it against the cursor.
+    this.frame = frame;
     void this.decorate().catch(() => undefined);
     if (!this.intraGuard.isCurrent(gen)) return;
     await this.nvim.call("nvim_buf_clear_namespace", [
@@ -284,13 +281,9 @@ export class ReviewView implements ReviewUi {
           this.intraCalls(out, d, r.aSegs, "GleanDelText", "GleanDelEmph");
           this.intraCalls(out, a, r.bSegs, "GleanAddText", "GleanAddEmph");
         }
-        this.pending = this.pending.then(async () => {
-          if (!this.intraGuard.isCurrent(gen)) return;
-          for (let i = 0; i < out.length; i += MAX_BATCH_CALLS)
-            await this.nvim.call("nvim_call_atomic", [
-              out.slice(i, i + MAX_BATCH_CALLS),
-            ]);
-        });
+        this.pending = this.pending.then(() =>
+          this.sendChunked(out, () => this.intraGuard.isCurrent(gen)),
+        );
       },
       this.refineCache,
     ).then(() => this.pending);
