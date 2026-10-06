@@ -45,6 +45,7 @@ import {
   jumpTarget,
   type NavUnit,
   navRow,
+  parentRow,
   sourceLineRow,
 } from "../render/nav.ts";
 import {
@@ -149,12 +150,14 @@ export function parseAction(v: unknown): Action | undefined {
 
 export type Query =
   | { kind: "hunk-range"; row: Row }
-  | { kind: "nav"; row: Row; unit: NavUnit; forward: boolean };
+  | { kind: "nav"; row: Row; unit: NavUnit; forward: boolean }
+  | { kind: "parent"; row: Row };
 export function parseQuery(v: unknown): Query | undefined {
   if (typeof v !== "object" || v === null) return undefined;
   const o = v as Record<string, unknown>;
   if (typeof o.row !== "number") return undefined;
   if (o.kind === "hunk-range") return { kind: "hunk-range", row: rowAt(o.row) };
+  if (o.kind === "parent") return { kind: "parent", row: rowAt(o.row) };
   if (
     o.kind === "nav" &&
     (o.unit === "hunk" || o.unit === "file") &&
@@ -286,6 +289,10 @@ export class ReviewController {
     if (q.kind === "hunk-range") {
       const r = hunkRange(frame, q.row);
       return r && [r.lo, r.hi];
+    }
+    if (q.kind === "parent") {
+      const p = parentRow(frame, q.row);
+      return p === undefined ? undefined : [p, p];
     }
     const row = navRow(frame, q.row, q.unit, q.forward);
     if (row === undefined) return undefined;

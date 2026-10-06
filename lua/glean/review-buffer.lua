@@ -167,6 +167,10 @@ M.open_review_buffer = function(title)
       if r then move_to_hunk_row(r[1], r[2]) end
     end)
   end
+  map({ "n", "x" }, "[[", function()
+    local r = query(buf, { kind = "parent", row = util.row0() })
+    if r then move_to_hunk_row(r[1], r[2]) end
+  end)
   -- Linewise-select the hunk: composes in visual (`vac`) and operator-pending
   -- (`dac`) mode, so the range is fetched synchronously.
   map({ "x", "o" }, "ac", function()

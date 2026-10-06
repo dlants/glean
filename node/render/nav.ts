@@ -35,6 +35,26 @@ export function navRow(
   return undefined;
 }
 
+const isHeader = (t: RowTarget | undefined) =>
+  t?.kind === "file-header" || t?.kind === "dir" || t?.kind === "commit-header";
+const indentOf = (line: string | undefined) =>
+  line ? line.length - line.trimStart().length : 0;
+/**
+ * The enclosing header of `cur`: a body row's file (or dir/commit) header; a
+ * header's nearest less-indented dir, or its commit header.
+ */
+export function parentRow(frame: Frame, cur: Row): Row | undefined {
+  const self = frame.rows[cur];
+  const onHeader = isHeader(self);
+  const indent = indentOf(frame.lines[cur]);
+  for (let r = cur - 1; r >= 0; r--) {
+    const t = frame.rows[r];
+    if (!isHeader(t)) continue;
+    if (!onHeader || t?.kind === "commit-header") return rowAt(r);
+    if (t?.kind === "dir" && indentOf(frame.lines[r]) < indent) return rowAt(r);
+  }
+  return undefined;
+}
 type HunkRow = Extract<RowTarget, { file: FileRef; hunk: number }>;
 function hunkOf(t: RowTarget | undefined): HunkRow | undefined {
   return t && "hunk" in t ? t : undefined;

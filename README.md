@@ -133,6 +133,7 @@ Highlight groups: `GleanGutterAdd`, `GleanGutterChange`, `GleanGutterDelete` and
 - `u` / `<C-r>` — undo / redo (seen, comment, collapse actions)
 - `]c` / `[c` — next / previous unmarked hunk
 - `]f` / `[f` — next / previous file
+- `[[` — up a level: the enclosing file header, then directory, then commit
 - `<CR>` — jump to the source line (the live file whenever the line still exists verbatim in the work tree, else a read-only `git show` buffer); on a comment-summary row, navigate to the comment/file in the diff instead
 - `D` — open an ephemeral side-by-side diff for the hunk under the cursor
 - `S` — toggle scope (combined / commits)
