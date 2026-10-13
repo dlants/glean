@@ -279,7 +279,7 @@ export function render(input: RenderInput): Frame {
     emit(
       `--- ${hunk.header}`,
       { kind: "hunk-header", file: ref, hunk: hi, sec },
-      "GleanHunkHeader",
+      inSeen ? "GleanSeen" : "GleanHunkHeader",
     );
     let runs: MarkerRun[] = [];
     if (!inSeen) {
@@ -298,7 +298,7 @@ export function render(input: RenderInput): Frame {
     let dels: IntraBlock["dels"] = [];
     let adds: IntraBlock["adds"] = [];
     const flush = () => {
-      if (dels.length > 0 && adds.length > 0)
+      if (!inSeen && dels.length > 0 && adds.length > 0)
         f.intraBlocks.push({ dels, adds });
       dels = [];
       adds = [];
@@ -335,7 +335,7 @@ export function render(input: RenderInput): Frame {
       const row = emit(
         dl.text,
         { kind: "line", file: ref, hunk: hi, li, sec },
-        lineHl(dl),
+        inSeen ? "GleanSeen" : lineHl(dl),
         sign(dl),
       );
       emitComments(li);

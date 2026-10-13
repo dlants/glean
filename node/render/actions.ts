@@ -305,6 +305,11 @@ export function collapseTarget(
     case "marker":
     case "marker-line":
       return eff(keys.marker(t.key), true);
+    case "hunk-header":
+    case "line":
+      return t.sec === "seen"
+        ? collapseTarget(cls, collapse, { kind: "seen-section", file: t.file })
+        : undefined;
     default:
       return undefined;
   }
