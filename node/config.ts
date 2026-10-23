@@ -38,16 +38,24 @@ export async function readOpenConfig(nvim: Nvim): Promise<OpenConfig> {
   const cfg = await readNvimConfig(nvim);
   // `glean_poll_ms`/`glean_log_page_size` exist so tests need not wait
   // out the live poll and can page a small fixture.
-  const [bufName, defaultBase, hunkIndent, hunkIndentDelay, pollMs, page] =
-    (await nvim.call("nvim_exec_lua", [
-      `local c = require("glean").config
-return { vim.api.nvim_buf_get_name(0), c.default_base, c.hunk_indent, c.hunk_indent_delay_ms, vim.g.glean_poll_ms, vim.g.glean_log_page_size }`,
-      [],
-    ])) as unknown[];
+  const [
+    bufName,
+    defaultBase,
+    hunkIndent,
+    hunkIndentDelay,
+    pollMs,
+    page,
+    bufnr,
+  ] = (await nvim.call("nvim_exec_lua", [
+    `local c = require("glean").config
+return { vim.api.nvim_buf_get_name(0), c.default_base, c.hunk_indent, c.hunk_indent_delay_ms, vim.g.glean_poll_ms, vim.g.glean_log_page_size, vim.api.nvim_get_current_buf() }`,
+    [],
+  ])) as unknown[];
   return {
     ...cfg,
     cwd: cfg.root,
     bufName: typeof bufName === "string" ? bufName : "",
+    bufnr: typeof bufnr === "number" ? bufnr : 0,
     defaultBase: typeof defaultBase === "string" ? defaultBase : "main",
     hunkIndent: typeof hunkIndent === "number" ? hunkIndent : 2,
     hunkIndentDelayMs:

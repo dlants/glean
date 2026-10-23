@@ -26,6 +26,7 @@ function setup(spec: CommitSpec[], cfg: Partial<OpenConfig> = {}) {
   const config: OpenConfig = {
     cwd: repo.root,
     bufName: "",
+    bufnr: 0,
     dataDir: mkdtempSync(join(tmpdir(), "glean-app-")),
     stateOverride: mkdtempSync(join(tmpdir(), "glean-app-store-")),
     minSeenRun: undefined,
@@ -193,6 +194,19 @@ describe("App", () => {
     expect(fresh.filter((s) => /^[0-9a-f]{7,} /.test(s))).toHaveLength(2);
   });
 
+  it(":Glean from a glean buffer targets that buffer's repo, not cwd's", async () => {
+    const h = setup(three);
+    await h.app.command({ kind: "log" });
+    h.config.cwd = mkdtempSync(join(tmpdir(), "glean-app-elsewhere-"));
+    h.config.bufnr = 1;
+    await h.app.command({ kind: "log" });
+    expect(h.rec.shown).toEqual([1, 1]);
+    await h.app.list({ kind: "open", buf: 1, srow: rowAt(3), erow: rowAt(3) });
+    h.config.bufnr = 2;
+    await h.app.command({ kind: "log" });
+    expect(h.rec.shown.at(-1)).toBe(1);
+    h.app.reviews[0]?.session.stop();
+  });
   it(":Glean jump with no review opens the default one; a file outside warns", async () => {
     const h = setup([
       { files: { "j.txt": "a\nb\n", "o.txt": "o\n" } },

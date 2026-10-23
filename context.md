@@ -106,6 +106,10 @@ algebra; `plans/2026-08-28-reviewed-baseline.md` holds the original reasoning an
   - `api/api.ts`: the agent api, served from memory with a pending fallback.
   - `nvim/`: RPC client copied from magenta; `test/`: embedded-nvim driver, fixture repos, and `ui.ts` port recorders for node-only controller tests (see `.magenta/skills/testing/skill.md`).
 
+## Testing
+
+Every new feature or bug fix must come with a test that exercises it. Check that the test fails without the change (e.g. by temporarily reverting only the source change) before considering the work done.
+
 ## Commands
 
 - `npx tsc -p .` — typecheck

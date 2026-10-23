@@ -56,6 +56,8 @@ export type OpenConfig = {
   cwd: string;
   /** The current buffer's name ("" for none). */
   bufName: string;
+  /** The current buffer's number. */
+  bufnr: number;
   dataDir: string;
   stateOverride: string | undefined;
   minSeenRun: number | undefined;
@@ -301,11 +303,18 @@ export class App {
     await this.view(buf)?.dispatch(a);
   }
 
-  /** Like the Lua `resolve_repo_root`: the repo of cwd when the current buffer
-   * lives under it (or is not a file), else the repo of the buffer's dir. */
+  /** From a glean review or list buffer, that buffer's repo. Otherwise like the
+   * Lua `resolve_repo_root`: the repo of cwd when the current buffer lives
+   * under it (or is not a file), else the repo of the buffer's dir. */
   private async openContext(): Promise<OpenContext> {
     const cfg = await this.ui.config();
-    const { cwd, bufName } = cfg;
+    const { cwd, bufName, bufnr } = cfg;
+    const gleanRoot =
+      this.current?.bufnr === bufnr
+        ? this.current.review.session.repoRoot
+        : this.lists.get(bufnr)?.root;
+    if (gleanRoot !== undefined)
+      return { ...cfg, root: gleanRoot, git: this.git(gleanRoot) };
     const bufDir =
       bufName === "" || /^\w+:\/\//.test(bufName) ? cwd : dirname(bufName);
     const discover = async (dir: string) => {
