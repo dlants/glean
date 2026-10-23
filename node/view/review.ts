@@ -431,6 +431,20 @@ export class ReviewController {
       rowAt(dest ?? Math.min(row, frame.rows.length - 1)),
     );
   }
+  /** After a visual mark, land on the line just below the marked range. */
+  private async markRangeAndContinue(plan: SeenPlan, srow: Row, erow: Row) {
+    const snap = this.session.current;
+    const below = snap && cursorAnchor(snap.cls, this.frame?.rows[erow + 1]);
+    await this.session.perform({ kind: "seen", plan, cursor: srow });
+    await this.redraw();
+    const frame = this.frame;
+    const cls = this.session.current?.cls;
+    if (!frame || !cls || frame.rows.length === 0) return;
+    const dest = below && restoreAnchor(cls, frame, below);
+    await this.ui.setCursor(
+      dest ?? rowAt(Math.min(srow + 1, frame.rows.length - 1)),
+    );
+  }
   /**
    * `W`: flip the whitespace projection and put the cursor back on the same
    * semantic line (rows are not comparable across projections).
@@ -487,7 +501,7 @@ export class ReviewController {
           a.srow,
           a.erow,
         );
-        if (plan) await this.markAndAdvance(plan, a.srow);
+        if (plan) await this.markRangeAndContinue(plan, a.srow, a.erow);
         return;
       }
       case "toggle-fold": {

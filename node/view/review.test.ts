@@ -81,6 +81,17 @@ describe("ReviewController", () => {
     expect(h.hunks()).toHaveLength(2);
   });
 
+  it("visual mark lands on the line just below the marked range", async () => {
+    const added = Array.from({ length: 8 }, (_, i) => `l${i + 1}`);
+    const h = await open([
+      { files: { "a.txt": "keep\n" } },
+      { msg: "add", files: { "a.txt": `keep\n${added.join("\n")}\n` } },
+    ]);
+    await act(h, { kind: "visual-mark", srow: h.row("l1"), erow: h.row("l6") });
+    expect(h.rec.lines()).not.toContain("l3");
+    expect(h.rec.lines()[h.rec.cursor ?? -1]).toBe("l7");
+  });
+
   it("= collapses and expands a file", async () => {
     const h = await open(twoFiles);
     const header = h.row((l) => l.includes("a.txt"));
