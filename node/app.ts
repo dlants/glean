@@ -315,8 +315,14 @@ export class App {
         : this.lists.get(bufnr)?.root;
     if (gleanRoot !== undefined)
       return { ...cfg, root: gleanRoot, git: this.git(gleanRoot) };
+    // oil.nvim directory buffers are named `oil:///abs/dir/`.
+    const oilDir = /^oil:\/\/(\/.*)$/.exec(bufName)?.[1];
     const bufDir =
-      bufName === "" || /^\w+:\/\//.test(bufName) ? cwd : dirname(bufName);
+      oilDir !== undefined
+        ? oilDir.replace(/(.)\/+$/, "$1")
+        : bufName === "" || /^[\w-]+:\/\//.test(bufName)
+          ? cwd
+          : dirname(bufName);
     const discover = async (dir: string) => {
       const r = await this.git(dir).run(["rev-parse", "--show-toplevel"]);
       return r.kind === "ok" ? r.value.trim() : undefined;

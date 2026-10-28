@@ -207,6 +207,15 @@ describe("App", () => {
     expect(h.rec.shown.at(-1)).toBe(1);
     h.app.reviews[0]?.session.stop();
   });
+  it(":Glean from an oil buffer targets the repo of its directory", async () => {
+    const h = setup(three);
+    const elsewhere = mkdtempSync(join(tmpdir(), "glean-app-elsewhere-"));
+    const root = h.config.cwd;
+    h.config.cwd = elsewhere;
+    h.config.bufName = `oil://${root}/`;
+    await h.app.command({ kind: "log" });
+    expect(h.rec.names.get(1)).toBe(`Glean:${basename(root)} log`);
+  });
   it(":Glean jump with no review opens the default one; a file outside warns", async () => {
     const h = setup([
       { files: { "j.txt": "a\nb\n", "o.txt": "o\n" } },
