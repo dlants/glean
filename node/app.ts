@@ -582,6 +582,8 @@ export class App {
       const sel = logSelection(st.commits, st.frame.rowMap, ev.srow, ev.erow);
       if (sel.kind === "none") return;
       await this.openReview(await this.listContext(st.root), sel.spec);
+      // The log is a one-shot picker: once a selection opens, discard it.
+      if (this.lists.has(ev.buf)) await this.ui.wipeBuffer(ev.buf);
       return;
     }
     if (ev.kind === "page") {

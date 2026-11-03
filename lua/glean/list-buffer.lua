@@ -5,7 +5,7 @@ local M = {}
 -- Log / PR list buffer: `kind` is "log" or "prs". Selections and paging are
 -- forwarded to node as one notify each.
 M.open_list_buffer = function(kind, name)
-  local buf = util.new_listed_buffer(name)
+  local buf = util.new_listed_buffer(name, { scratch = kind == "log" })
   local function list(ev)
     ev.buf = buf
     bridge.notify("gleanList", ev)

@@ -122,7 +122,7 @@ describe("App", () => {
     h.app.reviews[0]?.session.stop();
   });
 
-  it(":Glean log <CR> and visual <CR> open the selection, one review at a time", async () => {
+  it(":Glean log <CR> and visual <CR> open the selection and discard the log, one review at a time", async () => {
     const h = setup(three);
     await h.app.command({ kind: "log" });
     const log = h.rec.lists.get(1);
@@ -134,10 +134,14 @@ describe("App", () => {
     expect(body).toContain("ONE");
     expect(body).not.toContain("b.txt");
     expect(h.rec.names.get(2)).toContain(`${h.repo.shas[1]?.slice(0, 8)} [`);
-    await h.app.list({ kind: "open", buf: 1, srow: rowAt(2), erow: rowAt(3) });
+    expect(h.rec.valid.has(1)).toBe(false);
+    await h.app.list({ kind: "gone", buf: 1 });
+    await h.app.command({ kind: "log" });
+    await h.app.list({ kind: "open", buf: 3, srow: rowAt(2), erow: rowAt(3) });
     await h.settle();
     expect(h.app.reviews).toHaveLength(1);
-    const both = h.lines(3).join("\n");
+    expect(h.rec.valid.has(3)).toBe(false);
+    const both = h.lines(4).join("\n");
     expect(both).toContain("a.txt");
     expect(both).toContain("b.txt");
     h.app.reviews[0]?.session.stop();
@@ -204,7 +208,8 @@ describe("App", () => {
     await h.app.list({ kind: "open", buf: 1, srow: rowAt(3), erow: rowAt(3) });
     h.config.bufnr = 2;
     await h.app.command({ kind: "log" });
-    expect(h.rec.shown.at(-1)).toBe(1);
+    expect(h.rec.shown.at(-1)).toBe(3);
+    expect(h.rec.names.get(3)).toBe(`Glean:${basename(h.repo.root)} log`);
     h.app.reviews[0]?.session.stop();
   });
   it(":Glean from an oil buffer targets the repo of its directory", async () => {

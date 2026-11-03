@@ -24,10 +24,11 @@ M.show_buffer = function(buf)
   return win
 end
 
-M.new_listed_buffer = function(name)
-  local buf = vim.api.nvim_create_buf(true, false)
+M.new_listed_buffer = function(name, opts)
+  local scratch = opts and opts.scratch
+  local buf = vim.api.nvim_create_buf(not scratch, false)
   vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].bufhidden = scratch and "wipe" or "hide"
   vim.bo[buf].swapfile = false
   vim.bo[buf].filetype = "glean"
   vim.bo[buf].modifiable = false
