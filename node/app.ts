@@ -327,7 +327,10 @@ export class App {
       const r = await this.git(dir).run(["rev-parse", "--show-toplevel"]);
       return r.kind === "ok" ? r.value.trim() : undefined;
     };
-    const underCwd = bufDir === cwd || bufDir.startsWith(`${cwd}/`);
+    // An oil buffer names its directory explicitly, so a repo nested under cwd
+    // must win over cwd's repo.
+    const underCwd =
+      oilDir === undefined && (bufDir === cwd || bufDir.startsWith(`${cwd}/`));
     const root =
       (underCwd ? await discover(cwd) : undefined) ??
       (await discover(bufDir)) ??

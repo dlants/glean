@@ -1,4 +1,5 @@
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -220,6 +221,29 @@ describe("App", () => {
     h.config.bufName = `oil://${root}/`;
     await h.app.command({ kind: "log" });
     expect(h.rec.names.get(1)).toBe(`Glean:${basename(root)} log`);
+  });
+  it(":Glean from an oil buffer under cwd targets a nested repo", async () => {
+    const h = setup(three);
+    const nested = join(h.config.cwd, "nested");
+    mkdirSync(nested);
+    for (const args of [
+      ["init", "-q"],
+      [
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "n",
+      ],
+    ])
+      execFileSync("git", args, { cwd: nested });
+    h.config.bufName = `oil://${nested}/`;
+    await h.app.command({ kind: "log" });
+    expect(h.rec.names.get(1)).toBe("Glean:nested log");
   });
   it(":Glean jump with no review opens the default one; a file outside warns", async () => {
     const h = setup([
